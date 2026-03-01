@@ -6,20 +6,21 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-#[tool(
-    descr = "Create a new task for the Executor. Transitions state Idle → Executing and writes \
-             the task description to TASK.md. Must be called from state Idle.",
-    input_schema = r#"{
-        "properties": {
-            "description": {
-                "type": "string",
-                "description": "Full task description in Markdown"
-            }
-        },
-        "required": ["description"]
-    }"#
-)]
-async fn create_task(description: String) -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Create a new task for the Executor. Transitions state Idle → Executing and writes \
+     the task description to TASK.md. Must be called from state Idle.";
+
+pub const INPUT_SCHEMA: &str = r#"{
+    "properties": {
+        "description": {
+            "type": "string",
+            "description": "Full task description in Markdown"
+        }
+    },
+    "required": ["description"]
+}"#;
+
+pub async fn handler(description: String) -> Result<String, Error> {
     run(description).await.map_err(tool_err)
 }
 

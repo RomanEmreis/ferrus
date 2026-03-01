@@ -1,5 +1,7 @@
 use anyhow::Result;
 
-pub async fn run() -> Result<()> {
-    crate::server::start().await
+use crate::server::Role;
+
+pub async fn run(role: Option<Role>) -> Result<()> {
+    crate::server::start(role).await
 }

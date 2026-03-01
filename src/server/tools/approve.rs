@@ -6,9 +6,11 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-#[tool(descr = "Approve the current submission. Transitions state Reviewing → Complete. \
-                Must be called after /review_pending.")]
-async fn approve() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Approve the current submission. Transitions state Reviewing → Complete. \
+     Must be called after /review_pending.";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

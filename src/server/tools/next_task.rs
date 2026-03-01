@@ -6,9 +6,11 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-#[tool(descr = "Poll for the next pending task. Returns the task description if state is \
-                Executing or Addressing, otherwise reports that no task is ready.")]
-async fn next_task() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Poll for the next pending task. Returns the task description if state is \
+     Executing or Addressing, otherwise reports that no task is ready.";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

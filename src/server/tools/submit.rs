@@ -6,10 +6,12 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-#[tool(descr = "Signal that checks have passed and the work is ready for Supervisor review. \
-                Transitions state Checking → Reviewing. Must be called after /check returns \
-                a passing result.")]
-async fn submit() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Signal that checks have passed and the work is ready for Supervisor review. \
+     Transitions state Checking → Reviewing. Must be called after /check returns \
+     a passing result.";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

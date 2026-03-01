@@ -6,9 +6,11 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-#[tool(descr = "Human escape hatch: reset a Failed task back to Idle. Clears FEEDBACK.md and \
-                REVIEW.md. Only valid in state Failed.")]
-async fn reset() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Human escape hatch: reset a Failed task back to Idle. Clears FEEDBACK.md and \
+     REVIEW.md. Only valid in state Failed.";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

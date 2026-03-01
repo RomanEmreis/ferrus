@@ -5,9 +5,11 @@ use crate::state::store;
 
 use super::tool_err;
 
-#[tool(descr = "Query the current state of the ferrus orchestration system. Returns state, \
-                retry counters, and any failure reason. Safe to call from any state.")]
-async fn status() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Query the current state of the ferrus orchestration system. Returns state, \
+     retry counters, and any failure reason. Safe to call from any state.";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

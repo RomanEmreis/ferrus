@@ -13,11 +13,13 @@ use crate::{
 
 use super::tool_err;
 
-#[tool(descr = "Run all configured checks (clippy, fmt, tests, etc.) against the current \
-                codebase. Can be called from state Executing or Addressing. \
-                On pass: state → Checking. On fail: state → Addressing (or Failed if the \
-                retry limit is exhausted).")]
-async fn check() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Run all configured checks (clippy, fmt, tests, etc.) against the current \
+     codebase. Can be called from state Executing or Addressing. \
+     On pass: state → Checking. On fail: state → Addressing (or Failed if the \
+     retry limit is exhausted).";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

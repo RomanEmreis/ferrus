@@ -6,9 +6,11 @@ use crate::{config::Config, state::{machine::TaskState, store}};
 
 use super::tool_err;
 
-#[tool(descr = "Retrieve the pending submission for review. Returns the task description and \
-                any relevant context. Only valid in state Reviewing.")]
-async fn review_pending() -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Retrieve the pending submission for review. Returns the task description and \
+     any relevant context. Only valid in state Reviewing.";
+
+pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
 }
 

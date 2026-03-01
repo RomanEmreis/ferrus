@@ -12,21 +12,22 @@ use crate::{
 
 use super::tool_err;
 
-#[tool(
-    descr = "Reject the current submission with review notes. Writes notes to REVIEW.md and \
-             transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
-             exhausted). The Executor's check retry counter is reset for the new cycle.",
-    input_schema = r#"{
-        "properties": {
-            "notes": {
-                "type": "string",
-                "description": "Markdown-formatted review notes explaining what needs to change"
-            }
-        },
-        "required": ["notes"]
-    }"#
-)]
-async fn reject(notes: String) -> Result<String, Error> {
+pub const DESCRIPTION: &str =
+    "Reject the current submission with review notes. Writes notes to REVIEW.md and \
+     transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
+     exhausted). The Executor's check retry counter is reset for the new cycle.";
+
+pub const INPUT_SCHEMA: &str = r#"{
+    "properties": {
+        "notes": {
+            "type": "string",
+            "description": "Markdown-formatted review notes explaining what needs to change"
+        }
+    },
+    "required": ["notes"]
+}"#;
+
+pub async fn handler(notes: String) -> Result<String, Error> {
     run(notes).await.map_err(tool_err)
 }
 
