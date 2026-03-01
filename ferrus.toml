@@ -1,0 +1,10 @@
+[checks]
+commands = [
+    "cargo clippy -- -D warnings",
+    "cargo fmt --check",
+    "cargo test",
+]
+
+[limits]
+max_check_retries = 5
+max_review_cycles = 3
