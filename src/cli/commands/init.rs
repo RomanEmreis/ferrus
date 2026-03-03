@@ -9,8 +9,9 @@ commands = [
 ]
 
 [limits]
-max_check_retries = 5
-max_review_cycles = 3
+max_check_retries = 5   # consecutive check failures before state → Failed
+max_review_cycles = 3   # reject→fix cycles before state → Failed
+max_feedback_lines = 30 # trailing lines per failing command in FEEDBACK.md (full output always in .ferrus/logs/)
 "#;
 
 const INITIAL_STATE_JSON: &str = r#"{
@@ -44,9 +45,9 @@ async fn create_ferrus_toml() -> Result<()> {
 
 async fn create_ferrus_dir() -> Result<()> {
     let dir = Path::new(".ferrus");
-    tokio::fs::create_dir_all(dir)
+    tokio::fs::create_dir_all(dir.join("logs"))
         .await
-        .context("Failed to create .ferrus/ directory")?;
+        .context("Failed to create .ferrus/logs/ directory")?;
 
     let state_path = dir.join("STATE.json");
     if !state_path.exists() {

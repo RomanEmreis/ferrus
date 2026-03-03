@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use super::machine::StateData;
 
 const FERRUS_DIR: &str = ".ferrus";
+const LOGS_DIR: &str = ".ferrus/logs";
 
 fn path(filename: &str) -> PathBuf {
     Path::new(FERRUS_DIR).join(filename)
@@ -51,6 +52,21 @@ pub async fn write_review(content: &str) -> Result<()> {
 
 pub async fn clear_feedback() -> Result<()> {
     write_feedback("").await
+}
+
+/// Write a full check log to `.ferrus/logs/check_{attempt}_{ts}.txt`.
+/// Creates the logs directory if it doesn't exist. Returns the file path.
+pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<PathBuf> {
+    let logs_dir = Path::new(LOGS_DIR);
+    tokio::fs::create_dir_all(logs_dir)
+        .await
+        .with_context(|| format!("Failed to create {}", logs_dir.display()))?;
+    let filename = format!("check_{attempt}_{ts}.txt");
+    let p = logs_dir.join(&filename);
+    tokio::fs::write(&p, content)
+        .await
+        .with_context(|| format!("Failed to write {}", p.display()))?;
+    Ok(p)
 }
 
 pub async fn clear_review() -> Result<()> {

@@ -18,14 +18,15 @@ pub struct LimitsConfig {
     pub max_check_retries: u32,
     #[serde(default = "default_max_review_cycles")]
     pub max_review_cycles: u32,
+    /// Maximum number of trailing lines shown per failing command in FEEDBACK.md.
+    /// The full output is always written to .ferrus/logs/.
+    #[serde(default = "default_max_feedback_lines")]
+    pub max_feedback_lines: usize,
 }
 
-fn default_max_check_retries() -> u32 {
-    5
-}
-fn default_max_review_cycles() -> u32 {
-    3
-}
+const fn default_max_check_retries() -> u32 { 5 }
+const fn default_max_review_cycles() -> u32 { 3 }
+const fn default_max_feedback_lines() -> usize { 30 }
 
 impl Config {
     pub async fn load() -> Result<Self> {
