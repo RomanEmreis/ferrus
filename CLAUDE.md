@@ -47,6 +47,18 @@ max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.
 wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 ```
 
+## Skill Files
+
+`ferrus init` creates three skill files under `<agents-path>/skills/` (default `.agents/skills/`):
+
+| File | Purpose |
+|---|---|
+| `ferrus/SKILL.md` | General overview: full tool reference, state machine, resources, prompts, config |
+| `ferrus-supervisor/SKILL.md` | Supervisor how-to: step-by-step workflow |
+| `ferrus-supervisor/ROLE.md` | Supervisor role definition and boundaries |
+| `ferrus-executor/SKILL.md` | Executor how-to: autonomous loop |
+| `ferrus-executor/ROLE.md` | Executor role definition and boundaries |
+
 ## MCP Tool Reference
 
 ### Supervisor tools
@@ -76,6 +88,26 @@ wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 | `/answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `/status` | any | — | Print current state + retry counters |
 | `/reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
+
+## MCP Resources
+
+| URI | Contents |
+|---|---|
+| `ferrus://task` | Current task description (`TASK.md`) |
+| `ferrus://feedback` | Check failure summary (`FEEDBACK.md`) |
+| `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
+| `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
+| `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://state` | Current task state as JSON (`STATE.json`) |
+
+Resources are read-only. All six are listed via `resources/list` and readable via `resources/read`.
+
+## MCP Prompts
+
+| Prompt | Description |
+|---|---|
+| `executor-context` | State + task + feedback + review notes bundled for the Executor |
+| `supervisor-review` | State + task + submission notes bundled for the Supervisor |
 
 ## State Machine
 

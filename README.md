@@ -95,7 +95,10 @@ Scaffolds ferrus in the current project (default `--agents-path .agents`):
 
 - Creates `ferrus.toml` with default check commands and limits
 - Creates `.ferrus/` with `STATE.json`, `TASK.md`, `FEEDBACK.md`, `REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and `logs/`
-- Creates skill files at `<agents-path>/skills/ferrus-supervisor/SKILL.md` and `.../ferrus-executor/SKILL.md`
+- Creates skill files:
+  - `<agents-path>/skills/ferrus/SKILL.md` — general ferrus overview (tools, resources, prompts, config)
+  - `<agents-path>/skills/ferrus-supervisor/SKILL.md` + `ROLE.md` — Supervisor how-to and role definition
+  - `<agents-path>/skills/ferrus-executor/SKILL.md` + `ROLE.md` — Executor how-to and role definition
 - Adds `.ferrus/` to `.gitignore`
 
 ### `ferrus serve [--role supervisor|executor]`
@@ -173,6 +176,28 @@ args = ["serve", "--role", "executor"]
 | `answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `status` | any | — | Print current state + retry counters |
 | `reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
+
+### MCP resources
+
+Runtime files are exposed as MCP resources for agents that want to pull them on demand without a tool call:
+
+| URI | Contents |
+|---|---|
+| `ferrus://task` | Current task description (`TASK.md`) |
+| `ferrus://feedback` | Check failure summary (`FEEDBACK.md`) |
+| `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
+| `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
+| `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://state` | Current task state as JSON (`STATE.json`) |
+
+### MCP prompts
+
+Bundled context prompts that stitch together the most relevant files for each role:
+
+| Prompt | Description |
+|---|---|
+| `executor-context` | State + task + feedback + review notes |
+| `supervisor-review` | State + task + submission notes |
 
 ---
 

@@ -2,6 +2,8 @@ use anyhow::Result;
 use neva::App;
 use neva::types::ToolSchema;
 
+mod prompts;
+mod resources;
 mod tools;
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -46,6 +48,21 @@ pub async fn start(role: Option<Role>) -> Result<()> {
             .with_description(tools::submit::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::submit::INPUT_SCHEMA));
     }
+
+    // Resources — static metadata for listing + a single template handler for reads
+    app.add_resource("ferrus://task", "Task");
+    app.add_resource("ferrus://feedback", "Feedback");
+    app.add_resource("ferrus://review", "Review Notes");
+    app.add_resource("ferrus://submission", "Submission");
+    app.add_resource("ferrus://question", "Question");
+    app.add_resource("ferrus://state", "State");
+    app.map_resource("ferrus://{file}", "ferrus-file", resources::read);
+
+    // Prompts — bundled context for each role
+    app.map_prompt("executor-context", prompts::executor_context)
+        .with_description("Executor task context: state, task, feedback, and review notes");
+    app.map_prompt("supervisor-review", prompts::supervisor_review)
+        .with_description("Supervisor review context: state, task, and submission notes");
 
     app.map_tool("ask_human", tools::ask_human::handler)
         .with_description(tools::ask_human::DESCRIPTION)
