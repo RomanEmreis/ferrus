@@ -24,6 +24,8 @@ pub async fn start(role: Option<Role>) -> Result<()> {
         app.map_tool("create_task", tools::create_task::handler)
             .with_description(tools::create_task::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::create_task::INPUT_SCHEMA));
+        app.map_tool("wait_for_review", tools::wait_for_review::handler)
+            .with_description(tools::wait_for_review::DESCRIPTION);
         app.map_tool("review_pending", tools::review_pending::handler)
             .with_description(tools::review_pending::DESCRIPTION);
         app.map_tool("approve", tools::approve::handler)
@@ -34,6 +36,8 @@ pub async fn start(role: Option<Role>) -> Result<()> {
     }
 
     if exe {
+        app.map_tool("wait_for_task", tools::wait_for_task::handler)
+            .with_description(tools::wait_for_task::DESCRIPTION);
         app.map_tool("next_task", tools::next_task::handler)
             .with_description(tools::next_task::DESCRIPTION);
         app.map_tool("check", tools::check::handler)
@@ -43,6 +47,12 @@ pub async fn start(role: Option<Role>) -> Result<()> {
             .with_input_schema(|_| ToolSchema::from_json_str(tools::submit::INPUT_SCHEMA));
     }
 
+    app.map_tool("ask_human", tools::ask_human::handler)
+        .with_description(tools::ask_human::DESCRIPTION)
+        .with_input_schema(|_| ToolSchema::from_json_str(tools::ask_human::INPUT_SCHEMA));
+    app.map_tool("answer", tools::answer::handler)
+        .with_description(tools::answer::DESCRIPTION)
+        .with_input_schema(|_| ToolSchema::from_json_str(tools::answer::INPUT_SCHEMA));
     app.map_tool("status", tools::status::handler)
         .with_description(tools::status::DESCRIPTION);
     app.map_tool("reset", tools::reset::handler)

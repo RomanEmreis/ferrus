@@ -18,7 +18,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize ferrus in the current directory (creates ferrus.toml and .ferrus/)
-    Init,
+    Init {
+        /// Root directory for agent skill files (default: .agents)
+        #[arg(long, default_value = ".agents")]
+        agents_path: String,
+    },
     /// Start the MCP server on stdio
     Serve {
         /// Filter the exposed tool set by role (omit to expose all tools)
@@ -39,7 +43,7 @@ enum Commands {
 impl Cli {
     pub async fn run(self) -> Result<()> {
         match self.command {
-            Commands::Init => commands::init::run().await,
+            Commands::Init { agents_path } => commands::init::run(agents_path).await,
             Commands::Serve { role } => commands::serve::run(role).await,
             Commands::Register { supervisor, executor } => {
                 commands::register::run(supervisor, executor).await

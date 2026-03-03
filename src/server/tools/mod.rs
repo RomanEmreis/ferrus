@@ -1,4 +1,6 @@
+pub mod answer;
 pub mod approve;
+pub mod ask_human;
 pub mod check;
 pub mod create_task;
 pub mod next_task;
@@ -7,6 +9,8 @@ pub mod reset;
 pub mod review_pending;
 pub mod status;
 pub mod submit;
+pub mod wait_for_review;
+pub mod wait_for_task;
 
 use neva::prelude::*;
 

@@ -11,6 +11,9 @@ pub enum TaskState {
     Addressing,
     Complete,
     Failed,
+    /// Waiting for a human to answer a question (elicitation fallback path).
+    /// The previous state is saved in `StateData::paused_state` and restored by `/answer`.
+    AwaitingHuman,
 }
 
 /// Persisted to `.ferrus/STATE.json`.
@@ -30,6 +33,9 @@ pub struct StateData {
     /// PID of the process that last wrote this file. Stamped by `store::write_state`.
     #[serde(default)]
     pub owner_pid: u32,
+    /// State to restore when `/answer` is called after an `/ask_human` fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_state: Option<TaskState>,
 }
 
 const fn default_schema_version() -> u32 { 1 }
@@ -45,6 +51,7 @@ impl Default for StateData {
             failure_reason: None,
             updated_at: Utc::now(),
             owner_pid: std::process::id(),
+            paused_state: None,
         }
     }
 }
@@ -172,6 +179,42 @@ impl StateData {
             self.check_retries = 0;
             Ok(())
         }
+    }
+
+    /// Pause any active state into `AwaitingHuman`. Called by `/ask_human` fallback.
+    ///
+    /// Returns the paused state so the caller can log it.
+    pub fn ask_human(&mut self) -> Result<TaskState, TransitionError> {
+        match self.state {
+            TaskState::Executing
+            | TaskState::Addressing
+            | TaskState::Checking
+            | TaskState::Reviewing => {
+                let paused = self.state.clone();
+                self.paused_state = Some(paused.clone());
+                self.state = TaskState::AwaitingHuman;
+                Ok(paused)
+            }
+            _ => Err(TransitionError::InvalidTransition {
+                action: "ask_human",
+                state: self.state.clone(),
+            }),
+        }
+    }
+
+    /// Resume from `AwaitingHuman` back to the paused state. Called by `/answer`.
+    ///
+    /// Returns the restored state so the caller can log it.
+    pub fn answer(&mut self) -> Result<TaskState, TransitionError> {
+        if self.state != TaskState::AwaitingHuman {
+            return Err(TransitionError::InvalidTransition {
+                action: "answer",
+                state: self.state.clone(),
+            });
+        }
+        let resumed = self.paused_state.take().unwrap_or(TaskState::Idle);
+        self.state = resumed.clone();
+        Ok(resumed)
     }
 
     /// `Failed → Idle`. Human-facing escape hatch via `/reset`.

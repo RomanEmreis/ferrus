@@ -15,9 +15,11 @@ Licensed under Apache 2.0.
         ▼                                       ▼
   ferrus --role supervisor            ferrus --role executor
   ┌─────────────────────┐            ┌─────────────────────┐
-  │ create_task         │            │ next_task           │
+  │ create_task         │            │ wait_for_task       │
+  │ wait_for_review     │            │ next_task           │
   │ review_pending      │            │ check               │
   │ approve / reject    │            │ submit              │
+  │ ask_human / answer  │            │ ask_human / answer  │
   │ status / reset      │            │ status / reset      │
   └──────────┬──────────┘            └──────────┬──────────┘
              └──────────────┬────────────────────┘
@@ -29,11 +31,13 @@ Licensed under Apache 2.0.
                      │  FEEDBACK.md │
                      │  REVIEW.md   │
                      │  SUBMISSION.md│
+                     │  QUESTION.md │
+                     │  ANSWER.md   │
                      │  logs/       │
                      └──────────────┘
 ```
 
-The human switches context between agents; only one is active at a time in the MVP.
+Agents run autonomously using `/wait_for_task` and `/wait_for_review` to long-poll for work. When a question requires human input, `/ask_human` uses MCP elicitation; if the client doesn't support it, state pauses to `AwaitingHuman` and the human calls `/answer` to resume.
 
 ---
 
@@ -50,6 +54,8 @@ Idle
                    │     └─► [cycles ≥ max] Failed
                    └─► Complete ← /approve (Supervisor)
 ```
+
+Any active state can pause to `AwaitingHuman` via `/ask_human` (elicitation fallback). `/answer` restores the previous state.
 
 `/reset` moves `Failed → Idle` (human intervention).
 
@@ -83,12 +89,13 @@ ferrus serve                     # All tools (single-agent / debug)
 
 ## Commands
 
-### `ferrus init`
+### `ferrus init [--agents-path <path>]`
 
-Scaffolds ferrus in the current project:
+Scaffolds ferrus in the current project (default `--agents-path .agents`):
 
 - Creates `ferrus.toml` with default check commands and limits
-- Creates `.ferrus/` with `STATE.json`, `TASK.md`, `FEEDBACK.md`, `REVIEW.md`, `SUBMISSION.md`, and `logs/`
+- Creates `.ferrus/` with `STATE.json`, `TASK.md`, `FEEDBACK.md`, `REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and `logs/`
+- Creates skill files at `<agents-path>/skills/ferrus-supervisor/SKILL.md` and `.../ferrus-executor/SKILL.md`
 - Adds `.ferrus/` to `.gitignore`
 
 ### `ferrus serve [--role supervisor|executor]`
@@ -97,9 +104,9 @@ Starts the MCP server on stdio. Pass `--role` to expose only the tools relevant 
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `review_pending`, `approve`, `reject`, `status`, `reset` |
-| `executor` | `next_task`, `check`, `submit`, `status`, `reset` |
-| *(omitted)* | All 9 tools |
+| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `answer`, `status`, `reset` |
+| `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `ask_human`, `answer`, `status`, `reset` |
+| *(omitted)* | All 11 tools |
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity. Logs go to stderr so they don't interfere with the stdio MCP stream.
 
@@ -144,6 +151,7 @@ args = ["serve", "--role", "executor"]
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `create_task` | Idle | Executing | Write task description; Executor picks it up |
+| `wait_for_review` | — | — | Long-poll until state is Reviewing, then return submission context |
 | `review_pending` | Reviewing | — | Read task + context for review |
 | `approve` | Reviewing | Complete | Accept the submission |
 | `reject` | Reviewing | Addressing | Reject with notes; resets Executor retry counter |
@@ -152,6 +160,7 @@ args = ["serve", "--role", "executor"]
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
+| `wait_for_task` | — | — | Long-poll until a task is ready, then return full task context |
 | `next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
 | `submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
@@ -160,6 +169,8 @@ args = ["serve", "--role", "executor"]
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
+| `ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman (fallback) | Ask the human a question; uses MCP elicitation when supported, otherwise pauses to AwaitingHuman |
+| `answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `status` | any | — | Print current state + retry counters |
 | `reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
 
@@ -176,9 +187,10 @@ commands = [
 ]
 
 [limits]
-max_check_retries = 5   # consecutive check failures before state → Failed
-max_review_cycles = 3   # reject→fix cycles before state → Failed
-max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.md
+max_check_retries = 5    # consecutive check failures before state → Failed
+max_review_cycles = 3    # reject→fix cycles before state → Failed
+max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
+wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 ```
 
 `STATE.json` is written atomically (write to a `.tmp` file, then rename) so a crash mid-write never leaves it corrupt.
@@ -196,6 +208,8 @@ The check commands run in the directory where `ferrus serve` was started. Any no
 | `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
+| `QUESTION.md` | Question written by `/ask_human` when elicitation is unavailable |
+| `ANSWER.md` | Answer written by `/answer` |
 | `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
 
 `.ferrus/` is gitignored by `ferrus init`.

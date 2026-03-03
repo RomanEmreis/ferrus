@@ -23,8 +23,8 @@ cargo check            # fast type-check without producing a binary
 ## CLI
 
 ```sh
-ferrus init    # scaffold ferrus.toml and .ferrus/ in the current project
-ferrus serve   # start the MCP server on stdio
+ferrus init [--agents-path <path>]   # scaffold ferrus.toml, .ferrus/, and skill files (default: .agents)
+ferrus serve [--role supervisor|executor]  # start the MCP server on stdio
 ```
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity.
@@ -41,9 +41,10 @@ commands = [
 ]
 
 [limits]
-max_check_retries = 5   # consecutive check failures before state → Failed
-max_review_cycles = 3   # reject→fix cycles before state → Failed
-max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.md
+max_check_retries = 5    # consecutive check failures before state → Failed
+max_review_cycles = 3    # reject→fix cycles before state → Failed
+max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
+wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 ```
 
 ## MCP Tool Reference
@@ -53,6 +54,7 @@ max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.m
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `/create_task` | Idle | Executing | Write task description; Executor picks it up |
+| `/wait_for_review` | Reviewing | — | Long-poll until state is Reviewing, then return submission context |
 | `/review_pending` | Reviewing | — | Read task + context for review |
 | `/approve` | Reviewing | Complete | Accept the submission |
 | `/reject` | Reviewing | Addressing | Reject with notes; resets Executor retry counter |
@@ -61,6 +63,7 @@ max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.m
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
+| `/wait_for_task` | Executing, Addressing | — | Long-poll until a task is ready, then return full task context |
 | `/next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `/check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
 | `/submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
@@ -69,6 +72,8 @@ max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.m
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
+| `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman (fallback) | Ask the human a question; uses MCP elicitation when supported, otherwise pauses to AwaitingHuman |
+| `/answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `/status` | any | — | Print current state + retry counters |
 | `/reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
 
@@ -86,6 +91,8 @@ Idle
                    └─► Complete ← /approve
 ```
 
+Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human` when elicitation is unavailable. `/answer` restores the previous state.
+
 `/reset`: Failed → Idle (human intervention).
 
 ## Runtime Files (`.ferrus/`)
@@ -97,6 +104,8 @@ Idle
 | `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
+| `QUESTION.md` | Question written by `/ask_human` when elicitation is unavailable |
+| `ANSWER.md` | Answer written by `/answer` |
 | `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
 
 `.ferrus/` is gitignored by `ferrus init`.

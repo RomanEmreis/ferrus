@@ -94,6 +94,14 @@ pub async fn clear_submission() -> Result<()> {
     write_submission("").await
 }
 
+pub async fn write_question(content: &str) -> Result<()> {
+    write_file("QUESTION.md", content).await
+}
+
+pub async fn write_answer(content: &str) -> Result<()> {
+    write_file("ANSWER.md", content).await
+}
+
 async fn read_file(filename: &str) -> Result<String> {
     let p = path(filename);
     tokio::fs::read_to_string(&p)

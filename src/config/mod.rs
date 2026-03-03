@@ -22,11 +22,15 @@ pub struct LimitsConfig {
     /// The full output is always written to .ferrus/logs/.
     #[serde(default = "default_max_feedback_lines")]
     pub max_feedback_lines: usize,
+    /// How long (in seconds) /wait_for_task and /wait_for_review will poll before timing out.
+    #[serde(default = "default_wait_timeout_secs")]
+    pub wait_timeout_secs: u64,
 }
 
 const fn default_max_check_retries() -> u32 { 5 }
 const fn default_max_review_cycles() -> u32 { 3 }
 const fn default_max_feedback_lines() -> usize { 30 }
+const fn default_wait_timeout_secs() -> u64 { 3600 }
 
 impl Config {
     pub async fn load() -> Result<Self> {
