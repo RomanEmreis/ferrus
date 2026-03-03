@@ -39,7 +39,8 @@ pub async fn start(role: Option<Role>) -> Result<()> {
         app.map_tool("check", tools::check::handler)
             .with_description(tools::check::DESCRIPTION);
         app.map_tool("submit", tools::submit::handler)
-            .with_description(tools::submit::DESCRIPTION);
+            .with_description(tools::submit::DESCRIPTION)
+            .with_input_schema(|_| ToolSchema::from_json_str(tools::submit::INPUT_SCHEMA));
     }
 
     app.map_tool("status", tools::status::handler)

@@ -7,8 +7,9 @@ use crate::{config::Config, state::{machine::TaskState, store}};
 use super::tool_err;
 
 pub const DESCRIPTION: &str =
-    "Retrieve the pending submission for review. Returns the task description and \
-     any relevant context. Only valid in state Reviewing.";
+    "Retrieve the pending submission for review. Returns the task description, \
+     the Executor's submission notes (summary, verification steps, known limitations), \
+     and any prior feedback or review notes. Only valid in state Reviewing.";
 
 pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
@@ -27,10 +28,16 @@ async fn run() -> Result<String> {
     }
 
     let task = store::read_task().await?;
+    let submission = store::read_submission().await?;
     let feedback = store::read_feedback().await?;
     let review = store::read_review().await?;
 
     let mut response = format!("## Task\n\n{task}\n");
+
+    if !submission.trim().is_empty() {
+        response.push_str("\n## Submission Notes\n\n");
+        response.push_str(&submission);
+    }
 
     if !feedback.trim().is_empty() {
         response.push_str("\n## Last Check Output\n\n");

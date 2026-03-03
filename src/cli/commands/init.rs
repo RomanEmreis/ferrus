@@ -57,7 +57,7 @@ async fn create_ferrus_dir() -> Result<()> {
         println!("Created .ferrus/STATE.json");
     }
 
-    for filename in ["TASK.md", "FEEDBACK.md", "REVIEW.md"] {
+    for filename in ["TASK.md", "FEEDBACK.md", "REVIEW.md", "SUBMISSION.md"] {
         let path = dir.join(filename);
         if !path.exists() {
             tokio::fs::write(&path, "")

@@ -50,6 +50,14 @@ pub async fn write_review(content: &str) -> Result<()> {
     write_file("REVIEW.md", content).await
 }
 
+pub async fn read_submission() -> Result<String> {
+    read_file("SUBMISSION.md").await
+}
+
+pub async fn write_submission(content: &str) -> Result<()> {
+    write_file("SUBMISSION.md", content).await
+}
+
 pub async fn clear_feedback() -> Result<()> {
     write_feedback("").await
 }
@@ -71,6 +79,10 @@ pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<Pat
 
 pub async fn clear_review() -> Result<()> {
     write_review("").await
+}
+
+pub async fn clear_submission() -> Result<()> {
+    write_submission("").await
 }
 
 async fn read_file(filename: &str) -> Result<String> {

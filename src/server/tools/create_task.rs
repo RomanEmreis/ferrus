@@ -37,6 +37,7 @@ async fn run(description: String) -> Result<String> {
 
     state.create_task()?;
     store::write_task(&description).await?;
+    store::clear_submission().await?;
     store::write_state(&state).await?;
 
     info!("Task created, state → Executing");

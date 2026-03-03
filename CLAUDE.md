@@ -43,6 +43,7 @@ commands = [
 [limits]
 max_check_retries = 5   # consecutive check failures before state → Failed
 max_review_cycles = 3   # reject→fix cycles before state → Failed
+max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.md
 ```
 
 ## MCP Tool Reference
@@ -62,14 +63,14 @@ max_review_cycles = 3   # reject→fix cycles before state → Failed
 |---|---|---|---|
 | `/next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `/check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
-| `/submit` | Checking | Reviewing | Signal checks passed; ready for Supervisor review |
+| `/submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
 
 ### Shared tools
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `/status` | any | — | Print current state + retry counters |
-| `/reset` | Failed | Idle | Human escape hatch; clears feedback + review files |
+| `/reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
 
 ## State Machine
 
@@ -93,8 +94,10 @@ Idle
 |---|---|
 | `STATE.json` | Current `TaskState`, retry/cycle counters, failure reason |
 | `TASK.md` | Task description written by Supervisor |
-| `FEEDBACK.md` | Aggregated check failure output |
+| `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
+| `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
+| `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
 
 `.ferrus/` is gitignored by `ferrus init`.
 

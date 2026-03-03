@@ -22,13 +22,15 @@ Licensed under Apache 2.0.
   └──────────┬──────────┘            └──────────┬──────────┘
              └──────────────┬────────────────────┘
                             │ shared via filesystem
-                     ┌──────▼──────┐
-                     │  .ferrus/   │
-                     │  STATE.json │
-                     │  TASK.md    │
-                     │  FEEDBACK.md│
-                     │  REVIEW.md  │
-                     └─────────────┘
+                     ┌──────────────┐
+                     │  .ferrus/    │
+                     │  STATE.json  │
+                     │  TASK.md     │
+                     │  FEEDBACK.md │
+                     │  REVIEW.md   │
+                     │  SUBMISSION.md│
+                     │  logs/       │
+                     └──────────────┘
 ```
 
 The human switches context between agents; only one is active at a time in the MVP.
@@ -86,7 +88,7 @@ ferrus serve                     # All tools (single-agent / debug)
 Scaffolds ferrus in the current project:
 
 - Creates `ferrus.toml` with default check commands and limits
-- Creates `.ferrus/` with `STATE.json`, `TASK.md`, `FEEDBACK.md`, `REVIEW.md`
+- Creates `.ferrus/` with `STATE.json`, `TASK.md`, `FEEDBACK.md`, `REVIEW.md`, `SUBMISSION.md`, and `logs/`
 - Adds `.ferrus/` to `.gitignore`
 
 ### `ferrus serve [--role supervisor|executor]`
@@ -152,14 +154,14 @@ args = ["serve", "--role", "executor"]
 |---|---|---|---|
 | `next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
-| `submit` | Checking | Reviewing | Signal checks passed; ready for Supervisor review |
+| `submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
 
 ### Shared tools
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `status` | any | — | Print current state + retry counters |
-| `reset` | Failed | Idle | Human escape hatch; clears feedback + review files |
+| `reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
 
 ---
 
@@ -176,9 +178,10 @@ commands = [
 [limits]
 max_check_retries = 5   # consecutive check failures before state → Failed
 max_review_cycles = 3   # reject→fix cycles before state → Failed
+max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.md
 ```
 
-The check commands run in the directory where `ferrus serve` was started. Any non-zero exit code is a failure; stdout and stderr are captured and written to `FEEDBACK.md` for the Executor to read.
+The check commands run in the directory where `ferrus serve` was started. Any non-zero exit code is a failure. On failure, the full stdout + stderr for each command is written to `.ferrus/logs/check_<attempt>_<timestamp>.txt`. `FEEDBACK.md` contains a short summary — which commands failed and the last `max_feedback_lines` lines of their output — so the Executor gets the signal without noise.
 
 ---
 
@@ -188,7 +191,9 @@ The check commands run in the directory where `ferrus serve` was started. Any no
 |---|---|
 | `STATE.json` | Current state, retry/cycle counters, failure reason |
 | `TASK.md` | Task description written by Supervisor |
-| `FEEDBACK.md` | Aggregated check failure output |
+| `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
+| `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
+| `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
 
 `.ferrus/` is gitignored by `ferrus init`.
