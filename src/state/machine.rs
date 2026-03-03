@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -15,19 +16,35 @@ pub enum TaskState {
 /// Persisted to `.ferrus/STATE.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateData {
+    /// Incremented on breaking schema changes so readers can detect stale files.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub state: TaskState,
     pub check_retries: u32,
     pub review_cycles: u32,
     pub failure_reason: Option<String>,
+    /// RFC 3339 timestamp of the last write. Stamped by `store::write_state`.
+    /// Defaults to the Unix epoch when deserializing pre-versioned files.
+    #[serde(default = "default_updated_at")]
+    pub updated_at: DateTime<Utc>,
+    /// PID of the process that last wrote this file. Stamped by `store::write_state`.
+    #[serde(default)]
+    pub owner_pid: u32,
 }
+
+const fn default_schema_version() -> u32 { 1 }
+fn default_updated_at() -> DateTime<Utc> { DateTime::UNIX_EPOCH }
 
 impl Default for StateData {
     fn default() -> Self {
         Self {
+            schema_version: 1,
             state: TaskState::Idle,
             check_retries: 0,
             review_cycles: 0,
             failure_reason: None,
+            updated_at: Utc::now(),
+            owner_pid: std::process::id(),
         }
     }
 }

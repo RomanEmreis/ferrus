@@ -92,7 +92,7 @@ Idle
 
 | File | Contents |
 |---|---|
-| `STATE.json` | Current `TaskState`, retry/cycle counters, failure reason |
+| `STATE.json` | Current `TaskState`, retry/cycle counters, failure reason, schema version, last-write timestamp and PID |
 | `TASK.md` | Task description written by Supervisor |
 | `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |

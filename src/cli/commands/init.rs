@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+use crate::state::{machine::StateData, store};
+
 const DEFAULT_FERRUS_TOML: &str = r#"[checks]
 commands = [
     "cargo clippy -- -D warnings",
@@ -14,13 +16,6 @@ max_review_cycles = 3   # reject→fix cycles before state → Failed
 max_feedback_lines = 30 # trailing lines per failing command in FEEDBACK.md (full output always in .ferrus/logs/)
 "#;
 
-const INITIAL_STATE_JSON: &str = r#"{
-  "state": "Idle",
-  "check_retries": 0,
-  "review_cycles": 0,
-  "failure_reason": null
-}
-"#;
 
 pub async fn run() -> Result<()> {
     create_ferrus_toml().await?;
@@ -51,7 +46,7 @@ async fn create_ferrus_dir() -> Result<()> {
 
     let state_path = dir.join("STATE.json");
     if !state_path.exists() {
-        tokio::fs::write(&state_path, INITIAL_STATE_JSON)
+        store::write_state(&StateData::default())
             .await
             .context("Failed to write .ferrus/STATE.json")?;
         println!("Created .ferrus/STATE.json");

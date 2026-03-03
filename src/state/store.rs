@@ -19,11 +19,20 @@ pub async fn read_state() -> Result<StateData> {
 }
 
 pub async fn write_state(state: &StateData) -> Result<()> {
-    let p = path("STATE.json");
-    let json = serde_json::to_string_pretty(state).context("Failed to serialize state")?;
-    tokio::fs::write(&p, json)
+    let stamped = StateData {
+        updated_at: chrono::Utc::now(),
+        owner_pid: std::process::id(),
+        ..state.clone()
+    };
+    let json = serde_json::to_string_pretty(&stamped).context("Failed to serialize state")?;
+    let tmp = path("STATE.json.tmp");
+    let dest = path("STATE.json");
+    tokio::fs::write(&tmp, &json)
         .await
-        .with_context(|| format!("Failed to write {}", p.display()))
+        .with_context(|| format!("Failed to write {}", tmp.display()))?;
+    tokio::fs::rename(&tmp, &dest)
+        .await
+        .with_context(|| format!("Failed to rename {} → {}", tmp.display(), dest.display()))
 }
 
 pub async fn read_task() -> Result<String> {

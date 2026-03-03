@@ -181,6 +181,8 @@ max_review_cycles = 3   # reject→fix cycles before state → Failed
 max_feedback_lines = 30 # trailing lines per failing command shown in FEEDBACK.md
 ```
 
+`STATE.json` is written atomically (write to a `.tmp` file, then rename) so a crash mid-write never leaves it corrupt.
+
 The check commands run in the directory where `ferrus serve` was started. Any non-zero exit code is a failure. On failure, the full stdout + stderr for each command is written to `.ferrus/logs/check_<attempt>_<timestamp>.txt`. `FEEDBACK.md` contains a short summary — which commands failed and the last `max_feedback_lines` lines of their output — so the Executor gets the signal without noise.
 
 ---
@@ -189,7 +191,7 @@ The check commands run in the directory where `ferrus serve` was started. Any no
 
 | File | Contents |
 |---|---|
-| `STATE.json` | Current state, retry/cycle counters, failure reason |
+| `STATE.json` | Current state, retry/cycle counters, failure reason, schema version, last-write timestamp (RFC 3339) and PID |
 | `TASK.md` | Task description written by Supervisor |
 | `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
