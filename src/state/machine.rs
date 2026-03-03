@@ -33,7 +33,7 @@ pub struct StateData {
 }
 
 const fn default_schema_version() -> u32 { 1 }
-fn default_updated_at() -> DateTime<Utc> { DateTime::UNIX_EPOCH }
+const fn default_updated_at() -> DateTime<Utc> { DateTime::UNIX_EPOCH }
 
 impl Default for StateData {
     fn default() -> Self {
