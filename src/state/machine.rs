@@ -121,6 +121,7 @@ impl StateData {
                 state: self.state.clone(),
             });
         }
+        self.clear_lease();
         self.state = TaskState::Executing;
         self.check_retries = 0;
         self.review_cycles = 0;
@@ -182,6 +183,7 @@ impl StateData {
                 state: self.state.clone(),
             });
         }
+        self.clear_lease();
         self.state = TaskState::Reviewing;
         Ok(())
     }
@@ -194,6 +196,7 @@ impl StateData {
                 state: self.state.clone(),
             });
         }
+        self.clear_lease();
         self.state = TaskState::Complete;
         Ok(())
     }
@@ -211,6 +214,7 @@ impl StateData {
         }
         self.review_cycles += 1;
         if self.review_cycles >= max_cycles {
+            self.clear_lease();
             self.state = TaskState::Failed;
             self.failure_reason = Some(format!(
                 "Task rejected {max_cycles} times without resolution."
@@ -219,6 +223,7 @@ impl StateData {
                 cycles: self.review_cycles,
             })
         } else {
+            self.clear_lease();
             self.state = TaskState::Addressing;
             self.check_retries = 0;
             Ok(())
@@ -403,5 +408,88 @@ mod tests {
         assert!(!s.is_claimed());
         assert!(!s.is_claimed_by("executor:codex:1")); // expired = not claimed
         assert!(s.lease_expired());
+    }
+
+    #[test]
+    fn create_task_clears_lease() {
+        use chrono::Duration;
+        let mut s = idle();
+        s.claimed_by = Some("supervisor:claude-code:1".to_string());
+        s.lease_until = Some(Utc::now() + Duration::seconds(60));
+        s.last_heartbeat = Some(Utc::now());
+        s.create_task().unwrap();
+        assert!(s.claimed_by.is_none());
+        assert!(s.lease_until.is_none());
+        assert!(s.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn submit_clears_lease() {
+        use chrono::Duration;
+        let mut s = idle();
+        s.create_task().unwrap();
+        s.check_passed().unwrap();
+        s.claimed_by = Some("executor:codex:1".to_string());
+        s.lease_until = Some(Utc::now() + Duration::seconds(60));
+        s.last_heartbeat = Some(Utc::now());
+        s.submit().unwrap();
+        assert!(s.claimed_by.is_none());
+        assert!(s.lease_until.is_none());
+        assert!(s.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn approve_clears_lease() {
+        use chrono::Duration;
+        let mut s = idle();
+        s.create_task().unwrap();
+        s.check_passed().unwrap();
+        s.submit().unwrap();
+        s.claimed_by = Some("supervisor:claude-code:1".to_string());
+        s.lease_until = Some(Utc::now() + Duration::seconds(60));
+        s.last_heartbeat = Some(Utc::now());
+        s.approve().unwrap();
+        assert!(s.claimed_by.is_none());
+        assert!(s.lease_until.is_none());
+        assert!(s.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn reject_clears_lease() {
+        use chrono::Duration;
+        let mut s = idle();
+        s.create_task().unwrap();
+        s.check_passed().unwrap();
+        s.submit().unwrap();
+        s.claimed_by = Some("supervisor:claude-code:1".to_string());
+        s.lease_until = Some(Utc::now() + Duration::seconds(60));
+        s.last_heartbeat = Some(Utc::now());
+        s.reject(3).unwrap();
+        assert!(s.claimed_by.is_none());
+        assert!(s.lease_until.is_none());
+        assert!(s.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn reject_at_limit_clears_lease() {
+        use chrono::Duration;
+        let mut s = idle();
+        s.create_task().unwrap();
+        // Drive to the limit via two preceding reject cycles.
+        for _ in 0..2 {
+            s.check_passed().unwrap();
+            s.submit().unwrap();
+            s.reject(3).unwrap();
+        }
+        s.check_passed().unwrap();
+        s.submit().unwrap();
+        s.claimed_by = Some("supervisor:claude-code:1".to_string());
+        s.lease_until = Some(Utc::now() + Duration::seconds(60));
+        s.last_heartbeat = Some(Utc::now());
+        // This call hits the limit-exceeded (Err) branch.
+        let _ = s.reject(3);
+        assert!(s.claimed_by.is_none());
+        assert!(s.lease_until.is_none());
+        assert!(s.last_heartbeat.is_none());
     }
 }
