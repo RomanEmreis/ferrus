@@ -36,6 +36,18 @@ pub struct StateData {
     /// State to restore when `/answer` is called after an `/ask_human` fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_state: Option<TaskState>,
+    /// Agent that currently holds the task lease, e.g. "executor:codex:1".
+    /// None when the task is unclaimed or in a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    /// Timestamp after which the lease is considered expired.
+    /// None when unclaimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_until: Option<DateTime<Utc>>,
+    /// Timestamp of the last /heartbeat call.
+    /// None when unclaimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat: Option<DateTime<Utc>>,
 }
 
 const fn default_schema_version() -> u32 { 1 }
@@ -52,6 +64,9 @@ impl Default for StateData {
             updated_at: Utc::now(),
             owner_pid: std::process::id(),
             paused_state: None,
+            claimed_by: None,
+            lease_until: None,
+            last_heartbeat: None,
         }
     }
 }
@@ -69,6 +84,35 @@ pub enum TransitionError {
 }
 
 impl StateData {
+    /// True if a non-expired lease exists (`lease_until` is set and in the future).
+    #[allow(dead_code)]
+    pub fn is_claimed(&self) -> bool {
+        self.lease_until.is_some_and(|t| Utc::now() < t)
+    }
+
+    /// True if this specific agent holds a valid (non-expired) lease.
+    #[allow(dead_code)]
+    pub fn is_claimed_by(&self, agent_id: &str) -> bool {
+        self.claimed_by.as_deref() == Some(agent_id) && self.is_claimed()
+    }
+
+    /// True when `lease_until` is `None` or has been reached/passed.
+    /// Returns `true` for unclaimed state so `!state.is_claimed()` is the correct
+    /// claim check in `wait_for_task`.
+    #[allow(dead_code)]
+    pub fn lease_expired(&self) -> bool {
+        self.lease_until.is_none_or(|t| Utc::now() >= t)
+    }
+
+    /// Clear all lease fields. Called by transition methods that hand off ownership
+    /// between roles or to a terminal state.
+    #[allow(dead_code)]
+    pub fn clear_lease(&mut self) {
+        self.claimed_by = None;
+        self.lease_until = None;
+        self.last_heartbeat = None;
+    }
+
     /// `Idle → Executing`. Called by Supervisor via `/create_task`.
     pub fn create_task(&mut self) -> Result<(), TransitionError> {
         if self.state != TaskState::Idle {
@@ -324,5 +368,40 @@ mod tests {
         s.reset().unwrap();
         assert_eq!(s.state, TaskState::Idle);
         assert_eq!(s.check_retries, 0);
+    }
+
+    #[test]
+    fn lease_helpers_unclaimed() {
+        let s = StateData::default();
+        assert!(!s.is_claimed());
+        assert!(!s.is_claimed_by("executor:codex:1"));
+        assert!(s.lease_expired()); // None counts as expired
+    }
+
+    #[test]
+    fn lease_helpers_claimed() {
+        use chrono::Duration;
+        let mut s = StateData::default();
+        s.claimed_by = Some("executor:codex:1".to_string());
+        s.lease_until = Some(Utc::now() + Duration::seconds(60));
+        s.last_heartbeat = Some(Utc::now());
+
+        assert!(s.is_claimed());
+        assert!(s.is_claimed_by("executor:codex:1"));
+        assert!(!s.is_claimed_by("executor:codex:2"));
+        assert!(!s.lease_expired());
+    }
+
+    #[test]
+    fn lease_helpers_expired() {
+        use chrono::Duration;
+        let mut s = StateData::default();
+        s.claimed_by = Some("executor:codex:1".to_string());
+        s.lease_until = Some(Utc::now() - Duration::seconds(1)); // in the past
+        s.last_heartbeat = Some(Utc::now() - Duration::seconds(31));
+
+        assert!(!s.is_claimed());
+        assert!(!s.is_claimed_by("executor:codex:1")); // expired = not claimed
+        assert!(s.lease_expired());
     }
 }
