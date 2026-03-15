@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use super::machine::StateData;
@@ -33,6 +34,35 @@ pub async fn write_state(state: &StateData) -> Result<()> {
     tokio::fs::rename(&tmp, &dest)
         .await
         .with_context(|| format!("Failed to rename {} → {}", tmp.display(), dest.display()))
+}
+
+/// Open `.ferrus/STATE.lock` for use with `fs2::FileExt::lock_exclusive`.
+/// The file must exist (created by `ferrus init`). Returns an open `std::fs::File`.
+#[allow(dead_code)]
+pub fn open_lock_file() -> Result<File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .open(path("STATE.lock"))
+        .with_context(|| "Cannot open .ferrus/STATE.lock — run `ferrus init` first")
+}
+
+/// Set the three lease fields on `state` and persist to disk.
+/// Callers are responsible for holding the STATE.lock exclusive lock before
+/// calling this function. Does not acquire the lock itself.
+#[allow(dead_code)]
+pub async fn claim_state(
+    agent_id: &str,
+    ttl_secs: u64,
+    state: &mut StateData,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    state.claimed_by = Some(agent_id.to_string());
+    // chrono::Duration::try_seconds returns None only for values exceeding ~292 billion years;
+    // the unwrap_or fallback to Duration::MAX is unreachable under any realistic TTL config.
+    state.lease_until = Some(now + chrono::Duration::try_seconds(ttl_secs as i64)
+        .unwrap_or(chrono::Duration::MAX));
+    state.last_heartbeat = Some(now);
+    write_state(state).await
 }
 
 pub async fn read_task() -> Result<String> {
