@@ -2,9 +2,12 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Config {
     pub checks: ChecksConfig,
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub lease: LeaseConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,10 +30,32 @@ pub struct LimitsConfig {
     pub wait_timeout_secs: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct LeaseConfig {
+    /// How long (in seconds) a claimed lease is valid without renewal.
+    #[serde(default = "default_ttl_secs")]
+    pub ttl_secs: u64,
+    /// How often (in seconds) agents should call /heartbeat. Informational — not enforced server-side.
+    #[serde(default = "default_heartbeat_interval_secs")]
+    pub heartbeat_interval_secs: u64,
+}
+
+impl Default for LeaseConfig {
+    fn default() -> Self {
+        Self {
+            ttl_secs: default_ttl_secs(),
+            heartbeat_interval_secs: default_heartbeat_interval_secs(),
+        }
+    }
+}
+
 const fn default_max_check_retries() -> u32 { 5 }
 const fn default_max_review_cycles() -> u32 { 3 }
 const fn default_max_feedback_lines() -> usize { 30 }
 const fn default_wait_timeout_secs() -> u64 { 3600 }
+const fn default_ttl_secs() -> u64 { 90 }
+const fn default_heartbeat_interval_secs() -> u64 { 30 }
 
 impl Config {
     pub async fn load() -> Result<Self> {
@@ -38,5 +63,23 @@ impl Config {
             .await
             .context("ferrus.toml not found — run `ferrus init` first")?;
         toml::from_str(&contents).context("Failed to parse ferrus.toml")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lease_config_defaults_without_block() {
+        let toml = r#"
+[checks]
+commands = ["cargo test"]
+
+[limits]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.lease.ttl_secs, 90);
+        assert_eq!(config.lease.heartbeat_interval_secs, 30);
     }
 }
