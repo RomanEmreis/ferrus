@@ -1,0 +1,11 @@
+[mcp_servers.ferrus-executor-1]
+args = [
+    "serve",
+    "--role",
+    "executor",
+    "--agent-name",
+    "codex",
+    "--agent-index",
+    "1",
+]
+command = "ferrus"
