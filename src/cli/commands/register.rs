@@ -7,34 +7,35 @@ pub enum Agent {
     Codex,
 }
 
+impl Agent {
+    /// The string representation used in --agent-name CLI flags and claimed_by identifiers.
+    pub fn name(&self) -> &str {
+        match self {
+            Agent::ClaudeCode => "claude-code",
+            Agent::Codex => "codex",
+        }
+    }
+}
+
 pub async fn run(supervisor: Option<Agent>, executor: Option<Agent>) -> Result<()> {
-    let mut claude_roles: Vec<&str> = Vec::new();
-    let mut codex_roles: Vec<&str> = Vec::new();
-
-    if let Some(sup) = &supervisor {
-        match sup {
-            Agent::ClaudeCode => claude_roles.push("supervisor"),
-            Agent::Codex => codex_roles.push("supervisor"),
-        }
+    if let Some(agent) = &supervisor {
+        register_role("supervisor", agent).await?;
     }
-    if let Some(exe) = &executor {
-        match exe {
-            Agent::ClaudeCode => claude_roles.push("executor"),
-            Agent::Codex => codex_roles.push("executor"),
-        }
+    if let Some(agent) = &executor {
+        register_role("executor", agent).await?;
     }
-
-    if !claude_roles.is_empty() {
-        write_claude_code(&claude_roles).await?;
-    }
-    if !codex_roles.is_empty() {
-        write_codex(&codex_roles).await?;
-    }
-
     Ok(())
 }
 
-async fn write_claude_code(roles: &[&str]) -> Result<()> {
+async fn register_role(role: &str, agent: &Agent) -> Result<()> {
+    let agent_name = agent.name();
+    match agent {
+        Agent::ClaudeCode => register_claude_code(role, agent_name).await,
+        Agent::Codex => register_codex(role, agent_name).await,
+    }
+}
+
+async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
     let path = std::path::Path::new(".mcp.json");
 
     let mut root: serde_json::Value = if path.exists() {
@@ -54,27 +55,47 @@ async fn write_claude_code(roles: &[&str]) -> Result<()> {
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!(".mcp.json mcpServers is not a JSON object"))?;
 
-    for role in roles {
-        servers_obj.insert(
-            format!("ferrus-{role}"),
-            serde_json::json!({
-                "command": "ferrus",
-                "args": ["serve", "--role", role]
-            }),
-        );
-        println!("Registered ferrus-{role} in .mcp.json");
-    }
+    let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
+    let key = format!("ferrus-{role}-{index}");
+
+    servers_obj.insert(
+        key.clone(),
+        serde_json::json!({
+            "command": "ferrus",
+            "args": ["serve", "--role", role, "--agent-name", agent_name, "--agent-index", index.to_string()]
+        }),
+    );
+    println!("Registered {key} in .mcp.json (agent_id will be \"{role}:{agent_name}:{index}\")");
 
     let content = serde_json::to_string_pretty(&root)?;
     tokio::fs::write(path, content).await?;
-
     Ok(())
 }
 
-async fn write_codex(roles: &[&str]) -> Result<()> {
+/// Count existing entries in `mcpServers` whose args contain both
+/// `--role <role>` and `--agent-name <agent_name>`.
+fn count_mcp_entries(
+    servers: &serde_json::Map<String, serde_json::Value>,
+    role: &str,
+    agent_name: &str,
+) -> u32 {
+    servers
+        .values()
+        .filter(|entry| {
+            let args = match entry.get("args").and_then(|a| a.as_array()) {
+                Some(a) => a,
+                None => return false,
+            };
+            let strings: Vec<&str> = args.iter().filter_map(|v| v.as_str()).collect();
+            has_flag_pair(&strings, "--role", role)
+                && has_flag_pair(&strings, "--agent-name", agent_name)
+        })
+        .count() as u32
+}
+
+async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
     let dir = std::path::Path::new(".codex");
     tokio::fs::create_dir_all(dir).await?;
-
     let path = dir.join("config.toml");
 
     let mut table: toml::Table = if path.exists() {
@@ -90,26 +111,54 @@ async fn write_codex(roles: &[&str]) -> Result<()> {
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!(".codex/config.toml mcp_servers is not a table"))?;
 
-    for role in roles {
-        let mut entry = toml::Table::new();
-        entry.insert(
-            "command".to_string(),
-            toml::Value::String("ferrus".to_string()),
-        );
-        entry.insert(
-            "args".to_string(),
-            toml::Value::Array(vec![
-                toml::Value::String("serve".to_string()),
-                toml::Value::String("--role".to_string()),
-                toml::Value::String(role.to_string()),
-            ]),
-        );
-        mcp_servers.insert(format!("ferrus-{role}"), toml::Value::Table(entry));
-        println!("Registered ferrus-{role} in .codex/config.toml");
-    }
+    let index = count_codex_entries(mcp_servers, role, agent_name) + 1;
+    let key = format!("ferrus-{role}-{index}");
+
+    let mut entry = toml::Table::new();
+    entry.insert(
+        "command".to_string(),
+        toml::Value::String("ferrus".to_string()),
+    );
+    entry.insert(
+        "args".to_string(),
+        toml::Value::Array(vec![
+            toml::Value::String("serve".to_string()),
+            toml::Value::String("--role".to_string()),
+            toml::Value::String(role.to_string()),
+            toml::Value::String("--agent-name".to_string()),
+            toml::Value::String(agent_name.to_string()),
+            toml::Value::String("--agent-index".to_string()),
+            toml::Value::String(index.to_string()),
+        ]),
+    );
+    mcp_servers.insert(key.clone(), toml::Value::Table(entry));
+    println!(
+        "Registered {key} in .codex/config.toml (agent_id will be \"{role}:{agent_name}:{index}\")"
+    );
 
     let content = toml::to_string_pretty(&table)?;
     tokio::fs::write(&path, content).await?;
-
     Ok(())
+}
+
+/// Count existing entries in `mcp_servers` whose args array contains both
+/// `--role <role>` and `--agent-name <agent_name>`.
+fn count_codex_entries(servers: &toml::Table, role: &str, agent_name: &str) -> u32 {
+    servers
+        .values()
+        .filter(|entry| {
+            let args = match entry.get("args").and_then(|v| v.as_array()) {
+                Some(a) => a,
+                None => return false,
+            };
+            let strings: Vec<&str> = args.iter().filter_map(|v| v.as_str()).collect();
+            has_flag_pair(&strings, "--role", role)
+                && has_flag_pair(&strings, "--agent-name", agent_name)
+        })
+        .count() as u32
+}
+
+/// Returns true if `args` contains `flag` immediately followed by `value`.
+fn has_flag_pair(args: &[&str], flag: &str, value: &str) -> bool {
+    args.windows(2).any(|w| w[0] == flag && w[1] == value)
 }
