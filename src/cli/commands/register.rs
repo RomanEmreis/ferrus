@@ -69,6 +69,8 @@ async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
 
     let content = serde_json::to_string_pretty(&root)?;
     tokio::fs::write(path, content).await?;
+
+    append_to_claude_md(role).await?;
     Ok(())
 }
 
@@ -105,6 +107,11 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
         toml::Table::new()
     };
 
+    // Write role instructions only if not already customised.
+    table
+        .entry("instructions")
+        .or_insert_with(|| toml::Value::String(role_instructions(role)));
+
     let mcp_servers = table
         .entry("mcp_servers")
         .or_insert_with(|| toml::Value::Table(toml::Table::new()))
@@ -139,6 +146,76 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
     let content = toml::to_string_pretty(&table)?;
     tokio::fs::write(&path, content).await?;
     Ok(())
+}
+
+fn role_instructions(role: &str) -> String {
+    match role {
+        "executor" => concat!(
+            "You are a ferrus Executor. ",
+            "Your full workflow is in `.agents/skills/ferrus-executor/SKILL.md`. ",
+            "Start immediately: call `/wait_for_task` to claim the next task, implement the required changes, ",
+            "run `/check` until all checks pass, then `/submit`. Repeat the loop.",
+        )
+        .to_string(),
+        "supervisor" => concat!(
+            "You are a ferrus Supervisor. ",
+            "Your full workflow is in `.agents/skills/ferrus-supervisor/SKILL.md`. ",
+            "Invoke the `ferrus-supervisor` skill at session start and follow the supervisor workflow: ",
+            "create tasks for the Executor, wait for review submissions, then approve or reject them.",
+        )
+        .to_string(),
+        _ => format!(
+            "You are a ferrus agent with role '{role}'. \
+             See `.agents/skills/ferrus-{role}/SKILL.md` for your workflow.",
+        ),
+    }
+}
+
+async fn append_to_claude_md(role: &str) -> Result<()> {
+    let path = std::path::Path::new("CLAUDE.md");
+    let marker = format!("<!-- ferrus-{role}-instructions -->");
+
+    let existing = if path.exists() {
+        tokio::fs::read_to_string(path).await?
+    } else {
+        String::new()
+    };
+
+    if existing.contains(&marker) {
+        return Ok(()); // already present — don't duplicate
+    }
+
+    let section = claude_md_section(role, &marker);
+    let mut content = existing;
+    content.push_str(&section);
+    tokio::fs::write(path, content).await?;
+    println!("Appended {role} instructions to CLAUDE.md");
+    Ok(())
+}
+
+fn claude_md_section(role: &str, marker: &str) -> String {
+    match role {
+        "executor" => format!(
+            "\n{marker}\n\
+             ## Working as a Ferrus Executor\n\n\
+             If `ferrus-executor-*` is connected as an MCP server, invoke the `ferrus-executor` \
+             skill immediately and follow the autonomous loop: \
+             `/wait_for_task` → implement → `/check` → `/submit` → repeat.\n"
+        ),
+        "supervisor" => format!(
+            "\n{marker}\n\
+             ## Working as a Ferrus Supervisor\n\n\
+             If `ferrus-supervisor-*` is connected as an MCP server, invoke the `ferrus-supervisor` \
+             skill at session start and follow the supervisor workflow: create tasks for the Executor \
+             via `/create_task`, wait for submissions via `/wait_for_review`, then `/approve` or `/reject`.\n"
+        ),
+        _ => format!(
+            "\n{marker}\n\
+             ## Working as a Ferrus {role}\n\n\
+             If `ferrus-{role}-*` is connected as an MCP server, read \
+             `.agents/skills/ferrus-{role}/SKILL.md` for your workflow.\n"
+        ),
+    }
 }
 
 /// Count existing entries in `mcp_servers` whose args array contains both

@@ -174,3 +174,8 @@ src/
     wait_for_task.rs         # /wait_for_task — atomic claim loop (STATE.lock + fs2)
     wait_for_review.rs       # /wait_for_review — same pattern for Supervisor
 ```
+
+<!-- ferrus-supervisor-instructions -->
+## Working as a Ferrus Supervisor
+
+If `ferrus-supervisor-*` is connected as an MCP server, invoke the `ferrus-supervisor` skill at session start and follow the supervisor workflow: create tasks for the Executor via `/create_task`, wait for submissions via `/wait_for_review`, then `/approve` or `/reject`.
