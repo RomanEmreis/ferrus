@@ -23,8 +23,18 @@ cargo check            # fast type-check without producing a binary
 ## CLI
 
 ```sh
-ferrus init [--agents-path <path>]   # scaffold ferrus.toml, .ferrus/, and skill files (default: .agents)
-ferrus serve [--role supervisor|executor]  # start the MCP server on stdio
+ferrus init [--agents-path <path>]
+    # scaffold ferrus.toml, .ferrus/ (incl. STATE.lock), and skill files (default: .agents)
+
+ferrus serve [--role supervisor|executor] [--agent-name <name>] [--agent-index <n>]
+    # start the MCP server on stdio
+    # --agent-name / --agent-index are baked into the claimed_by field (e.g. "executor:codex:1")
+    # defaults: agent-name=unknown, agent-index=0
+
+ferrus register [--supervisor <agent>] [--executor <agent>]
+    # write MCP config for claude-code (.mcp.json) or codex (.codex/config.toml)
+    # auto-assigns --agent-index; at least one flag required
+    # e.g. ferrus register --supervisor claude-code --executor codex
 ```
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity.
@@ -45,6 +55,10 @@ max_check_retries = 5    # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
 max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
 wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
+
+[lease]
+ttl_secs = 90            # how long a claimed lease is valid without renewal
+heartbeat_interval_secs = 30  # how often agents should call /heartbeat
 ```
 
 ## Skill Files
@@ -84,6 +98,7 @@ wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
+| `/heartbeat` | any claimed | — | Renew lease; call every ~30s while working |
 | `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman (fallback) | Ask the human a question; uses MCP elicitation when supported, otherwise pauses to AwaitingHuman |
 | `/answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `/status` | any | — | Print current state + retry counters |
@@ -131,7 +146,8 @@ Any active state (Executing, Addressing, Checking, Reviewing) can pause to `Awai
 
 | File | Contents |
 |---|---|
-| `STATE.json` | Current `TaskState`, retry/cycle counters, failure reason, schema version, last-write timestamp and PID |
+| `STATE.json` | Current `TaskState`, lease fields (`claimed_by`, `lease_until`, `last_heartbeat`), retry/cycle counters, failure reason, schema version, last-write timestamp and PID |
+| `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `TASK.md` | Task description written by Supervisor |
 | `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
@@ -147,11 +163,14 @@ Any active state (Executing, Addressing, Checking, Reviewing) can pause to `Awai
 ```
 src/
   main.rs                    # CLI entry, tracing init
-  cli/                       # clap subcommands (init, serve)
-  config/mod.rs              # Deserialize ferrus.toml
-  state/machine.rs           # TaskState enum + transition methods
-  state/store.rs             # Async read/write of .ferrus/ files
+  cli/                       # clap subcommands (init, serve, register)
+  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig)
+  state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
+  state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   checks/runner.rs           # Spawn check subprocesses, collect output
-  server/mod.rs              # neva App setup (stdio transport)
+  server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
+    heartbeat.rs             # /heartbeat — lease renewal
+    wait_for_task.rs         # /wait_for_task — atomic claim loop (STATE.lock + fs2)
+    wait_for_review.rs       # /wait_for_review — same pattern for Supervisor
 ```
