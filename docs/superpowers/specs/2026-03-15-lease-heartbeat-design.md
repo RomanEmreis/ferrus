@@ -100,6 +100,34 @@ The one intentional exception is `/reset`: `state.reset()` calls `*self = Self::
 
 ---
 
+## Lease Ownership by Phase
+
+| State | Lease owner |
+|---|---|
+| `Executing`, `Addressing`, `Checking` | Executor |
+| `Reviewing` | Supervisor |
+| `Complete`, `Failed`, `Idle` | None — must always be unclaimed |
+
+On every transition between Executor-owned and Supervisor-owned phases the existing lease must be cleared before the next side can claim. A Supervisor must never find an Executor's lease still set when it tries to claim `Reviewing`, and vice versa.
+
+---
+
+## Lease Reset on Transitions
+
+The following tools must clear `claimed_by`, `lease_until`, and `last_heartbeat` (set all to `None`) before writing the new state:
+
+| Tool | Transition | Reason |
+|---|---|---|
+| `/submit` | `Checking → Reviewing` | Hands off from Executor to Supervisor |
+| `/reject` | `Reviewing → Addressing` | Hands off from Supervisor back to Executor |
+| `/approve` | `Reviewing → Complete` | Task finished — no owner needed |
+| `/reset` | `Failed → Idle` | Already handled by `StateData::default()` in `reset()` |
+| `/create_task` | `Idle → Executing` | Ensures a new task always starts unclaimed |
+
+`/check` does **not** clear the lease — it transitions within the Executor's owned phase (`Executing`/`Addressing` → `Checking`) and the same Executor remains the claimant throughout.
+
+---
+
 ## File Locking Strategy
 
 Atomic claiming uses a dedicated lock file `.ferrus/STATE.lock` rather than locking `STATE.json` directly. This avoids a race condition: `write_state` writes to `STATE.json.tmp` then renames it to `STATE.json`, which replaces the inode. Any waiter that acquired an `flock` on the old `STATE.json` inode would be holding a lock on a file that no longer exists at that path, undermining mutual exclusion.
