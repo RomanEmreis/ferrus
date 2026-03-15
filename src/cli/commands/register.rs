@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
@@ -38,6 +38,13 @@ async fn register_role(role: &str, agent: &Agent) -> Result<()> {
 async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
     let path = std::path::Path::new(".mcp.json");
 
+    // Use the absolute path of the running binary so Claude Code can find it
+    // regardless of its PATH environment (which may not include ~/.cargo/bin).
+    let command = std::env::current_exe()
+        .context("Failed to resolve current executable path")?
+        .to_string_lossy()
+        .into_owned();
+
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(path).await?;
         serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
@@ -61,7 +68,7 @@ async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
     servers_obj.insert(
         key.clone(),
         serde_json::json!({
-            "command": "ferrus",
+            "command": command,
             "args": ["serve", "--role", role, "--agent-name", agent_name, "--agent-index", index.to_string()]
         }),
     );

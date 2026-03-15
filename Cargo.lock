@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "ferrus"
-version = "0.1.1-alpha.5"
+version = "0.1.1-alpha.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1061,9 +1061,9 @@ dependencies = [
 
 [[package]]
 name = "neva"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3a5af94e8d737e6aa5f57c7a47e775829629eed084db20454c68918166ff0f9"
+checksum = "852be07ca20c864aac2653d82b2ead6389fc4264acd3b8c9d405a512f237121a"
 dependencies = [
  "base64",
  "bytes",
@@ -1089,9 +1089,9 @@ dependencies = [
 
 [[package]]
 name = "neva_macros"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc965c467298432e3cf046bdb64d0d4f783f8128a59b5e7f9d5947521a5e97a7"
+checksum = "080d0c9b3539c3b7e678d4f619932157a8a96bb5c29b7a07f0015fb16be90ed0"
 dependencies = [
  "proc-macro2",
  "quote",

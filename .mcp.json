@@ -10,7 +10,7 @@
         "--agent-index",
         "1"
       ],
-      "command": "ferrus"
+      "command": "/tmp/ferrus-mcp-debug.sh"
     }
   }
 }

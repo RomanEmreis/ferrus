@@ -1,6 +1,6 @@
 [package]
 name = "ferrus"
-version = "0.1.1-alpha.5"
+version = "0.1.1-alpha.8"
 edition = "2021"
 license = "Apache-2.0"
 description = "AI orchestration MCP server — shared coordination layer for Supervisor + Executor agents"
@@ -10,7 +10,7 @@ name = "ferrus"
 path = "src/main.rs"
 
 [dependencies]
-neva = { version = "0.2.7", features = ["server-full"] }
+neva = { version = "0.2.8", features = ["server-full"] }
 tokio = { version = "1.50.0", features = ["full"] }
 clap = { version = "4.6.0", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -21,4 +21,4 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 chrono = { version = "0.4.44", features = ["serde"] }
-fs2 = "0.4"
+fs2 = "0.4.3"
