@@ -28,7 +28,10 @@ pub async fn run_checks(commands: &[String]) -> Result<CheckResult> {
         results.push(result);
     }
 
-    Ok(CheckResult { passed, commands: results })
+    Ok(CheckResult {
+        passed,
+        commands: results,
+    })
 }
 
 async fn run_command(cmd: &str) -> Result<CommandResult> {

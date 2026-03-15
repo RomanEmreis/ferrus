@@ -6,8 +6,7 @@ use crate::state::store;
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Ask the human a question and wait for a response. \
+pub const DESCRIPTION: &str = "Ask the human a question and wait for a response. \
      Uses MCP elicitation when supported by the client (response is returned inline). \
      Falls back to writing the question to QUESTION.md and transitioning to AwaitingHuman \
      state when elicitation is unavailable — the human must then call /answer to resume. \

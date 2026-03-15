@@ -3,7 +3,10 @@ use neva::prelude::*;
 use crate::state::store;
 
 fn to_err(e: impl std::fmt::Display) -> Error {
-    Error::new(ErrorCode::InternalError, std::io::Error::other(e.to_string()))
+    Error::new(
+        ErrorCode::InternalError,
+        std::io::Error::other(e.to_string()),
+    )
 }
 
 /// Bundles state + task + feedback + review notes for the Executor.
@@ -30,7 +33,9 @@ pub async fn executor_context() -> Result<GetPromptResult, Error> {
     }
 
     Ok(GetPromptResult::new()
-        .with_descr("Executor task context: state, task description, check feedback, and review notes")
+        .with_descr(
+            "Executor task context: state, task description, check feedback, and review notes",
+        )
         .with_message(PromptMessage::user().with(sections.join("\n\n---\n\n"))))
 }
 

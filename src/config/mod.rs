@@ -50,12 +50,24 @@ impl Default for LeaseConfig {
     }
 }
 
-const fn default_max_check_retries() -> u32 { 5 }
-const fn default_max_review_cycles() -> u32 { 3 }
-const fn default_max_feedback_lines() -> usize { 30 }
-const fn default_wait_timeout_secs() -> u64 { 3600 }
-const fn default_ttl_secs() -> u64 { 90 }
-const fn default_heartbeat_interval_secs() -> u64 { 30 }
+const fn default_max_check_retries() -> u32 {
+    5
+}
+const fn default_max_review_cycles() -> u32 {
+    3
+}
+const fn default_max_feedback_lines() -> usize {
+    30
+}
+const fn default_wait_timeout_secs() -> u64 {
+    3600
+}
+const fn default_ttl_secs() -> u64 {
+    90
+}
+const fn default_heartbeat_interval_secs() -> u64 {
+    30
+}
 
 impl Config {
     pub async fn load() -> Result<Self> {

@@ -2,7 +2,10 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::{config::Config, state::{machine::TaskState, store}};
+use crate::{
+    config::Config,
+    state::{machine::TaskState, store},
+};
 
 use super::tool_err;
 

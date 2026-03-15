@@ -50,10 +50,15 @@ impl Cli {
     pub async fn run(self) -> Result<()> {
         match self.command {
             Commands::Init { agents_path } => commands::init::run(agents_path).await,
-            Commands::Serve { role, agent_name, agent_index } => {
-                commands::serve::run(role, agent_name, agent_index).await
-            }
-            Commands::Register { supervisor, executor } => {
+            Commands::Serve {
+                role,
+                agent_name,
+                agent_index,
+            } => commands::serve::run(role, agent_name, agent_index).await,
+            Commands::Register {
+                supervisor,
+                executor,
+            } => {
                 if supervisor.is_none() && executor.is_none() {
                     anyhow::bail!("At least one of --supervisor or --executor must be specified");
                 }

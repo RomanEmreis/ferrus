@@ -80,7 +80,8 @@ async fn run(_server_agent_id: &str, agent_id: &str) -> Result<String> {
             "status": "error",
             "code": "expired",
             "message": "Your lease expired before renewal"
-        }).to_string());
+        })
+        .to_string());
     }
 
     // Step 3: state must be leasable.
@@ -90,7 +91,8 @@ async fn run(_server_agent_id: &str, agent_id: &str) -> Result<String> {
             "status": "error",
             "code": "invalid_state",
             "message": format!("State {:?} cannot hold a lease", state.state)
-        }).to_string());
+        })
+        .to_string());
     }
 
     // Renew the lease. `claim_state` mutates `state` in place (sets claimed_by,
@@ -106,5 +108,6 @@ async fn run(_server_agent_id: &str, agent_id: &str) -> Result<String> {
         "status": "renewed",
         "claimed_by": agent_id,
         "lease_until": renewed_until,
-    }).to_string())
+    })
+    .to_string())
 }

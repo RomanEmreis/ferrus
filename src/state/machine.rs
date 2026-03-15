@@ -50,8 +50,12 @@ pub struct StateData {
     pub last_heartbeat: Option<DateTime<Utc>>,
 }
 
-const fn default_schema_version() -> u32 { 1 }
-const fn default_updated_at() -> DateTime<Utc> { DateTime::UNIX_EPOCH }
+const fn default_schema_version() -> u32 {
+    1
+}
+const fn default_updated_at() -> DateTime<Utc> {
+    DateTime::UNIX_EPOCH
+}
 
 impl Default for StateData {
     fn default() -> Self {
@@ -74,7 +78,10 @@ impl Default for StateData {
 #[derive(Debug, Error)]
 pub enum TransitionError {
     #[error("cannot {action} from state {state:?} — current state is invalid for this operation")]
-    InvalidTransition { action: &'static str, state: TaskState },
+    InvalidTransition {
+        action: &'static str,
+        state: TaskState,
+    },
 
     #[error("check retry limit reached ({retries} consecutive failures) — state is now Failed; use /reset to recover")]
     CheckLimitExceeded { retries: u32 },

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use neva::App;
 use neva::types::ToolSchema;
+use neva::App;
 
 mod prompts;
 mod resources;

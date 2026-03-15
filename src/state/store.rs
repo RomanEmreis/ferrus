@@ -50,17 +50,13 @@ pub fn open_lock_file() -> Result<File> {
 /// Callers are responsible for holding the STATE.lock exclusive lock before
 /// calling this function. Does not acquire the lock itself.
 #[allow(dead_code)]
-pub async fn claim_state(
-    agent_id: &str,
-    ttl_secs: u64,
-    state: &mut StateData,
-) -> Result<()> {
+pub async fn claim_state(agent_id: &str, ttl_secs: u64, state: &mut StateData) -> Result<()> {
     let now = chrono::Utc::now();
     state.claimed_by = Some(agent_id.to_string());
     // chrono::Duration::try_seconds returns None only for values exceeding ~292 billion years;
     // the unwrap_or fallback to Duration::MAX is unreachable under any realistic TTL config.
-    state.lease_until = Some(now + chrono::Duration::try_seconds(ttl_secs as i64)
-        .unwrap_or(chrono::Duration::MAX));
+    state.lease_until =
+        Some(now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX));
     state.last_heartbeat = Some(now);
     write_state(state).await
 }

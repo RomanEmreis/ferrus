@@ -52,6 +52,8 @@ async fn run(content: String) -> Result<String> {
     store::write_state(&state).await?;
 
     info!("Work submitted for review, state → Reviewing");
-    Ok("Submitted for review. State: Reviewing. The Supervisor can now call /review_pending."
-        .to_string())
+    Ok(
+        "Submitted for review. State: Reviewing. The Supervisor can now call /review_pending."
+            .to_string(),
+    )
 }

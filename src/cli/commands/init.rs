@@ -278,7 +278,8 @@ async fn create_ferrus_toml(agents_path: &str) -> Result<()> {
         println!("ferrus.toml already exists, skipping.");
     } else {
         // Substitute the agents path into the template
-        let content = DEFAULT_FERRUS_TOML.replace(r#"path = ".agents""#, &format!(r#"path = "{agents_path}""#));
+        let content = DEFAULT_FERRUS_TOML
+            .replace(r#"path = ".agents""#, &format!(r#"path = "{agents_path}""#));
         tokio::fs::write(path, content)
             .await
             .context("Failed to write ferrus.toml")?;
@@ -301,7 +302,14 @@ async fn create_ferrus_dir() -> Result<()> {
         println!("Created .ferrus/STATE.json");
     }
 
-    for filename in ["TASK.md", "FEEDBACK.md", "REVIEW.md", "SUBMISSION.md", "QUESTION.md", "ANSWER.md"] {
+    for filename in [
+        "TASK.md",
+        "FEEDBACK.md",
+        "REVIEW.md",
+        "SUBMISSION.md",
+        "QUESTION.md",
+        "ANSWER.md",
+    ] {
         let path = dir.join(filename);
         if !path.exists() {
             tokio::fs::write(&path, "")
