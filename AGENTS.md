@@ -49,14 +49,22 @@ src/
 
 **File locking**: `wait_for_task`, `wait_for_review`, and `/heartbeat` acquire an exclusive `flock` on `.ferrus/STATE.lock` (not `STATE.json`) for their read-check-write cycle. Use `store::open_lock_file()` + `tokio::task::spawn_blocking` for the blocking lock call.
 
-## Working as an Executor via ferrus
+## Ferrus Executor
 
-If you are running as an Executor under ferrus orchestration, your skill file at `.agents/skills/ferrus-executor/SKILL.md` describes your full workflow. In brief:
+This repository is orchestrated by Ferrus.
 
-1. Call `/wait_for_task` — returns `{"status":"claimed", "task":"...", ...}` or `{"status":"timeout", "state":"..."}`
-2. Implement the changes described in `task`
-3. Call `/heartbeat` approximately every 30 seconds to keep your lease alive
-4. Call `/check` — fix failures and repeat until all checks pass
-5. Call `/submit` with a summary, verification steps, and any known limitations
+Executor agents must not begin work until a task is claimed.
 
-Read `.agents/skills/ferrus-executor/SKILL.md` for the authoritative workflow.
+**First action:** call MCP tool `/wait_for_task`.
+
+Do not explore the repository before claiming a task.
+
+Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
+
+## Ferrus Supervisor
+
+Supervisor agents must not create tasks without first checking the current state.
+
+**First action:** call MCP tool `/status`.
+
+Then follow `.agents/skills/ferrus-supervisor/SKILL.md` — create a task if state is `Idle`, or pick up the review flow if a task is already in progress.

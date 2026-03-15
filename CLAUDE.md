@@ -176,6 +176,12 @@ src/
 ```
 
 <!-- ferrus-supervisor-instructions -->
-## Working as a Ferrus Supervisor
+## Ferrus Supervisor
 
-If `ferrus-supervisor-*` is connected as an MCP server, invoke the `ferrus-supervisor` skill at session start and follow the supervisor workflow: create tasks for the Executor via `/create_task`, wait for submissions via `/wait_for_review`, then `/approve` or `/reject`.
+This repository is orchestrated by Ferrus.
+
+Supervisor agents must not create tasks without first checking the current state.
+
+**First action:** call MCP tool `/status`.
+
+Then follow `.agents/skills/ferrus-supervisor/SKILL.md` — create a task if state is `Idle`, or pick up the review flow if a task is already in progress.

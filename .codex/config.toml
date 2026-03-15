@@ -1,5 +1,3 @@
-instructions = "You are a ferrus Executor. Your full workflow is in `.agents/skills/ferrus-executor/SKILL.md`. Start immediately: call `/wait_for_task` to claim the next task, implement the required changes, run `/check` until all checks pass, then `/submit`. Repeat the loop."
-
 [mcp_servers.ferrus-executor-1]
 args = [
     "serve",
