@@ -1,5 +1,7 @@
 use anyhow::Result;
+use fs2::FileExt;
 use neva::prelude::*;
+use serde_json::json;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::info;
@@ -12,62 +14,78 @@ use crate::{
 use super::tool_err;
 
 pub const DESCRIPTION: &str =
-    "Block until the Executor submits work for review, then return the full submission \
-     context. Polls STATE.json until the state is Reviewing, then returns the task, \
-     submission notes, any check feedback, and any prior review notes. \
+    "Block until the Executor submits work for review, then atomically claim the review and \
+     return the full submission context. \
+     Returns a JSON object: {\"status\":\"claimed\", \"claimed_by\":\"...\", \"lease_until\":\"...\", \
+     \"state\":\"Reviewing\", \"task\":\"...\", \"submission\":\"...\", \"feedback\":\"...\", \"review\":\"...\"} \
+     when a submission is ready, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \
      Times out after `wait_timeout_secs` (see ferrus.toml). \
      Returns immediately if a submission is already pending — safe to call on restart.";
 
-pub async fn handler() -> Result<String, Error> {
-    run().await.map_err(tool_err)
+pub async fn handler(agent_id: &str) -> Result<String, Error> {
+    run(agent_id).await.map_err(tool_err)
 }
 
-async fn run() -> Result<String> {
+async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let timeout = Duration::from_secs(config.limits.wait_timeout_secs);
+    let ttl_secs = config.lease.ttl_secs;
     let start = Instant::now();
 
     loop {
-        let state = store::read_state().await?;
+        let (claimed, _) = {
+            let lock_file = store::open_lock_file()?;
+            let lock_file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+                lock_file.lock_exclusive().map_err(anyhow::Error::from)?;
+                Ok(lock_file)
+            })
+            .await??;
 
-        if state.state == TaskState::Reviewing {
+            let mut state = store::read_state().await?;
+
+            let claimable = state.state == TaskState::Reviewing;
+            let claimed = if claimable && !state.is_claimed() {
+                store::claim_state(agent_id, ttl_secs, &mut state).await?;
+                true
+            } else {
+                claimable && state.is_claimed_by(agent_id)
+            };
+
+            drop(lock_file);
+            (claimed, state)
+        };
+
+        if claimed {
             let task = store::read_task().await?;
             let submission = store::read_submission().await?;
             let feedback = store::read_feedback().await?;
             let review = store::read_review().await?;
+            let state = store::read_state().await?;
 
-            let mut response = format!("## Task\n\n{task}\n");
-
-            if !submission.trim().is_empty() {
-                response.push_str("\n## Submission Notes\n\n");
-                response.push_str(&submission);
-            }
-            if !feedback.trim().is_empty() {
-                response.push_str("\n## Last Check Output\n\n");
-                response.push_str(&feedback);
-            }
-            if !review.trim().is_empty() {
-                response.push_str("\n## Previous Review Notes\n\n");
-                response.push_str(&review);
-            }
-            response.push_str(&format!(
-                "\n---\nReview cycles used: {}/{}  \nCheck retries used: {}/{}",
-                state.review_cycles,
-                config.limits.max_review_cycles,
-                state.check_retries,
-                config.limits.max_check_retries,
-            ));
-
-            info!("Supervisor woke up: submission ready for review");
-            return Ok(response);
+            info!(agent_id, "Supervisor claimed review");
+            let response = json!({
+                "status": "claimed",
+                "claimed_by": state.claimed_by,
+                "lease_until": state.lease_until,
+                "state": format!("{:?}", state.state),
+                "task": task,
+                "submission": submission,
+                "feedback": feedback,
+                "review": review,
+                "review_cycles_used": state.review_cycles,
+                "check_retries_used": state.check_retries,
+            });
+            return Ok(response.to_string());
         }
 
         if start.elapsed() >= timeout {
-            anyhow::bail!(
-                "Timed out after {}s waiting for a submission. Current state: {:?}.",
-                config.limits.wait_timeout_secs,
-                state.state
-            );
+            let state = store::read_state().await?;
+            info!("wait_for_review timed out, state: {:?}", state.state);
+            let response = json!({
+                "status": "timeout",
+                "state": format!("{:?}", state.state),
+            });
+            return Ok(response.to_string());
         }
 
         sleep(Duration::from_millis(500)).await;

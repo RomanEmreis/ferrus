@@ -3,6 +3,7 @@ pub mod approve;
 pub mod ask_human;
 pub mod check;
 pub mod create_task;
+pub mod heartbeat;
 pub mod next_task;
 pub mod reject;
 pub mod reset;

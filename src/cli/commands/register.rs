@@ -7,17 +7,21 @@ pub enum Agent {
     Codex,
 }
 
-pub async fn run(supervisor: Agent, executor: Agent) -> Result<()> {
+pub async fn run(supervisor: Option<Agent>, executor: Option<Agent>) -> Result<()> {
     let mut claude_roles: Vec<&str> = Vec::new();
     let mut codex_roles: Vec<&str> = Vec::new();
 
-    match &supervisor {
-        Agent::ClaudeCode => claude_roles.push("supervisor"),
-        Agent::Codex => codex_roles.push("supervisor"),
+    if let Some(sup) = &supervisor {
+        match sup {
+            Agent::ClaudeCode => claude_roles.push("supervisor"),
+            Agent::Codex => codex_roles.push("supervisor"),
+        }
     }
-    match &executor {
-        Agent::ClaudeCode => claude_roles.push("executor"),
-        Agent::Codex => codex_roles.push("executor"),
+    if let Some(exe) = &executor {
+        match exe {
+            Agent::ClaudeCode => claude_roles.push("executor"),
+            Agent::Codex => codex_roles.push("executor"),
+        }
     }
 
     if !claude_roles.is_empty() {
