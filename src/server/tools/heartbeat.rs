@@ -36,11 +36,11 @@ const LEASABLE_STATES: &[TaskState] = &[
     TaskState::Reviewing,
 ];
 
-pub async fn handler(server_agent_id: &str, agent_id: String) -> Result<String, Error> {
-    run(server_agent_id, &agent_id).await.map_err(tool_err)
+pub async fn handler(agent_id: String) -> Result<String, Error> {
+    run(&agent_id).await.map_err(tool_err)
 }
 
-async fn run(_server_agent_id: &str, agent_id: &str) -> Result<String> {
+async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let ttl_secs = config.lease.ttl_secs;
 
