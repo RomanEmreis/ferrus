@@ -26,7 +26,7 @@ heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 
 const SUPERVISOR_SKILL: &str = r#"---
 name: ferrus-supervisor
-description: Use when operating as a Supervisor in a ferrus-orchestrated project — create tasks, wait for review, approve or reject Executor submissions
+description: "Use when operating as a Supervisor in a ferrus-orchestrated project — create tasks, wait for review, approve or reject Executor submissions"
 ---
 
 # Ferrus Supervisor
@@ -59,7 +59,7 @@ otherwise blocks until the Executor submits.
 
 const SUPERVISOR_ROLE: &str = r#"---
 name: ferrus-supervisor-role
-description: Supervisor role definition and boundaries — responsibilities, workflow, and constraints for the Supervisor in a ferrus-orchestrated project
+description: "Supervisor role definition and boundaries — responsibilities, workflow, and constraints for the Supervisor in a ferrus-orchestrated project"
 ---
 
 # Supervisor Role
@@ -97,7 +97,7 @@ MCP elicitation is used where supported; otherwise state pauses and the human ca
 
 const EXECUTOR_SKILL: &str = r#"---
 name: ferrus-executor
-description: Use when operating as an Executor in a ferrus-orchestrated project — autonomous loop: wait_for_task, implement, heartbeat, check, submit
+description: "Use when operating as an Executor in a ferrus-orchestrated project — autonomous loop: wait_for_task, implement, heartbeat, check, submit"
 ---
 
 # Ferrus Executor
@@ -127,7 +127,7 @@ See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 
 const EXECUTOR_ROLE: &str = r#"---
 name: ferrus-executor-role
-description: Executor role definition and boundaries — responsibilities, workflow, and constraints for the Executor in a ferrus-orchestrated project
+description: "Executor role definition and boundaries — responsibilities, workflow, and constraints for the Executor in a ferrus-orchestrated project"
 ---
 
 # Executor Role
@@ -167,7 +167,7 @@ MCP elicitation is used where supported; otherwise state pauses and the human ca
 
 const FERRUS_SKILL: &str = r#"---
 name: ferrus
-description: Use when working on a project that uses ferrus for AI agent orchestration — full tool reference, state machine, resources, prompts, and config
+description: "Use when working on a project that uses ferrus for AI agent orchestration — full tool reference, state machine, resources, prompts, and config"
 ---
 
 # Ferrus
