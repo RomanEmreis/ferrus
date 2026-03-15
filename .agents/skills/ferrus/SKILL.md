@@ -1,3 +1,8 @@
+---
+name: ferrus
+description: Use when working on a project that uses ferrus for AI agent orchestration — full tool reference, state machine, resources, prompts, and config
+---
+
 # Ferrus
 
 ferrus is an MCP server that coordinates AI agents in a **Supervisor–Executor** workflow.

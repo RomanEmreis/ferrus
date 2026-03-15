@@ -1,3 +1,8 @@
+---
+name: ferrus-supervisor-role
+description: Supervisor role definition and boundaries — responsibilities, workflow, and constraints for the Supervisor in a ferrus-orchestrated project
+---
+
 # Supervisor Role
 
 You are the **Supervisor** in this ferrus-orchestrated project.

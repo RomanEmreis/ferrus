@@ -1,3 +1,8 @@
+---
+name: ferrus-executor-role
+description: Executor role definition and boundaries — responsibilities, workflow, and constraints for the Executor in a ferrus-orchestrated project
+---
+
 # Executor Role
 
 You are the **Executor** in this ferrus-orchestrated project.

@@ -1,3 +1,8 @@
+---
+name: ferrus-supervisor
+description: Use when operating as a Supervisor in a ferrus-orchestrated project — create tasks, wait for review, approve or reject Executor submissions
+---
+
 # Ferrus Supervisor
 
 You are operating as a **Supervisor** in a ferrus-orchestrated project.

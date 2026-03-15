@@ -1,3 +1,8 @@
+---
+name: ferrus-executor
+description: Use when operating as an Executor in a ferrus-orchestrated project — autonomous loop: wait_for_task, implement, heartbeat, check, submit
+---
+
 # Ferrus Executor
 
 You are operating as an **Executor** in a ferrus-orchestrated project.
