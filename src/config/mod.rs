@@ -94,4 +94,53 @@ commands = ["cargo test"]
         assert_eq!(config.lease.ttl_secs, 90);
         assert_eq!(config.lease.heartbeat_interval_secs, 30);
     }
+
+    #[test]
+    fn limits_config_defaults_without_values() {
+        let toml = r#"
+[checks]
+commands = ["cargo test"]
+
+[limits]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(config.limits.max_check_retries, 5);
+        assert_eq!(config.limits.max_review_cycles, 3);
+        assert_eq!(config.limits.max_feedback_lines, 30);
+        assert_eq!(config.limits.wait_timeout_secs, 3600);
+    }
+
+    #[test]
+    fn config_round_trips_explicit_values() {
+        let toml = r#"
+[checks]
+commands = ["cargo test", "cargo clippy -- -D warnings"]
+
+[limits]
+max_check_retries = 7
+max_review_cycles = 4
+max_feedback_lines = 12
+wait_timeout_secs = 900
+
+[lease]
+ttl_secs = 120
+heartbeat_interval_secs = 45
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.checks.commands,
+            vec![
+                "cargo test".to_string(),
+                "cargo clippy -- -D warnings".to_string()
+            ]
+        );
+        assert_eq!(config.limits.max_check_retries, 7);
+        assert_eq!(config.limits.max_review_cycles, 4);
+        assert_eq!(config.limits.max_feedback_lines, 12);
+        assert_eq!(config.limits.wait_timeout_secs, 900);
+        assert_eq!(config.lease.ttl_secs, 120);
+        assert_eq!(config.lease.heartbeat_interval_secs, 45);
+    }
 }

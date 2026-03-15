@@ -294,6 +294,13 @@ mod tests {
         StateData::default()
     }
 
+    fn state_in(state: TaskState) -> StateData {
+        StateData {
+            state,
+            ..StateData::default()
+        }
+    }
+
     #[test]
     fn create_task_from_idle() {
         let mut s = idle();
@@ -498,5 +505,110 @@ mod tests {
         assert!(s.claimed_by.is_none());
         assert!(s.lease_until.is_none());
         assert!(s.last_heartbeat.is_none());
+    }
+
+    #[test]
+    fn ask_human_from_valid_states_transitions_to_awaiting_human() {
+        for state in [
+            TaskState::Executing,
+            TaskState::Addressing,
+            TaskState::Checking,
+            TaskState::Reviewing,
+        ] {
+            let mut s = state_in(state.clone());
+            let paused = s.ask_human().unwrap();
+
+            assert_eq!(paused, state);
+            assert_eq!(s.state, TaskState::AwaitingHuman);
+            assert_eq!(s.paused_state, Some(paused));
+        }
+    }
+
+    #[test]
+    fn ask_human_from_invalid_states_fails() {
+        for state in [
+            TaskState::Idle,
+            TaskState::Complete,
+            TaskState::Failed,
+            TaskState::AwaitingHuman,
+        ] {
+            let mut s = state_in(state.clone());
+            let err = s.ask_human().unwrap_err();
+
+            assert!(matches!(
+                err,
+                TransitionError::InvalidTransition {
+                    action: "ask_human",
+                    state: err_state,
+                } if err_state == state
+            ));
+        }
+    }
+
+    #[test]
+    fn answer_restores_paused_state_and_clears_paused_state() {
+        for paused in [
+            TaskState::Executing,
+            TaskState::Addressing,
+            TaskState::Checking,
+            TaskState::Reviewing,
+        ] {
+            let mut s = state_in(TaskState::AwaitingHuman);
+            s.paused_state = Some(paused.clone());
+
+            let resumed = s.answer().unwrap();
+
+            assert_eq!(resumed, paused);
+            assert_eq!(s.state, paused);
+            assert!(s.paused_state.is_none());
+        }
+    }
+
+    #[test]
+    fn answer_from_non_awaiting_human_state_fails() {
+        for state in [
+            TaskState::Idle,
+            TaskState::Executing,
+            TaskState::Checking,
+            TaskState::Reviewing,
+            TaskState::Addressing,
+            TaskState::Complete,
+            TaskState::Failed,
+        ] {
+            let mut s = state_in(state.clone());
+            let err = s.answer().unwrap_err();
+
+            assert!(matches!(
+                err,
+                TransitionError::InvalidTransition {
+                    action: "answer",
+                    state: err_state,
+                } if err_state == state
+            ));
+        }
+    }
+
+    #[test]
+    fn answer_without_paused_state_falls_back_to_idle() {
+        let mut s = state_in(TaskState::AwaitingHuman);
+
+        let resumed = s.answer().unwrap();
+
+        assert_eq!(resumed, TaskState::Idle);
+        assert_eq!(s.state, TaskState::Idle);
+        assert!(s.paused_state.is_none());
+    }
+
+    #[test]
+    fn create_task_clears_failure_reason_after_reset() {
+        let mut s = state_in(TaskState::Failed);
+        s.failure_reason = Some("previous failure".into());
+
+        s.reset().unwrap();
+        s.failure_reason = Some("stale failure".into());
+        s.create_task().unwrap();
+
+        assert_eq!(s.state, TaskState::Executing);
+        assert!(s.failure_reason.is_none());
     }
 }

@@ -26,6 +26,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         opt.with_stdio()
             .with_name("ferrus")
             .with_version(env!("CARGO_PKG_VERSION"))
+            .with_mcp_version("2024-11-05")
     });
 
     let sup = role.as_ref().is_none_or(|r| *r == Role::Supervisor);
