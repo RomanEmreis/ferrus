@@ -18,6 +18,10 @@ wait_timeout_secs = 3600 # how long /wait_for_task and /wait_for_review poll bef
 
 [agents]
 path = ".agents" # root directory for agent skill files
+
+[lease]
+ttl_secs = 90              # how long a claimed lease is valid without renewal
+heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 "#;
 
 const SUPERVISOR_SKILL: &str = r#"# Ferrus Supervisor
@@ -28,8 +32,10 @@ See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 ## Starting a new task
 
 1. Call `/create_task` with a detailed Markdown description of what must be done
-2. Call `/wait_for_review` — blocks until the Executor submits (safe to call on restart too)
-3. Call `/review_pending` to read the full submission context
+2. Call `/wait_for_review` — returns JSON with `"status": "claimed"` or `"status": "timeout"`
+   - On `"timeout"`: call `/heartbeat` to renew your lease (if reviewing), then call `/wait_for_review` again
+   - On `"claimed"`: read `task`, `submission`, `feedback`, and `review` from the returned JSON
+3. While reviewing, call `/heartbeat` approximately every 30 seconds to keep your lease alive
 4. Call `/approve` to accept, or `/reject` with clear and actionable notes
 5. Return to step 2 for the next review cycle, or step 1 for a new task
 
@@ -86,9 +92,11 @@ See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 
 ## Autonomous loop
 
-1. Call `/wait_for_task` — blocks until a task is assigned (handles restarts and re-addresses after rejection)
-2. Read the returned task description, check feedback, and review notes carefully
-3. Implement the required changes
+1. Call `/wait_for_task` — blocks until a task is assigned; returns JSON with `"status": "claimed"` or `"status": "timeout"`
+   - On `"timeout"`: if you still hold a lease, call `/heartbeat` to renew it, then call `/wait_for_task` again
+   - On `"claimed"`: read `task`, `feedback`, and `review` from the returned JSON
+2. Implement the required changes
+3. While working, call `/heartbeat` approximately every 30 seconds to keep your lease alive
 4. Call `/check` — fix any failures and repeat until all checks pass
 5. Call `/submit` with a summary, manual verification steps, and any known limitations
 6. Return to step 1
@@ -203,6 +211,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `answer` | AwaitingHuman | Provide answer; restores previous state |
 | `status` | any | Print current state and counters |
 | `reset` | Failed | Return to Idle |
+| `heartbeat` | any claimed | Renew lease; returns `{"status":"renewed"}` or `{"status":"error","code":"..."}` |
 
 ## MCP resources
 
@@ -233,6 +242,10 @@ max_check_retries = 5    # check failures before Failed
 max_review_cycles = 3    # reject→fix cycles before Failed
 max_feedback_lines = 30  # lines per command in FEEDBACK.md
 wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
+
+[lease]
+ttl_secs = 90            # lease validity without renewal
+heartbeat_interval_secs = 30  # how often to call /heartbeat
 ```
 
 ## Runtime files (`.ferrus/`)
@@ -240,6 +253,7 @@ wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
 | File | Contents |
 |---|---|
 | `STATE.json` | State, counters, schema version, timestamp, PID |
+| `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Task description |
 | `FEEDBACK.md` | Check failure summary |
 | `REVIEW.md` | Rejection notes |
@@ -296,6 +310,16 @@ async fn create_ferrus_dir() -> Result<()> {
             println!("Created .ferrus/{filename}");
         }
     }
+
+    // Create the advisory lock file used by wait_for_task, wait_for_review, and /heartbeat
+    let lock_path = dir.join("STATE.lock");
+    if !lock_path.exists() {
+        tokio::fs::write(&lock_path, "")
+            .await
+            .context("Failed to create .ferrus/STATE.lock")?;
+        println!("Created .ferrus/STATE.lock");
+    }
+
     Ok(())
 }
 
