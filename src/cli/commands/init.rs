@@ -24,7 +24,12 @@ ttl_secs = 90              # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 "#;
 
-const SUPERVISOR_SKILL: &str = r#"# Ferrus Supervisor
+const SUPERVISOR_SKILL: &str = r#"---
+name: ferrus-supervisor
+description: Use when operating as a Supervisor in a ferrus-orchestrated project — create tasks, wait for review, approve or reject Executor submissions
+---
+
+# Ferrus Supervisor
 
 You are operating as a **Supervisor** in a ferrus-orchestrated project.
 See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
@@ -52,7 +57,12 @@ otherwise blocks until the Executor submits.
 - Read runtime files as MCP resources: `ferrus://task`, `ferrus://submission`, `ferrus://state`
 "#;
 
-const SUPERVISOR_ROLE: &str = r#"# Supervisor Role
+const SUPERVISOR_ROLE: &str = r#"---
+name: ferrus-supervisor-role
+description: Supervisor role definition and boundaries — responsibilities, workflow, and constraints for the Supervisor in a ferrus-orchestrated project
+---
+
+# Supervisor Role
 
 You are the **Supervisor** in this ferrus-orchestrated project.
 
@@ -85,7 +95,12 @@ Call `/ask_human` when you need clarification the task description does not cove
 MCP elicitation is used where supported; otherwise state pauses and the human calls `/answer`.
 "#;
 
-const EXECUTOR_SKILL: &str = r#"# Ferrus Executor
+const EXECUTOR_SKILL: &str = r#"---
+name: ferrus-executor
+description: Use when operating as an Executor in a ferrus-orchestrated project — autonomous loop: wait_for_task, implement, heartbeat, check, submit
+---
+
+# Ferrus Executor
 
 You are operating as an **Executor** in a ferrus-orchestrated project.
 See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
@@ -110,7 +125,12 @@ See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 - Read runtime files as MCP resources: `ferrus://task`, `ferrus://feedback`, `ferrus://review`
 "#;
 
-const EXECUTOR_ROLE: &str = r#"# Executor Role
+const EXECUTOR_ROLE: &str = r#"---
+name: ferrus-executor-role
+description: Executor role definition and boundaries — responsibilities, workflow, and constraints for the Executor in a ferrus-orchestrated project
+---
+
+# Executor Role
 
 You are the **Executor** in this ferrus-orchestrated project.
 
@@ -145,7 +165,12 @@ Call `/ask_human` when you encounter ambiguity the task doesn't resolve.
 MCP elicitation is used where supported; otherwise state pauses and the human calls `/answer`.
 "#;
 
-const FERRUS_SKILL: &str = r#"# Ferrus
+const FERRUS_SKILL: &str = r#"---
+name: ferrus
+description: Use when working on a project that uses ferrus for AI agent orchestration — full tool reference, state machine, resources, prompts, and config
+---
+
+# Ferrus
 
 ferrus is an MCP server that coordinates AI agents in a **Supervisor–Executor** workflow.
 
