@@ -79,8 +79,12 @@ pub async fn write_agents(registry: &AgentsRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
-    fn setup() -> (TempDir, String) {
+    // set_current_dir is process-global; serialize all cwd-mutating tests.
+    static CWD_LOCK: Mutex<()> = Mutex::const_new(());
+
+    async fn setup() -> (TempDir, String) {
         let dir = TempDir::new().unwrap();
         let orig = std::env::current_dir().unwrap().to_str().unwrap().to_string();
         std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
@@ -94,7 +98,8 @@ mod tests {
 
     #[tokio::test]
     async fn round_trips_empty_registry() {
-        let (_dir, orig) = setup();
+        let _guard = CWD_LOCK.lock().await;
+        let (_dir, orig) = setup().await;
         write_agents(&AgentsRegistry::default()).await.unwrap();
         let loaded = read_agents().await.unwrap();
         assert!(loaded.agents.is_empty());
@@ -103,7 +108,8 @@ mod tests {
 
     #[tokio::test]
     async fn round_trips_agent_entry() {
-        let (_dir, orig) = setup();
+        let _guard = CWD_LOCK.lock().await;
+        let (_dir, orig) = setup().await;
         let entry = AgentEntry {
             role: "executor".into(),
             agent_type: "codex".into(),
@@ -122,7 +128,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_returns_default_when_absent() {
-        let (_dir, orig) = setup();
+        let _guard = CWD_LOCK.lock().await;
+        let (_dir, orig) = setup().await;
         let loaded = read_agents().await.unwrap();
         assert!(loaded.agents.is_empty());
         teardown(orig);
