@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 
 use crate::server::Role;
 
-mod commands;
+pub mod commands;
 
 #[derive(Parser)]
 #[command(
