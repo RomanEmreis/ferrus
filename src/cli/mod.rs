@@ -12,7 +12,7 @@ mod commands;
 )]
 pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -47,23 +47,28 @@ enum Commands {
 }
 
 impl Cli {
+    pub fn is_hq_mode(&self) -> bool {
+        self.command.is_none()
+    }
+
     pub async fn run(self) -> Result<()> {
         match self.command {
-            Commands::Init { agents_path } => commands::init::run(agents_path).await,
-            Commands::Serve {
+            Some(Commands::Init { agents_path }) => commands::init::run(agents_path).await,
+            Some(Commands::Serve {
                 role,
                 agent_name,
                 agent_index,
-            } => commands::serve::run(role, agent_name, agent_index).await,
-            Commands::Register {
+            }) => commands::serve::run(role, agent_name, agent_index).await,
+            Some(Commands::Register {
                 supervisor,
                 executor,
-            } => {
+            }) => {
                 if supervisor.is_none() && executor.is_none() {
                     anyhow::bail!("At least one of --supervisor or --executor must be specified");
                 }
                 commands::register::run(supervisor, executor).await
             }
+            None => crate::hq::run().await,
         }
     }
 }
