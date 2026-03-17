@@ -8,6 +8,8 @@ pub struct Config {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub lease: LeaseConfig,
+    #[serde(default)]
+    pub hq: Option<HqConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +41,15 @@ pub struct LeaseConfig {
     /// How often (in seconds) agents should call /heartbeat. Informational — not enforced server-side.
     #[serde(default = "default_heartbeat_interval_secs")]
     pub heartbeat_interval_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct HqConfig {
+    /// "claude-code" or "codex"
+    pub supervisor: String,
+    /// "claude-code" or "codex"
+    pub executor: String,
 }
 
 impl Default for LeaseConfig {
@@ -142,5 +153,21 @@ heartbeat_interval_secs = 45
         assert_eq!(config.limits.wait_timeout_secs, 900);
         assert_eq!(config.lease.ttl_secs, 120);
         assert_eq!(config.lease.heartbeat_interval_secs, 45);
+    }
+
+    #[test]
+    fn hq_config_absent_gives_none() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.hq.is_none());
+    }
+
+    #[test]
+    fn hq_config_parses_when_present() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\"\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        let hq = config.hq.unwrap();
+        assert_eq!(hq.supervisor, "claude-code");
+        assert_eq!(hq.executor, "codex");
     }
 }
