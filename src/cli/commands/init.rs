@@ -22,6 +22,10 @@ path = ".agents" # root directory for agent skill files
 [lease]
 ttl_secs = 90              # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30 # how often agents should call /heartbeat
+
+[hq]
+supervisor = "claude-code"  # agent to use for supervisor/reviewer role: claude-code | codex
+executor = "codex"          # agent to use for executor role: claude-code | codex
 "#;
 
 const SUPERVISOR_SKILL: &str = r#"---
@@ -210,6 +214,17 @@ ferrus register --supervisor <a> --executor <a> # write MCP config for agents
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
+## HQ (run `ferrus` with no arguments)
+
+| Command | Description |
+|---|---|
+| `/plan` | Spawn the supervisor to plan a task, then run the full executor→review loop |
+| `/attach <role>` | Attach your terminal to a running agent (Phase B) |
+| `/status` | Show task state and agent list |
+| `/init` | Initialize ferrus in the current directory |
+| `/register` | Register agents |
+| `/quit` | Exit HQ |
+
 ## MCP tools
 
 ### Supervisor
@@ -351,6 +366,17 @@ async fn create_ferrus_dir() -> Result<()> {
             .await
             .context("Failed to create .ferrus/STATE.lock")?;
         println!("Created .ferrus/STATE.lock");
+    }
+
+    // Create empty agents registry
+    let agents_path = dir.join("agents.json");
+    if !agents_path.exists() {
+        let empty = crate::state::agents::AgentsRegistry::default();
+        let json = serde_json::to_string_pretty(&empty)?;
+        tokio::fs::write(&agents_path, json)
+            .await
+            .context("Failed to write .ferrus/agents.json")?;
+        println!("Created .ferrus/agents.json");
     }
 
     Ok(())

@@ -179,20 +179,20 @@ fn agents_md_section(role: &str, marker: &str) -> String {
         "executor" => format!(
             "\n{marker}\n\
              ## Ferrus Executor\n\n\
-             This repository is orchestrated by Ferrus.\n\n\
-             Executor agents must not begin work until a task is claimed.\n\n\
-             **First action:** call MCP tool `/wait_for_task`.\n\n\
-             Do not explore the repository before claiming a task.\n\n\
+             This repository is orchestrated by Ferrus HQ.\n\n\
+             When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
+             If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
         "supervisor" => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
-             This repository is orchestrated by Ferrus.\n\n\
-             Supervisor agents must not create tasks without first checking the current state.\n\n\
-             **First action:** call MCP tool `/status`.\n\n\
-             Then follow `.agents/skills/ferrus-supervisor/SKILL.md` — create a task if state is \
-             `Idle`, or pick up the review flow if a task is already in progress.\n"
+             This repository is orchestrated by Ferrus HQ.\n\n\
+             When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`.\n\n\
+             When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md,\n\
+             then call `/review_pending`, `/approve` or `/reject`.\n\n\
+             If started manually: call `/status` first, then follow \
+             `.agents/skills/ferrus-supervisor/SKILL.md`.\n"
         ),
         _ => format!(
             "\n{marker}\n\
@@ -230,20 +230,20 @@ fn claude_md_section(role: &str, marker: &str) -> String {
         "executor" => format!(
             "\n{marker}\n\
              ## Ferrus Executor\n\n\
-             This repository is orchestrated by Ferrus.\n\n\
-             Executor agents must not begin work until a task is claimed.\n\n\
-             **First action:** call MCP tool `/wait_for_task`.\n\n\
-             Do not explore the repository before claiming a task.\n\n\
+             This repository is orchestrated by Ferrus HQ.\n\n\
+             When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
+             If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
         "supervisor" => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
-             This repository is orchestrated by Ferrus.\n\n\
-             Supervisor agents must not create tasks without first checking the current state.\n\n\
-             **First action:** call MCP tool `/status`.\n\n\
-             Then follow `.agents/skills/ferrus-supervisor/SKILL.md` — create a task if state is \
-             `Idle`, or pick up the review flow if a task is already in progress.\n"
+             This repository is orchestrated by Ferrus HQ.\n\n\
+             When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`.\n\n\
+             When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md,\n\
+             then call `/review_pending`, `/approve` or `/reject`.\n\n\
+             If started manually: call `/status` first, then follow \
+             `.agents/skills/ferrus-supervisor/SKILL.md`.\n"
         ),
         _ => format!(
             "\n{marker}\n\
