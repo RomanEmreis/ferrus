@@ -15,6 +15,7 @@ use crate::state::{
 use commands::{parse_command, ShellCommand};
 
 pub async fn run() -> Result<()> {
+    reconcile_agent_pids().await;
     display::print_info("ferrus HQ — /status, /plan, /quit, /help");
 
     let (state_tx, mut state_rx) = watch::channel::<Option<StateData>>(None);
@@ -200,6 +201,42 @@ impl HqContext {
     }
 }
 
+// --- PID Reconciliation ---
+
+/// Returns true if a process with the given PID is alive on this system.
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // kill(pid, 0): returns 0 → alive; EPERM → alive (no permission to signal,
+        // but process exists); ESRCH → dead. Any other error → assume dead.
+        let ret = unsafe { libc::kill(pid as i32, 0) };
+        if ret == 0 { return true; }
+        let errno = unsafe { *libc::__errno_location() };
+        errno == libc::EPERM
+    }
+    #[cfg(not(unix))]
+    { let _ = pid; false }
+}
+
+/// On startup, mark any Running entries whose PID is no longer alive as Suspended.
+async fn reconcile_agent_pids() {
+    use crate::state::agents::{AgentStatus, read_agents, write_agents};
+    if let Ok(mut reg) = read_agents().await {
+        let mut changed = false;
+        for entry in &mut reg.agents {
+            if entry.status == AgentStatus::Running {
+                let alive = entry.pid.map(pid_is_alive).unwrap_or(false);
+                if !alive {
+                    entry.pid = None;
+                    entry.status = AgentStatus::Suspended;
+                    changed = true;
+                }
+            }
+        }
+        if changed { let _ = write_agents(&reg).await; }
+    }
+}
+
 // --- Transition routing ---
 
 #[allow(dead_code)]
@@ -254,5 +291,12 @@ mod tests {
     #[test]
     fn executing_to_checking_is_noop() {
         assert_eq!(transition_action(&Executing, &Checking), TransitionAction::NoOp);
+    }
+    #[test]
+    fn stale_pid_detection() {
+        // The current process is always alive — solid invariant on all Unix.
+        assert!(pid_is_alive(std::process::id()));
+        // 999999 is virtually guaranteed not to be a live PID.
+        assert!(!pid_is_alive(999999));
     }
 }
