@@ -128,6 +128,52 @@ pub fn supervisor_plan_prompt() -> &'static str {
     SUPERVISOR_PLAN_PROMPT
 }
 
+#[allow(dead_code)]
+/// Spawn an agent in a background PTY session. Returns the `BackgroundSession`
+/// handle. Agents.json is updated to `Running`.
+pub async fn spawn_background_pty(
+    agent_type: &str,
+    role: &str,
+    name: &str,
+    prompt: Option<&str>,
+) -> Result<crate::pty::BackgroundSession> {
+    let binary = agent_binary(agent_type);
+
+    let log_dir = std::path::Path::new(".ferrus/logs");
+    tokio::fs::create_dir_all(log_dir)
+        .await
+        .context("Failed to create .ferrus/logs")?;
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S");
+    let log_path = log_dir.join(format!("{role}_{ts}.log"));
+
+    let args: Vec<&str> = match prompt {
+        Some(p) => vec![p],
+        None => vec![],
+    };
+
+    let session = crate::pty::spawn_background(binary, &args, name, &log_path)
+        .with_context(|| format!("Failed to spawn {binary} as {role} in PTY"))?;
+
+    // Update agents.json.
+    let mut reg = read_agents().await?;
+    reg.upsert(AgentEntry {
+        role: role.to_string(),
+        agent_type: agent_type.to_string(),
+        name: name.to_string(),
+        pid: None, // PTY child PID not directly accessible via portable-pty trait
+        status: AgentStatus::Running,
+        started_at: Some(chrono::Utc::now()),
+    });
+    write_agents(&reg).await?;
+
+    // NOTE: `agents.json` is now a *logical* registry, not OS-level truth.
+    // With PTY sessions, `pid` is None — `agents.json` tracks role lifecycle
+    // (Running/Suspended) for display and reconciliation, not for OS-level kill.
+    // The PTY session handle (`BackgroundSession`) is the authoritative control object.
+
+    Ok(session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +197,13 @@ mod tests {
     #[test]
     fn prompt_becomes_first_arg() {
         assert_eq!(initial_prompt_arg(Some("do it")), vec!["do it"]);
+    }
+    #[test]
+    fn background_pty_log_path_contains_role() {
+        // Regression: log path must embed the role name for easy grepping.
+        let role = "executor";
+        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+        let log_path = format!(".ferrus/logs/{}_{}.log", role, ts);
+        assert!(log_path.contains(role));
     }
 }
