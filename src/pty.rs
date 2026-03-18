@@ -174,6 +174,91 @@ impl BackgroundSession {
     pub fn is_alive(&self) -> bool {
         self.exit_rx.borrow().is_none()
     }
+
+    /// Attach the terminal to this session.
+    ///
+    /// - Enables crossterm raw mode so all keystrokes go to the PTY.
+    /// - Spawns a blocking stdin relay with Ctrl-B d interception.
+    /// - Returns when the user presses Ctrl-B d or the process exits.
+    ///
+    /// Stdin is not contended: HQ's one-shot readline returns *before* calling
+    /// attach(), so there is no background readline task during attach.
+    ///
+    /// # Watch channel note
+    /// `exit_rx.changed()` only fires for *new* sends after the receiver's last-seen
+    /// version. We must check for an already-dead process via `borrow()` (which does NOT
+    /// advance the seen-version) before cloning the receiver, so that the clone inherits
+    /// the pre-exit seen-version and `changed()` resolves immediately if the process
+    /// exited between the guard check and the select.
+    pub async fn attach(&self) -> Result<DetachReason> {
+        use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+        // Fast path: process already dead — don't enter raw mode at all.
+        if self.exit_rx.borrow().is_some() {
+            return Ok(DetachReason::ProcessExit);
+        }
+
+        // Enable raw mode BEFORE setting stdout_sink.
+        // This way, if enable_raw_mode() fails, stdout_sink is never set and
+        // there's nothing to clean up — no guard/defer needed.
+        enable_raw_mode().context("Failed to enable raw mode")?;
+
+        // Route PTY output to our stdout while attached.
+        {
+            let mut sink = self.stdout_sink.lock().unwrap();
+            *sink = Some(Box::new(std::io::stdout()));
+        }
+
+        let stdin_writer = Arc::clone(&self.stdin_writer);
+        // Clone AFTER borrow() so the clone inherits the pre-exit seen-version.
+        // If the process exits between here and the select, changed() resolves immediately.
+        let mut exit_rx = self.exit_rx.clone();
+
+        // Stdin relay: runs in a blocking thread so it can call stdin.read() directly.
+        // Returns DetachReason when done.
+        let relay = tokio::task::spawn_blocking(move || -> DetachReason {
+            use std::io::Read;
+            let stdin = std::io::stdin();
+            let mut stdin = stdin.lock();
+            let mut state = PrefixKeyState::Normal;
+            let mut buf = [0u8; 1];
+            loop {
+                match stdin.read(&mut buf) {
+                    Ok(0) | Err(_) => return DetachReason::ProcessExit,
+                    Ok(_) => match process_byte(buf[0], &mut state) {
+                        RelayDecision::Forward(bytes) if !bytes.is_empty() => {
+                            let mut w = stdin_writer.lock().unwrap();
+                            if w.write_all(&bytes).is_err() {
+                                return DetachReason::ProcessExit;
+                            }
+                        }
+                        RelayDecision::Forward(_) => {} // swallowed prefix char
+                        RelayDecision::Detach => return DetachReason::UserDetach,
+                    },
+                }
+            }
+        });
+
+        // Wait for relay to finish (user detach) or process to exit — whichever comes first.
+        // NOTE: on ProcessExit, the stdin relay task may outlive this call briefly —
+        // it will remain blocked on stdin.read() until the user presses a key or the
+        // PTY is closed. This is acceptable for MVP; Phase C can add a cancellation flag.
+        let reason = tokio::select! {
+            r = relay => r.unwrap_or(DetachReason::ProcessExit),
+            _ = exit_rx.changed() => DetachReason::ProcessExit,
+        };
+
+        // Always restore terminal before returning.
+        disable_raw_mode().ok();
+
+        // Stop mirroring output to stdout.
+        {
+            let mut sink = self.stdout_sink.lock().unwrap();
+            *sink = None;
+        }
+
+        Ok(reason)
+    }
 }
 
 #[cfg(test)]
