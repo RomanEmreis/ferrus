@@ -83,8 +83,10 @@ ferrus                                               # enter HQ
 |---|---|
 | `/plan` | Spawn supervisor to plan, then run executor→review loop automatically |
 | `/status` | Show task state and agent list |
-| `/attach <role>` | Attach terminal to a running agent — Ctrl-B d to detach (Phase B) |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
 | `/quit` | Exit HQ |
+
+> **Detach key:** `Ctrl-B d` detaches from an attached session without killing it. `Ctrl-B Ctrl-B` sends a literal `Ctrl-B` to the agent.
 
 ### How it works
 

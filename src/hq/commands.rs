@@ -16,7 +16,7 @@ pub enum ShellCommand {
     Quit,
     /// Spawn the supervisor and plan a task.
     Plan,
-    /// Attach to a running agent's terminal (Phase B).
+    /// Attach terminal to a running background session. Ctrl-B d to detach.
     Attach { name: String },
     /// Initialize ferrus in the current directory.
     Init {
@@ -73,6 +73,13 @@ mod tests {
     fn parse_attach_with_name() {
         match parse_command("/attach executor").unwrap() {
             ShellCommand::Attach { name } => assert_eq!(name, "executor"),
+            _ => panic!("expected Attach"),
+        }
+    }
+    #[test]
+    fn attach_parses_hyphenated_name() {
+        match parse_command("/attach executor-1").unwrap() {
+            ShellCommand::Attach { name } => assert_eq!(name, "executor-1"),
             _ => panic!("expected Attach"),
         }
     }
