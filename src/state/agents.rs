@@ -58,7 +58,8 @@ pub async fn read_agents() -> Result<AgentsRegistry> {
     if !p.exists() {
         return Ok(AgentsRegistry::default());
     }
-    let s = tokio::fs::read_to_string(p).await
+    let s = tokio::fs::read_to_string(p)
+        .await
         .context("Failed to read .ferrus/agents.json")?;
     serde_json::from_str(&s).context("Failed to parse .ferrus/agents.json")
 }
@@ -66,12 +67,14 @@ pub async fn read_agents() -> Result<AgentsRegistry> {
 #[allow(dead_code)]
 pub async fn write_agents(registry: &AgentsRegistry) -> Result<()> {
     let json = serde_json::to_string_pretty(registry)?;
-    tokio::fs::create_dir_all(".ferrus").await
+    tokio::fs::create_dir_all(".ferrus")
+        .await
         .context("Failed to create .ferrus directory")?;
     let tmp_path = ".ferrus/agents.json.tmp";
     let dst_path = ".ferrus/agents.json";
     tokio::fs::write(tmp_path, &json).await?;
-    tokio::fs::rename(tmp_path, dst_path).await
+    tokio::fs::rename(tmp_path, dst_path)
+        .await
         .context("Failed to rename agents.json.tmp → agents.json")
 }
 
@@ -86,7 +89,11 @@ mod tests {
 
     async fn setup() -> (TempDir, String) {
         let dir = TempDir::new().unwrap();
-        let orig = std::env::current_dir().unwrap().to_str().unwrap().to_string();
+        let orig = std::env::current_dir()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         (dir, orig)
@@ -138,10 +145,22 @@ mod tests {
     #[test]
     fn upsert_updates_existing_role() {
         let mut reg = AgentsRegistry::default();
-        reg.upsert(AgentEntry { role: "executor".into(), agent_type: "codex".into(),
-            name: "e1".into(), pid: Some(1), status: AgentStatus::Running, started_at: None });
-        reg.upsert(AgentEntry { role: "executor".into(), agent_type: "codex".into(),
-            name: "e2".into(), pid: Some(2), status: AgentStatus::Suspended, started_at: None });
+        reg.upsert(AgentEntry {
+            role: "executor".into(),
+            agent_type: "codex".into(),
+            name: "e1".into(),
+            pid: Some(1),
+            status: AgentStatus::Running,
+            started_at: None,
+        });
+        reg.upsert(AgentEntry {
+            role: "executor".into(),
+            agent_type: "codex".into(),
+            name: "e2".into(),
+            pid: Some(2),
+            status: AgentStatus::Suspended,
+            started_at: None,
+        });
         assert_eq!(reg.agents.len(), 1);
         assert_eq!(reg.agents[0].pid, Some(2));
     }

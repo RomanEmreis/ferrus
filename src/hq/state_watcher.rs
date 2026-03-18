@@ -1,5 +1,5 @@
-use tokio::sync::watch;
 use crate::state::{machine::StateData, store};
+use tokio::sync::watch;
 
 /// Poll STATE.json every 250 ms; send when content changes.
 ///

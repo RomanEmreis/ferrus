@@ -40,8 +40,7 @@ pub fn parse_command(input: &str) -> Result<ShellCommand> {
     }
     let tokens = shlex::split(&input[1..])
         .ok_or_else(|| anyhow::anyhow!("Failed to tokenize command (unterminated quote?)"))?;
-    let cli = HqCli::try_parse_from(tokens)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let cli = HqCli::try_parse_from(tokens).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(cli.command)
 }
 
@@ -51,15 +50,24 @@ mod tests {
 
     #[test]
     fn parse_quit() {
-        assert!(matches!(parse_command("/quit").unwrap(), ShellCommand::Quit));
+        assert!(matches!(
+            parse_command("/quit").unwrap(),
+            ShellCommand::Quit
+        ));
     }
     #[test]
     fn parse_status() {
-        assert!(matches!(parse_command("/status").unwrap(), ShellCommand::Status));
+        assert!(matches!(
+            parse_command("/status").unwrap(),
+            ShellCommand::Status
+        ));
     }
     #[test]
     fn parse_plan() {
-        assert!(matches!(parse_command("/plan").unwrap(), ShellCommand::Plan));
+        assert!(matches!(
+            parse_command("/plan").unwrap(),
+            ShellCommand::Plan
+        ));
     }
     #[test]
     fn parse_attach_with_name() {

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
-use tokio::process::Command;
 use std::process::Stdio;
+use tokio::process::Command;
 
-use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
+use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
 const EXECUTOR_PROMPT: &str =
     "You are in executor mode. Call the /wait_for_task MCP tool and complete the assigned task. \
@@ -46,30 +46,40 @@ pub async fn spawn_and_wait(
 ) -> Result<i32> {
     let binary = agent_binary(agent_type);
     let mut cmd = Command::new(binary);
-    if let Some(p) = prompt { cmd.arg(p); }
+    if let Some(p) = prompt {
+        cmd.arg(p);
+    }
     cmd.stdin(Stdio::inherit())
-       .stdout(Stdio::inherit())
-       .stderr(Stdio::inherit());
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
 
     // Register as Running before spawn.
     let mut reg = read_agents().await?;
     reg.upsert(AgentEntry {
-        role: role.to_string(), agent_type: agent_type.to_string(),
-        name: name.to_string(), pid: None, status: AgentStatus::Running,
+        role: role.to_string(),
+        agent_type: agent_type.to_string(),
+        name: name.to_string(),
+        pid: None,
+        status: AgentStatus::Running,
         started_at: Some(chrono::Utc::now()),
     });
     write_agents(&reg).await?;
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("Failed to spawn {binary} as {role}"))?;
 
     // Update PID now that we have it.
     let pid = child.id();
     let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_role_mut(role) { e.pid = pid; }
+    if let Some(e) = reg.by_role_mut(role) {
+        e.pid = pid;
+    }
     write_agents(&reg).await?;
 
-    let status = child.wait().await
+    let status = child
+        .wait()
+        .await
         .with_context(|| format!("{binary} process error"))?;
 
     // Mark as Suspended after exit.
@@ -97,7 +107,9 @@ pub async fn kill_role(role: &str) -> Result<()> {
             // SAFETY: kill(pid, SIGTERM) is a well-defined syscall.
             // We accept that the PID might be stale — kill returns ESRCH in that case,
             // which we intentionally ignore.
-            unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
             e.pid = None;
             e.status = AgentStatus::Suspended;
         }
@@ -106,22 +118,36 @@ pub async fn kill_role(role: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn executor_prompt() -> &'static str { EXECUTOR_PROMPT }
-pub fn reviewer_prompt() -> &'static str { REVIEWER_PROMPT }
-pub fn supervisor_plan_prompt() -> &'static str { SUPERVISOR_PLAN_PROMPT }
+pub fn executor_prompt() -> &'static str {
+    EXECUTOR_PROMPT
+}
+pub fn reviewer_prompt() -> &'static str {
+    REVIEWER_PROMPT
+}
+pub fn supervisor_plan_prompt() -> &'static str {
+    SUPERVISOR_PLAN_PROMPT
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn binary_for_claude_code() { assert_eq!(agent_binary("claude-code"), "claude"); }
+    fn binary_for_claude_code() {
+        assert_eq!(agent_binary("claude-code"), "claude");
+    }
     #[test]
-    fn binary_for_codex() { assert_eq!(agent_binary("codex"), "codex"); }
+    fn binary_for_codex() {
+        assert_eq!(agent_binary("codex"), "codex");
+    }
     #[test]
-    fn binary_passthrough_for_unknown() { assert_eq!(agent_binary("my-agent"), "my-agent"); }
+    fn binary_passthrough_for_unknown() {
+        assert_eq!(agent_binary("my-agent"), "my-agent");
+    }
     #[test]
-    fn no_prompt_gives_empty_args() { assert!(initial_prompt_arg(None).is_empty()); }
+    fn no_prompt_gives_empty_args() {
+        assert!(initial_prompt_arg(None).is_empty());
+    }
     #[test]
     fn prompt_becomes_first_arg() {
         assert_eq!(initial_prompt_arg(Some("do it")), vec!["do it"]);

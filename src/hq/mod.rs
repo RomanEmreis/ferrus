@@ -1,8 +1,8 @@
+pub mod agent_manager;
 mod commands;
 mod display;
 mod repl;
-mod state_watcher;
-pub mod agent_manager; // stub for next task
+mod state_watcher; // stub for next task
 
 use anyhow::Result;
 use tokio::sync::{mpsc, watch};
@@ -78,7 +78,10 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Init { agents_path } => {
             crate::cli::commands::init::run(agents_path).await?;
         }
-        ShellCommand::Register { supervisor, executor } => {
+        ShellCommand::Register {
+            supervisor,
+            executor,
+        } => {
             let sup = supervisor.as_deref().and_then(parse_agent_type);
             let exe = executor.as_deref().and_then(parse_agent_type);
             if sup.is_none() && exe.is_none() {
@@ -93,7 +96,11 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
 
 fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
     use crate::cli::commands::register::Agent;
-    match s { "claude-code" => Some(Agent::ClaudeCode), "codex" => Some(Agent::Codex), _ => None }
+    match s {
+        "claude-code" => Some(Agent::ClaudeCode),
+        "codex" => Some(Agent::Codex),
+        _ => None,
+    }
 }
 
 // --- HqContext ---
@@ -104,7 +111,12 @@ pub(crate) struct HqContext {
 }
 
 impl HqContext {
-    fn new() -> Self { Self { supervisor_type: None, executor_type: None } }
+    fn new() -> Self {
+        Self {
+            supervisor_type: None,
+            executor_type: None,
+        }
+    }
 
     async fn plan(&mut self) -> Result<()> {
         use crate::config::Config;
@@ -117,19 +129,27 @@ impl HqContext {
 
         let state = store::read_state().await?;
         if state.state != TaskState::Idle {
-            anyhow::bail!("State is {:?} — /plan requires Idle. Use /status.", state.state);
+            anyhow::bail!(
+                "State is {:?} — /plan requires Idle. Use /status.",
+                state.state
+            );
         }
 
         self.supervisor_type = Some(hq.supervisor.clone());
         self.executor_type = Some(hq.executor.clone());
 
         display::print_info(&format!("Spawning supervisor ({})…", hq.supervisor));
-        display::print_info("Interact with the supervisor. When done, exit/quit it to return to HQ.");
+        display::print_info(
+            "Interact with the supervisor. When done, exit/quit it to return to HQ.",
+        );
 
         agent_manager::spawn_and_wait(
-            &hq.supervisor, "supervisor", "supervisor-1",
+            &hq.supervisor,
+            "supervisor",
+            "supervisor-1",
             Some(agent_manager::supervisor_plan_prompt()),
-        ).await?;
+        )
+        .await?;
 
         // Supervisor exited — check if task was created.
         let new_state = store::read_state().await?;
@@ -163,16 +183,22 @@ impl HqContext {
                 TaskState::Executing | TaskState::Addressing => {
                     display::print_info(&format!("Spawning executor ({exe_type})…"));
                     agent_manager::spawn_and_wait(
-                        &exe_type, "executor", "executor-1",
+                        &exe_type,
+                        "executor",
+                        "executor-1",
                         Some(agent_manager::executor_prompt()),
-                    ).await?;
+                    )
+                    .await?;
                 }
                 TaskState::Reviewing => {
                     display::print_info(&format!("Spawning reviewer ({sup_type})…"));
                     agent_manager::spawn_and_wait(
-                        &sup_type, "supervisor", "supervisor-1",
+                        &sup_type,
+                        "supervisor",
+                        "supervisor-1",
                         Some(agent_manager::reviewer_prompt()),
-                    ).await?;
+                    )
+                    .await?;
                 }
                 TaskState::Complete => {
                     display::print_info("Task complete! Use /plan to start a new task.");
@@ -210,17 +236,22 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
         // kill(pid, 0): returns 0 → alive; EPERM → alive (no permission to signal,
         // but process exists); ESRCH → dead. Any other error → assume dead.
         let ret = unsafe { libc::kill(pid as i32, 0) };
-        if ret == 0 { return true; }
+        if ret == 0 {
+            return true;
+        }
         let errno = unsafe { *libc::__errno_location() };
         errno == libc::EPERM
     }
     #[cfg(not(unix))]
-    { let _ = pid; false }
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// On startup, mark any Running entries whose PID is no longer alive as Suspended.
 async fn reconcile_agent_pids() {
-    use crate::state::agents::{AgentStatus, read_agents, write_agents};
+    use crate::state::agents::{read_agents, write_agents, AgentStatus};
     if let Ok(mut reg) = read_agents().await {
         let mut changed = false;
         for entry in &mut reg.agents {
@@ -233,7 +264,9 @@ async fn reconcile_agent_pids() {
                 }
             }
         }
-        if changed { let _ = write_agents(&reg).await; }
+        if changed {
+            let _ = write_agents(&reg).await;
+        }
     }
 }
 
@@ -270,27 +303,45 @@ mod tests {
 
     #[test]
     fn idle_to_executing_spawns_executor() {
-        assert_eq!(transition_action(&Idle, &Executing), TransitionAction::SpawnExecutor);
+        assert_eq!(
+            transition_action(&Idle, &Executing),
+            TransitionAction::SpawnExecutor
+        );
     }
     #[test]
     fn executing_to_reviewing_spawns_reviewer() {
-        assert_eq!(transition_action(&Executing, &Reviewing), TransitionAction::SpawnReviewer);
+        assert_eq!(
+            transition_action(&Executing, &Reviewing),
+            TransitionAction::SpawnReviewer
+        );
     }
     #[test]
     fn reviewing_to_addressing_kills_reviewer_spawns_executor() {
-        assert_eq!(transition_action(&Reviewing, &Addressing), TransitionAction::KillReviewerSpawnExecutor);
+        assert_eq!(
+            transition_action(&Reviewing, &Addressing),
+            TransitionAction::KillReviewerSpawnExecutor
+        );
     }
     #[test]
     fn reviewing_to_complete() {
-        assert_eq!(transition_action(&Reviewing, &Complete), TransitionAction::TaskComplete);
+        assert_eq!(
+            transition_action(&Reviewing, &Complete),
+            TransitionAction::TaskComplete
+        );
     }
     #[test]
     fn any_to_failed() {
-        assert_eq!(transition_action(&Executing, &Failed), TransitionAction::TaskFailed);
+        assert_eq!(
+            transition_action(&Executing, &Failed),
+            TransitionAction::TaskFailed
+        );
     }
     #[test]
     fn executing_to_checking_is_noop() {
-        assert_eq!(transition_action(&Executing, &Checking), TransitionAction::NoOp);
+        assert_eq!(
+            transition_action(&Executing, &Checking),
+            TransitionAction::NoOp
+        );
     }
     #[test]
     fn stale_pid_detection() {
