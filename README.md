@@ -231,6 +231,10 @@ max_check_retries = 5    # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
 max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
 wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
+
+[hq]
+supervisor = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+executor = "codex"          # agent for executor role: claude-code | codex
 ```
 
 `STATE.json` is written atomically (write to a `.tmp` file, then rename) so a crash mid-write never leaves it corrupt.

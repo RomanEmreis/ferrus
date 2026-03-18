@@ -23,8 +23,10 @@ cargo check            # fast type-check without producing a binary
 ## CLI
 
 ```sh
+ferrus                    # enter HQ (interactive orchestration shell)
+
 ferrus init [--agents-path <path>]
-    # scaffold ferrus.toml, .ferrus/ (incl. STATE.lock), and skill files (default: .agents)
+    # scaffold ferrus.toml, .ferrus/ (incl. STATE.lock, agents.json), and skill files (default: .agents)
 
 ferrus serve [--role supervisor|executor] [--agent-name <name>] [--agent-index <n>]
     # start the MCP server on stdio
@@ -33,9 +35,20 @@ ferrus serve [--role supervisor|executor] [--agent-name <name>] [--agent-index <
 
 ferrus register [--supervisor <agent>] [--executor <agent>]
     # write MCP config for claude-code (.mcp.json) or codex (.codex/config.toml)
-    # auto-assigns --agent-index; at least one flag required
+    # at least one flag required
     # e.g. ferrus register --supervisor claude-code --executor codex
 ```
+
+### HQ shell commands
+
+| Command | Description |
+|---|---|
+| `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
+| `/status` | Show task state and agent list |
+| `/attach <role>` | Attach terminal to a running agent (Phase B) |
+| `/init [--agents-path]` | Initialize ferrus in the current directory |
+| `/register` | Register agents (same as `ferrus register`) |
+| `/quit` | Exit HQ |
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity.
 Logs go to **stderr** so they don't interfere with the stdio MCP stream.
@@ -59,6 +72,10 @@ wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 [lease]
 ttl_secs = 90            # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30  # how often agents should call /heartbeat
+
+[hq]
+supervisor = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+executor = "codex"          # agent for executor role: claude-code | codex
 ```
 
 ## Skill Files
@@ -162,12 +179,19 @@ Any active state (Executing, Addressing, Checking, Reviewing) can pause to `Awai
 
 ```
 src/
-  main.rs                    # CLI entry, tracing init
+  main.rs                    # CLI entry, tracing init, HQ logger
   cli/                       # clap subcommands (init, serve, register)
-  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig)
+  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig, HqConfig)
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
+  state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
   checks/runner.rs           # Spawn check subprocesses, collect output
+  hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
+  hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, sends on watch channel
+  hq/repl.rs                 # readline_loop (rustyline, runs in spawn_blocking)
+  hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
+  hq/display.rs              # print_status, print_transition, print_info, print_error
+  hq/agent_manager.rs        # spawn_and_wait, kill_role, initial_prompt_arg; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
     heartbeat.rs             # /heartbeat — lease renewal
@@ -178,10 +202,10 @@ src/
 <!-- ferrus-supervisor-instructions -->
 ## Ferrus Supervisor
 
-This repository is orchestrated by Ferrus.
+This repository is orchestrated by Ferrus HQ.
 
-Supervisor agents must not create tasks without first checking the current state.
+When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`. Do not implement — the executor handles that.
 
-**First action:** call MCP tool `/status`.
+When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md, then call `/review_pending`, `/approve` or `/reject`.
 
-Then follow `.agents/skills/ferrus-supervisor/SKILL.md` — create a task if state is `Idle`, or pick up the review flow if a task is already in progress.
+If started manually: call `/status` first, then follow `.agents/skills/ferrus-supervisor/SKILL.md`.

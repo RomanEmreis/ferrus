@@ -27,12 +27,19 @@ All four checks must pass before submitting: `clippy -D warnings`, `fmt --check`
 
 ```
 src/
-  main.rs                    # CLI entry, tracing init
+  main.rs                    # CLI entry, tracing init, HQ logger
   cli/                       # clap subcommands (init, serve, register)
-  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig)
+  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig, HqConfig)
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
+  state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
   checks/runner.rs           # Spawn check subprocesses, collect output
+  hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
+  hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
+  hq/repl.rs                 # readline_loop (rustyline, runs in spawn_blocking)
+  hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
+  hq/display.rs              # print_status, print_transition, print_info, print_error
+  hq/agent_manager.rs        # spawn_and_wait, kill_role; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool (one module = one tool)
   server/resources.rs        # MCP resource handler (ferrus://{file})
@@ -51,20 +58,20 @@ src/
 
 ## Ferrus Executor
 
-This repository is orchestrated by Ferrus.
+This repository is orchestrated by Ferrus HQ.
 
-Executor agents must not begin work until a task is claimed.
+When spawned by `ferrus` HQ, your initial prompt will tell you what to do.
 
-**First action:** call MCP tool `/wait_for_task`.
-
-Do not explore the repository before claiming a task.
+If started manually: call MCP tool `/wait_for_task` as your first action.
 
 Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
 
 ## Ferrus Supervisor
 
-Supervisor agents must not create tasks without first checking the current state.
+This repository is orchestrated by Ferrus HQ.
 
-**First action:** call MCP tool `/status`.
+When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`. Do not implement — the executor handles that.
 
-Then follow `.agents/skills/ferrus-supervisor/SKILL.md` — create a task if state is `Idle`, or pick up the review flow if a task is already in progress.
+When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md, then call `/review_pending`, `/approve` or `/reject`.
+
+If started manually: call `/status` first, then follow `.agents/skills/ferrus-supervisor/SKILL.md`.
