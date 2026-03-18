@@ -149,7 +149,7 @@ pub fn spawn_background(
     });
 
     // Exit watcher thread: waits for child, signals exit_rx.
-    // Note: portable_pty::ExitStatus has exit_code() -> Option<u32>, not success().
+    // Note: portable_pty::ExitStatus has exit_code() -> u32, not success().
     // NOTE: this thread blocks on child.wait() indefinitely with no kill or timeout.
     // In Phase C, add explicit cancellation / kill support via a structured lifecycle.
     std::thread::spawn(move || {
