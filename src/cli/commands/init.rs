@@ -30,7 +30,7 @@ executor = "codex"          # agent to use for executor role: claude-code | code
 
 const SUPERVISOR_SKILL: &str = r#"---
 name: ferrus-supervisor
-description: "Use when operating as a Supervisor in a ferrus-orchestrated project — create tasks, wait for review, approve or reject Executor submissions"
+description: "Use when operating as a Supervisor in a ferrus-orchestrated project — plan mode: create task then exit; review mode: wait_for_review, approve or reject, then exit"
 ---
 
 # Ferrus Supervisor
@@ -38,20 +38,28 @@ description: "Use when operating as a Supervisor in a ferrus-orchestrated projec
 You are operating as a **Supervisor** in a ferrus-orchestrated project.
 See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 
-## Starting a new task
+**Your initial prompt tells you which mode you are in.** Check it before doing anything.
 
-1. Call `/create_task` with a detailed Markdown description of what must be done
-2. Call `/wait_for_review` — returns JSON with `"status": "claimed"` or `"status": "timeout"`
-   - On `"timeout"`: call `/heartbeat` to renew your lease (if reviewing), then call `/wait_for_review` again
+## Plan mode
+
+Your initial prompt says: *"You are in planning mode."*
+
+1. Collaborate with the user to define what needs to be done
+2. Call `/create_task` with a detailed Markdown description of what must be done
+3. **Exit immediately.** You are done. Do NOT call `/wait_for_review`.
+   The HQ will spawn a reviewer automatically when the Executor submits.
+
+## Review mode
+
+Your initial prompt says: *"You are in review mode."*
+
+1. Call `/wait_for_review` — returns `"status": "claimed"` or `"status": "timeout"`
+   - On `"timeout"`: call `/heartbeat` to renew your lease, then call `/wait_for_review` again
    - On `"claimed"`: read `task`, `submission`, `feedback`, and `review` from the returned JSON
+2. Call `/review_pending` to read full context (task + submission + state)
 3. While reviewing, call `/heartbeat` approximately every 30 seconds to keep your lease alive
-4. Call `/approve` to accept, or `/reject` with clear and actionable notes
-5. Return to step 2 for the next review cycle, or step 1 for a new task
-
-## Resuming after a restart
-
-Call `/wait_for_review` — it returns immediately if a submission is already pending,
-otherwise blocks until the Executor submits.
+4. Call `/approve` to accept, or `/reject` with clear and actionable feedback
+5. **Exit.** The HQ handles the next cycle automatically.
 
 ## Notes
 
@@ -63,35 +71,36 @@ otherwise blocks until the Executor submits.
 
 const SUPERVISOR_ROLE: &str = r#"---
 name: ferrus-supervisor-role
-description: "Supervisor role definition and boundaries — responsibilities, workflow, and constraints for the Supervisor in a ferrus-orchestrated project"
+description: "Supervisor role definition and boundaries — two modes: plan mode (create task + exit) and review mode (wait_for_review + approve/reject + exit)"
 ---
 
 # Supervisor Role
 
 You are the **Supervisor** in this ferrus-orchestrated project.
 
+## Two modes — never cross them
+
+The HQ spawns you for exactly one purpose per session. Check your initial prompt:
+
+**Plan mode** ("You are in planning mode"): Collaborate with the user → call `/create_task` → **exit**.
+
+**Review mode** ("You are in review mode"): Call `/wait_for_review` → read context → approve or reject → **exit**.
+
+Never call `/wait_for_review` in plan mode. Never start a new task in review mode.
+The HQ drives the full lifecycle; your job is to execute one step and exit.
+
 ## Responsibilities
 
 - **Write tasks** — define what must be done with clear acceptance criteria and enough context
-- **Review submissions** — inspect the Executor's work and make a decision
+- **Review submissions** — inspect the Executor's work and make a single decision
 - **Approve** when the work meets all requirements
 - **Reject** with specific, actionable notes when it does not
-
-## How to work
-
-Use `/wait_for_review` to block until the Executor submits. Then:
-
-1. Call `/review_pending` to read the full context (task + submission notes + state)
-2. Call `/approve` if the work is correct and complete
-3. Call `/reject` with targeted feedback — tell the Executor exactly what to fix and how
-
-After a task reaches `Complete` (or `Failed`), call `/create_task` to start the next one.
 
 ## Boundaries
 
 - You do **not** implement code yourself — delegate all work to the Executor
 - Reject only when there is a concrete problem; do not block on preferences not stated in the task
-- When state is `Failed`, call `/reset` before creating a new task
+- When state is `Failed` (plan mode only), call `/reset` before creating a new task
 
 ## Asking the human
 
@@ -218,9 +227,10 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
 | Command | Description |
 |---|---|
-| `/plan` | Spawn the supervisor to plan a task, then run the full executor→review loop |
-| `/attach <role>` | Attach your terminal to a running agent (Phase B) |
-| `/status` | Show task state and agent list |
+| `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
+| `/review` | Manually spawn supervisor in review mode (if automatic spawning failed) |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
+| `/status` | Show task state, agent list, and PTY session log paths |
 | `/init` | Initialize ferrus in the current directory |
 | `/register` | Register agents |
 | `/quit` | Exit HQ |

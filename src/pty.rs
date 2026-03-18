@@ -198,6 +198,18 @@ impl BackgroundSession {
             return Ok(DetachReason::ProcessExit);
         }
 
+        // Replay the tail of the log so the user sees recent context instead of a blank screen.
+        // Best-effort: if the log is missing or unreadable, skip silently.
+        {
+            use std::io::Write;
+            const REPLAY_BYTES: usize = 8 * 1024;
+            if let Ok(contents) = std::fs::read(&self.log_path) {
+                let start = contents.len().saturating_sub(REPLAY_BYTES);
+                let _ = std::io::stdout().write_all(&contents[start..]);
+                let _ = std::io::stdout().flush();
+            }
+        }
+
         // Enable raw mode BEFORE setting stdout_sink.
         // This way, if enable_raw_mode() fails, stdout_sink is never set and
         // there's nothing to clean up — no guard/defer needed.

@@ -1,6 +1,6 @@
 ---
 name: ferrus-supervisor
-description: Use when operating as a Supervisor in a ferrus-orchestrated project — create tasks, wait for review, approve or reject Executor submissions
+description: "Use when operating as a Supervisor in a ferrus-orchestrated project — plan mode: create task then exit; review mode: wait_for_review, approve or reject, then exit"
 ---
 
 # Ferrus Supervisor
@@ -8,20 +8,28 @@ description: Use when operating as a Supervisor in a ferrus-orchestrated project
 You are operating as a **Supervisor** in a ferrus-orchestrated project.
 See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 
-## Starting a new task
+**Your initial prompt tells you which mode you are in.** Check it before doing anything.
 
-1. Call `/create_task` with a detailed Markdown description of what must be done
-2. Call `/wait_for_review` — returns JSON with `"status": "claimed"` or `"status": "timeout"`
-   - On `"timeout"`: call `/heartbeat` to renew your lease (if reviewing), then call `/wait_for_review` again
+## Plan mode
+
+Your initial prompt says: *"You are in planning mode."*
+
+1. Collaborate with the user to define what needs to be done
+2. Call `/create_task` with a detailed Markdown description of what must be done
+3. **Exit immediately.** You are done. Do NOT call `/wait_for_review`.
+   The HQ will spawn a reviewer automatically when the Executor submits.
+
+## Review mode
+
+Your initial prompt says: *"You are in review mode."*
+
+1. Call `/wait_for_review` — returns `"status": "claimed"` or `"status": "timeout"`
+   - On `"timeout"`: call `/heartbeat` to renew your lease, then call `/wait_for_review` again
    - On `"claimed"`: read `task`, `submission`, `feedback`, and `review` from the returned JSON
+2. Call `/review_pending` to read full context (task + submission + state)
 3. While reviewing, call `/heartbeat` approximately every 30 seconds to keep your lease alive
-4. Call `/approve` to accept, or `/reject` with clear and actionable notes
-5. Return to step 2 for the next review cycle, or step 1 for a new task
-
-## Resuming after a restart
-
-Call `/wait_for_review` — it returns immediately if a submission is already pending,
-otherwise blocks until the Executor submits.
+4. Call `/approve` to accept, or `/reject` with clear and actionable feedback
+5. **Exit.** The HQ handles the next cycle automatically.
 
 ## Notes
 

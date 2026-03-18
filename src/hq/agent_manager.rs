@@ -15,8 +15,10 @@ const REVIEWER_PROMPT: &str =
 
 const SUPERVISOR_PLAN_PROMPT: &str =
     "You are in planning mode. Collaborate with the user to define the task, \
-     then call /create_task. Do not implement — the executor handles that. \
-     See .agents/skills/ferrus-supervisor/SKILL.md.";
+     then call /create_task. After /create_task succeeds, you are DONE — \
+     exit immediately. Do NOT call /wait_for_review. \
+     The HQ will spawn a reviewer automatically when the executor submits. \
+     See .agents/skills/ferrus-supervisor/SKILL.md for the two-mode workflow.";
 
 pub fn agent_binary(agent_type: &str) -> &str {
     match agent_type {

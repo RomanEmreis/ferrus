@@ -1,6 +1,6 @@
 # ferrus
 
-An MCP server that coordinates AI agents: a **Supervisor** that plans and reviews, and one or more **Executors** that write code and fix issues. State is shared via `.ferrus/` on disk; each agent runs its own `ferrus` process over stdio and communicates through that directory.
+An AI agent orchestrator for software projects. You run `ferrus` in your project directory and it drives a **Supervisor–Executor** workflow: the Supervisor plans tasks and reviews submissions, the Executor implements and checks its own work. You watch from HQ, attach to any agent's terminal, and let the loop run.
 
 Licensed under Apache 2.0.
 
@@ -9,35 +9,70 @@ Licensed under Apache 2.0.
 ## How it works
 
 ```
-  Supervisor (Claude Code)          Executor (Codex / any agent)
-        │                                       │
-        │ spawns via stdio                      │ spawns via stdio
-        ▼                                       ▼
-  ferrus --role supervisor            ferrus --role executor
-  ┌─────────────────────┐            ┌─────────────────────┐
-  │ create_task         │            │ wait_for_task       │
-  │ wait_for_review     │            │ next_task           │
-  │ review_pending      │            │ check               │
-  │ approve / reject    │            │ submit              │
-  │ ask_human / answer  │            │ ask_human / answer  │
-  │ status / reset      │            │ status / reset      │
-  └──────────┬──────────┘            └──────────┬──────────┘
-             └──────────────┬────────────────────┘
-                            │ shared via filesystem
-                     ┌──────────────┐
-                     │  .ferrus/    │
-                     │  STATE.json  │
-                     │  TASK.md     │
-                     │  FEEDBACK.md │
-                     │  REVIEW.md   │
-                     │  SUBMISSION.md│
-                     │  QUESTION.md │
-                     │  ANSWER.md   │
-                     │  logs/       │
-                     └──────────────┘
+  you
+   │
+   └─► ferrus HQ
+         │
+         ├─► Supervisor (Claude Code)   — plans tasks, reviews submissions
+         │         │ exits after task created
+         │
+         ├─► Executor (Codex / any)     — implements, checks, submits
+         │         │ runs in background PTY
+         │
+         └─► Reviewer (Claude Code)     — spawned automatically on submission
+                   │ exits after approve/reject
 ```
 
-Agents run autonomously using `/wait_for_task` and `/wait_for_review` to long-poll for work. When a question requires human input, `/ask_human` uses MCP elicitation; if the client doesn't support it, state pauses to `AwaitingHuman` and the human calls `/answer` to resume.
+Each agent runs headlessly in a background PTY session. HQ watches state transitions and spawns the right agent at the right time. You can attach to any session at any point with `/attach <name>` to observe or interact.
+
+State is shared through `.ferrus/` on disk — plain text files agents read and write via their tools. If an agent crashes and restarts, it picks up exactly where it left off.
+
+---
+
+## Quick start
+
+```sh
+cargo install --path .
+
+ferrus init                                              # scaffold ferrus.toml + .ferrus/
+ferrus register --supervisor claude-code --executor codex  # write agent configs
+ferrus                                                   # enter HQ
+```
+
+Then type `/plan` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
+
+---
+
+## HQ
+
+`ferrus` with no arguments opens an interactive shell:
+
+| Command | Description |
+|---|---|
+| `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
+| `/review` | Manually spawn supervisor in review mode (if automatic spawning failed or HQ restarted) |
+| `/status` | Show task state, agent list, and PTY session log paths |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
+| `/init [--agents-path]` | Initialize ferrus in the current directory |
+| `/register` | Register agents (same as `ferrus register`) |
+| `/quit` | Exit HQ |
+
+> **Detach key:** `Ctrl-B d` detaches from an attached session without killing it. `Ctrl-B Ctrl-B` sends a literal `Ctrl-B` to the agent.
+>
+> **Inside tmux:** tmux intercepts `Ctrl-B` as its own prefix. Press `Ctrl-B Ctrl-B d` instead — tmux consumes the first `Ctrl-B`, forwards the second as a literal to ferrus, and `d` triggers detach.
+
+### How the loop works
+
+```
+ferrus> /plan
+  └─ supervisor spawns (foreground) → you describe the task → supervisor calls create_task
+       └─ executor spawns (background PTY) → implements → check → submit
+            └─ reviewer spawns (background PTY) → reads submission → approve or reject
+                 ├─ approved → Complete
+                 └─ rejected → executor re-spawns with feedback
+```
+
+Agents are **stateless between runs** — context lives in `.ferrus/*.md`. Each spawn receives a short prompt pointing to those files and exits when its job is done.
 
 ---
 
@@ -45,176 +80,52 @@ Agents run autonomously using `/wait_for_task` and `/wait_for_review` to long-po
 
 ```
 Idle
- └─► Executing      ← /create_task (Supervisor)
-       └─► Checking ← /check (Executor, pass)
-             ├─► [FAIL, retries < max] Addressing → /check again
+ └─► Executing      ← create_task (Supervisor)
+       └─► Checking ← check (Executor, pass)
+             ├─► [FAIL, retries < max] Addressing → check again
              ├─► [FAIL, retries ≥ max] Failed
-             └─► Reviewing ← /submit (Executor)
+             └─► Reviewing ← submit (Executor)
                    ├─► [REJECT] Addressing → check loop (retries reset)
                    │     └─► [cycles ≥ max] Failed
-                   └─► Complete ← /approve (Supervisor)
+                   └─► Complete ← approve (Supervisor)
 ```
 
-Any active state can pause to `AwaitingHuman` via `/ask_human` (elicitation fallback). `/answer` restores the previous state.
-
-`/reset` moves `Failed → Idle` (human intervention).
+Any active state can pause to `AwaitingHuman` when an agent needs human input. `/reset` recovers `Failed → Idle`.
 
 ---
 
-## Installation
-
-```sh
-cargo install --path .
-```
-
----
-
-## Quick start
-
-```sh
-ferrus init                                          # scaffold ferrus.toml + .ferrus/
-ferrus register --supervisor claude-code --executor codex  # configure agents
-ferrus                                               # enter HQ
-```
-
-### HQ commands
-
-| Command | Description |
-|---|---|
-| `/plan` | Spawn supervisor to plan, then run executor→review loop automatically |
-| `/status` | Show task state and agent list |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
-| `/quit` | Exit HQ |
-
-> **Detach key:** `Ctrl-B d` detaches from an attached session without killing it. `Ctrl-B Ctrl-B` sends a literal `Ctrl-B` to the agent.
-
-### How it works
-
-```
-ferrus> /plan
-  └─ supervisor spawns → user plans with it → supervisor calls /create_task
-       └─ executor spawns → implements → /check → /submit
-            └─ reviewer spawns → /approve or /reject
-                 ├─ approved → Complete
-                 └─ rejected → executor re-spawns with feedback
-```
-
-Agents are **stateless** — context lives in `.ferrus/*.md`.
-Each spawn receives a short bootstrap prompt referencing those files.
-
----
-
-## Commands
+## CLI reference
 
 ### `ferrus init [--agents-path <path>]`
 
 Scaffolds ferrus in the current project (default `--agents-path .agents`):
 
 - Creates `ferrus.toml` with default check commands and limits
-- Creates `.ferrus/` with `STATE.json`, `TASK.md`, `FEEDBACK.md`, `REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and `logs/`
-- Creates skill files:
-  - `<agents-path>/skills/ferrus/SKILL.md` — general ferrus overview (tools, resources, prompts, config)
-  - `<agents-path>/skills/ferrus-supervisor/SKILL.md` + `ROLE.md` — Supervisor how-to and role definition
-  - `<agents-path>/skills/ferrus-executor/SKILL.md` + `ROLE.md` — Executor how-to and role definition
+- Creates `.ferrus/` runtime directory with all state files and `logs/`
+- Creates skill files agents load to understand their role:
+  - `<agents-path>/skills/ferrus/SKILL.md` — general overview
+  - `<agents-path>/skills/ferrus-supervisor/SKILL.md` + `ROLE.md`
+  - `<agents-path>/skills/ferrus-executor/SKILL.md` + `ROLE.md`
 - Adds `.ferrus/` to `.gitignore`
 
 ### `ferrus serve [--role supervisor|executor]`
 
-Starts the MCP server on stdio. Pass `--role` to expose only the tools relevant to that agent:
+Starts the agent coordination server on stdio. Agents load this as an MCP server. Pass `--role` to expose only the tools for that role:
 
 | `--role` | Tools exposed |
 |---|---|
 | `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `answer`, `status`, `reset` |
 | `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `ask_human`, `answer`, `status`, `reset` |
-| *(omitted)* | All 11 tools |
-
-Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity. Logs go to stderr so they don't interfere with the stdio MCP stream.
+| *(omitted)* | All tools |
 
 ### `ferrus register --supervisor <agent> --executor <agent>`
 
-Writes MCP config files so agents can launch ferrus automatically. Supported agents:
+Writes agent config files so they automatically load `ferrus serve` as a tool server. Supported agents:
 
-| Agent | Config file written |
+| Agent | Config written |
 |---|---|
-| `claude-code` | `.mcp.json` (under `mcpServers`) |
-| `codex` | `.codex/config.toml` (under `mcp_servers`) |
-
-Both supervisor and executor entries are written in the same file if both roles use the same agent. Existing config files are read and merged — no entries are overwritten unless they already exist under the same key.
-
-Example: `ferrus register --supervisor claude-code --executor codex` writes:
-
-`.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "ferrus-supervisor": {
-      "command": "ferrus",
-      "args": ["serve", "--role", "supervisor"]
-    }
-  }
-}
-```
-
-`.codex/config.toml`:
-```toml
-[mcp_servers.ferrus-executor]
-command = "ferrus"
-args = ["serve", "--role", "executor"]
-```
-
----
-
-## MCP tool reference
-
-### Supervisor tools
-
-| Tool | From state | To state | Description |
-|---|---|---|---|
-| `create_task` | Idle | Executing | Write task description; Executor picks it up |
-| `wait_for_review` | — | — | Long-poll until state is Reviewing, then return submission context |
-| `review_pending` | Reviewing | — | Read task + context for review |
-| `approve` | Reviewing | Complete | Accept the submission |
-| `reject` | Reviewing | Addressing | Reject with notes; resets Executor retry counter |
-
-### Executor tools
-
-| Tool | From state | To state | Description |
-|---|---|---|---|
-| `wait_for_task` | — | — | Long-poll until a task is ready, then return full task context |
-| `next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
-| `check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
-| `submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
-
-### Shared tools
-
-| Tool | From state | To state | Description |
-|---|---|---|---|
-| `ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman (fallback) | Ask the human a question; uses MCP elicitation when supported, otherwise pauses to AwaitingHuman |
-| `answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
-| `status` | any | — | Print current state + retry counters |
-| `reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
-
-### MCP resources
-
-Runtime files are exposed as MCP resources for agents that want to pull them on demand without a tool call:
-
-| URI | Contents |
-|---|---|
-| `ferrus://task` | Current task description (`TASK.md`) |
-| `ferrus://feedback` | Check failure summary (`FEEDBACK.md`) |
-| `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
-| `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
-| `ferrus://question` | Pending human question (`QUESTION.md`) |
-| `ferrus://state` | Current task state as JSON (`STATE.json`) |
-
-### MCP prompts
-
-Bundled context prompts that stitch together the most relevant files for each role:
-
-| Prompt | Description |
-|---|---|
-| `executor-context` | State + task + feedback + review notes |
-| `supervisor-review` | State + task + submission notes |
+| `claude-code` | `.mcp.json` |
+| `codex` | `.codex/config.toml` |
 
 ---
 
@@ -232,16 +143,18 @@ commands = [
 max_check_retries = 5    # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
 max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
-wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
+wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
+
+[lease]
+ttl_secs = 90                  # how long a claimed lease is valid without renewal
+heartbeat_interval_secs = 30   # how often agents should call heartbeat
 
 [hq]
 supervisor = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
 executor = "codex"          # agent for executor role: claude-code | codex
 ```
 
-`STATE.json` is written atomically (write to a `.tmp` file, then rename) so a crash mid-write never leaves it corrupt.
-
-The check commands run in the directory where `ferrus serve` was started. Any non-zero exit code is a failure. On failure, the full stdout + stderr for each command is written to `.ferrus/logs/check_<attempt>_<timestamp>.txt`. `FEEDBACK.md` contains a short summary — which commands failed and the last `max_feedback_lines` lines of their output — so the Executor gets the signal without noise.
+Check commands run in the directory where `ferrus serve` was started. Full output is written to `.ferrus/logs/check_<attempt>_<ts>.txt`. `FEEDBACK.md` contains a short summary so the Executor gets the signal without noise.
 
 ---
 
@@ -249,13 +162,14 @@ The check commands run in the directory where `ferrus serve` was started. Any no
 
 | File | Contents |
 |---|---|
-| `STATE.json` | Current state, retry/cycle counters, failure reason, schema version, last-write timestamp (RFC 3339) and PID |
+| `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
+| `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `TASK.md` | Task description written by Supervisor |
-| `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
+| `FEEDBACK.md` | Short check-failure summary (failed commands + last N lines each + log path) |
 | `REVIEW.md` | Supervisor rejection notes |
-| `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
-| `QUESTION.md` | Question written by `/ask_human` when elicitation is unavailable |
-| `ANSWER.md` | Answer written by `/answer` |
-| `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
+| `SUBMISSION.md` | Executor submission notes |
+| `QUESTION.md` | Pending human question (when agent used ask_human without elicitation) |
+| `ANSWER.md` | Human answer |
+| `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
-`.ferrus/` is gitignored by `ferrus init`.
+`STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.

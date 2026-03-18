@@ -18,6 +18,8 @@ pub enum ShellCommand {
     Plan,
     /// Attach terminal to a running background session. Ctrl-B d to detach.
     Attach { name: String },
+    /// Manually spawn supervisor in review mode (for the current Reviewing submission).
+    Review,
     /// Initialize ferrus in the current directory.
     Init {
         #[arg(long, default_value = ".agents")]
@@ -67,6 +69,13 @@ mod tests {
         assert!(matches!(
             parse_command("/plan").unwrap(),
             ShellCommand::Plan
+        ));
+    }
+    #[test]
+    fn parse_review() {
+        assert!(matches!(
+            parse_command("/review").unwrap(),
+            ShellCommand::Review
         ));
     }
     #[test]

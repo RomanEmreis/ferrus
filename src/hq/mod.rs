@@ -78,6 +78,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             }
         }
         ShellCommand::Plan => ctx.plan().await?,
+        ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
             if let Some(session) = ctx.sessions.get(&name) {
                 display::print_info(&format!("Attaching to {name}. Ctrl-B d to detach.",));
@@ -292,6 +293,44 @@ impl HqContext {
         ));
         self.sessions.insert(name.to_string(), session);
         Ok(())
+    }
+
+    /// Manually spawn supervisor in review mode for a pending submission.
+    /// Use when automatic reviewer spawning failed or HQ was restarted mid-review.
+    async fn review(&mut self) -> Result<()> {
+        use crate::config::Config;
+        use crate::state::machine::TaskState;
+
+        let state = store::read_state().await?;
+        if state.state != TaskState::Reviewing {
+            anyhow::bail!(
+                "State is {:?} — /review requires Reviewing. Use /status.",
+                state.state
+            );
+        }
+
+        // Use cached type or load from config.
+        let sup_type = if let Some(ref t) = self.supervisor_type {
+            t.clone()
+        } else {
+            let config = Config::load().await?;
+            let hq = config.hq.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+                )
+            })?;
+            self.supervisor_type = Some(hq.supervisor.clone());
+            self.executor_type = Some(hq.executor.clone());
+            hq.supervisor
+        };
+
+        self.spawn_background_session(
+            &sup_type,
+            "supervisor",
+            "supervisor-1",
+            Some(agent_manager::reviewer_prompt()),
+        )
+        .await
     }
 
     /// Synchronous planning flow (still interactive — user types with supervisor).

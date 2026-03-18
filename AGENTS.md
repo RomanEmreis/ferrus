@@ -71,8 +71,10 @@ Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
 
 This repository is orchestrated by Ferrus HQ.
 
-When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`. Do not implement — the executor handles that.
+The Supervisor runs in one of two modes — check your initial prompt:
 
-When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md, then call `/review_pending`, `/approve` or `/reject`.
+**Plan mode** ("You are in planning mode"): Collaborate with the user to define the task, then call `/create_task`. After `/create_task` succeeds, **exit immediately**. Do NOT call `/wait_for_review`.
 
-If started manually: call `/status` first, then follow `.agents/skills/ferrus-supervisor/SKILL.md`.
+**Review mode** ("You are in review mode"): Call `/wait_for_review`, then `/review_pending` to read TASK.md + SUBMISSION.md, then `/approve` or `/reject`. After deciding, **exit**.
+
+See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.
