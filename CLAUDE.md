@@ -185,13 +185,14 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
+  pty.rs                     # BackgroundSession, spawn_background, Ctrl-B d FSM, attach()
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, sends on watch channel
   hq/repl.rs                 # readline_loop (rustyline, runs in spawn_blocking)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # print_status, print_transition, print_info, print_error
-  hq/agent_manager.rs        # spawn_and_wait, kill_role, initial_prompt_arg; agents.json updates
+  hq/agent_manager.rs        # spawn_and_wait, spawn_background_pty, kill_role; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
     heartbeat.rs             # /heartbeat — lease renewal
