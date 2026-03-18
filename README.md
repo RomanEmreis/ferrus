@@ -72,18 +72,33 @@ cargo install --path .
 ## Quick start
 
 ```sh
-# In your project directory:
-ferrus init
-
-# Write MCP config files for your agents:
-ferrus register --supervisor claude-code --executor codex
-
-# Agents can now launch ferrus automatically via their MCP config.
-# Or start manually:
-ferrus serve --role supervisor   # Supervisor session
-ferrus serve --role executor     # Executor session
-ferrus serve                     # All tools (single-agent / debug)
+ferrus init                                          # scaffold ferrus.toml + .ferrus/
+ferrus register --supervisor claude-code --executor codex  # configure agents
+ferrus                                               # enter HQ
 ```
+
+### HQ commands
+
+| Command | Description |
+|---|---|
+| `/plan` | Spawn supervisor to plan, then run executor→review loop automatically |
+| `/status` | Show task state and agent list |
+| `/attach <role>` | Attach terminal to a running agent — Ctrl-B d to detach (Phase B) |
+| `/quit` | Exit HQ |
+
+### How it works
+
+```
+ferrus> /plan
+  └─ supervisor spawns → user plans with it → supervisor calls /create_task
+       └─ executor spawns → implements → /check → /submit
+            └─ reviewer spawns → /approve or /reject
+                 ├─ approved → Complete
+                 └─ rejected → executor re-spawns with feedback
+```
+
+Agents are **stateless** — context lives in `.ferrus/*.md`.
+Each spawn receives a short bootstrap prompt referencing those files.
 
 ---
 
