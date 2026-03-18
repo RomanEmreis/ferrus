@@ -98,19 +98,105 @@ fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
 // --- HqContext ---
 
 pub(crate) struct HqContext {
-    _private: (),
+    supervisor_type: Option<String>,
+    executor_type: Option<String>,
 }
 
 impl HqContext {
-    fn new() -> Self { Self { _private: () } }
+    fn new() -> Self { Self { supervisor_type: None, executor_type: None } }
 
     async fn plan(&mut self) -> Result<()> {
-        display::print_info("/plan — implemented in Task 5");
+        use crate::config::Config;
+        use crate::state::{machine::TaskState, store};
+
+        let config = Config::load().await?;
+        let hq = config.hq.ok_or_else(|| anyhow::anyhow!(
+            "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+        ))?;
+
+        let state = store::read_state().await?;
+        if state.state != TaskState::Idle {
+            anyhow::bail!("State is {:?} — /plan requires Idle. Use /status.", state.state);
+        }
+
+        self.supervisor_type = Some(hq.supervisor.clone());
+        self.executor_type = Some(hq.executor.clone());
+
+        display::print_info(&format!("Spawning supervisor ({})…", hq.supervisor));
+        display::print_info("Interact with the supervisor. When done, exit/quit it to return to HQ.");
+
+        agent_manager::spawn_and_wait(
+            &hq.supervisor, "supervisor", "supervisor-1",
+            Some(agent_manager::supervisor_plan_prompt()),
+        ).await?;
+
+        // Supervisor exited — check if task was created.
+        let new_state = store::read_state().await?;
+        if new_state.state == TaskState::Executing {
+            display::print_info("Task created — spawning executor…");
+            self.run_executor_loop().await?;
+        } else {
+            display::print_info(&format!(
+                "No task created (state is still {:?}). Re-run /plan when ready.",
+                new_state.state
+            ));
+        }
         Ok(())
     }
 
-    async fn on_state_change(&mut self, _state: &StateData) {
-        // Orchestration routing — implemented in Task 5
+    /// Runs the full executor→reviewer loop synchronously until Complete or Failed.
+    ///
+    /// This is the core orchestration unit for Phase A. Keep all transition logic
+    /// here rather than spreading it across the REPL and watcher — it makes
+    /// Phase B replacement clean: swap this method for an async PTY-driven loop
+    /// without touching the REPL or display layers.
+    async fn run_executor_loop(&mut self) -> Result<()> {
+        use crate::state::{machine::TaskState, store};
+
+        let exe_type = self.executor_type.clone().unwrap_or("codex".into());
+        let sup_type = self.supervisor_type.clone().unwrap_or("claude-code".into());
+
+        loop {
+            let state = store::read_state().await?;
+            match state.state {
+                TaskState::Executing | TaskState::Addressing => {
+                    display::print_info(&format!("Spawning executor ({exe_type})…"));
+                    agent_manager::spawn_and_wait(
+                        &exe_type, "executor", "executor-1",
+                        Some(agent_manager::executor_prompt()),
+                    ).await?;
+                }
+                TaskState::Reviewing => {
+                    display::print_info(&format!("Spawning reviewer ({sup_type})…"));
+                    agent_manager::spawn_and_wait(
+                        &sup_type, "supervisor", "supervisor-1",
+                        Some(agent_manager::reviewer_prompt()),
+                    ).await?;
+                }
+                TaskState::Complete => {
+                    display::print_info("Task complete! Use /plan to start a new task.");
+                    break;
+                }
+                TaskState::Failed => {
+                    display::print_info("Task failed. Use /status for details.");
+                    break;
+                }
+                TaskState::Idle => {
+                    display::print_info("State returned to Idle unexpectedly. Exiting loop.");
+                    break;
+                }
+                _other => {
+                    // Transient state (Checking, AwaitingHuman) — poll briefly then re-check.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Called by the select! loop when STATE.json changes outside of /plan.
+    pub async fn on_state_change(&mut self, _state: &StateData) {
+        // Phase A: no-op. Phase B will drive automated loop here.
     }
 }
 

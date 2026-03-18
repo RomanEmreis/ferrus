@@ -595,6 +595,7 @@ dependencies = [
  "chrono",
  "clap",
  "fs2",
+ "libc",
  "neva",
  "rustyline",
  "serde",
