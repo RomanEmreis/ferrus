@@ -2,6 +2,7 @@ mod checks;
 mod cli;
 mod config;
 mod hq;
+mod pty;
 mod server;
 mod state;
 
