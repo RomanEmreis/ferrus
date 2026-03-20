@@ -46,10 +46,15 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl+] d to detach |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`) |
+| `/stop` | Stop all running agent sessions (prompts for confirmation) |
+| `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
-| `/register` | Register agents (same as `ferrus register`) |
+| `/register` | Register agent configs (same as `ferrus register`) |
+| `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
+
+**Detach from attached session:** press **Ctrl+]** (prefix, swallowed silently) then **d**. Ctrl+] Ctrl+] sends a literal Ctrl+] to the agent.
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity.
 Logs go to **stderr** so they don't interfere with the stdio MCP stream.

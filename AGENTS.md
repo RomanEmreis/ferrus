@@ -37,7 +37,7 @@ src/
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
-  hq/repl.rs                 # readline_loop (rustyline, runs in spawn_blocking)
+  hq/repl.rs                 # readline_once (rustyline, runs via block_in_place — DefaultEditor is !Send)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # print_status, print_transition, print_info, print_error
   hq/agent_manager.rs        # agent spawn helpers (foreground + background PTY); agents.json updates

@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "ferrus-hq", no_binary_name = true)]
+#[command(name = "ferrus-hq", no_binary_name = true, disable_help_subcommand = true)]
 struct HqCli {
     #[command(subcommand)]
     command: ShellCommand,
@@ -14,11 +14,13 @@ pub enum ShellCommand {
     Status,
     /// Reset all task files and set state to Idle (prompts for confirmation if state is Executing or Reviewing).
     Reset,
+    /// Stop all running executor and supervisor/reviewer sessions (prompts for confirmation).
+    Stop,
     /// Exit HQ.
     Quit,
     /// Spawn the supervisor and plan a task.
     Plan,
-    /// Attach terminal to a running background session. Ctrl-B d to detach.
+    /// Attach terminal to a running background session. Ctrl+] d to detach.
     Attach { name: String },
     /// Manually spawn supervisor in review mode (for the current Reviewing submission).
     Review,
@@ -34,6 +36,8 @@ pub enum ShellCommand {
         #[arg(long, value_name = "AGENT")]
         executor: Option<String>,
     },
+    /// Show all available HQ commands.
+    Help,
 }
 
 /// Parse `/command [args…]` into a `ShellCommand`.
@@ -71,6 +75,13 @@ mod tests {
         assert!(matches!(
             parse_command("/reset").unwrap(),
             ShellCommand::Reset
+        ));
+    }
+    #[test]
+    fn parse_stop() {
+        assert!(matches!(
+            parse_command("/stop").unwrap(),
+            ShellCommand::Stop
         ));
     }
     #[test]

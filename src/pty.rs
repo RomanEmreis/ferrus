@@ -41,10 +41,7 @@ fn strip_ansi(input: &[u8]) -> Vec<u8> {
                                 i += 1;
                                 break;
                             }
-                            if input[i] == 0x1B
-                                && i + 1 < input.len()
-                                && input[i + 1] == b'\\'
-                            {
+                            if input[i] == 0x1B && i + 1 < input.len() && input[i + 1] == b'\\' {
                                 i += 2;
                                 break;
                             }
@@ -155,26 +152,14 @@ impl RelayCancel {
     ///
     /// Must only be called when the relay's JoinHandle has NOT been awaited yet
     /// (i.e. the ProcessExit arm of the select fired, not the relay arm).
-    async fn signal_and_wait(
-        self,
-        relay: tokio::task::JoinHandle<DetachReason>,
-        timeout_ms: u64,
-    ) {
+    async fn signal_and_wait(self, relay: tokio::task::JoinHandle<DetachReason>, timeout_ms: u64) {
         #[cfg(unix)]
         {
             let b: u8 = 0;
             unsafe {
-                libc::write(
-                    self.pipe_write,
-                    &b as *const u8 as *const libc::c_void,
-                    1,
-                );
+                libc::write(self.pipe_write, &b as *const u8 as *const libc::c_void, 1);
             }
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                relay,
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), relay).await;
             // pipe_write closed by Drop
         }
         #[cfg(not(unix))]
@@ -209,8 +194,16 @@ fn spawn_stdin_relay(
             let mut buf = [0u8; 1];
             loop {
                 let mut pfds = [
-                    libc::pollfd { fd: 0,         events: libc::POLLIN, revents: 0 },
-                    libc::pollfd { fd: pipe_read, events: libc::POLLIN, revents: 0 },
+                    libc::pollfd {
+                        fd: 0,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: pipe_read,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
                 ];
                 // Block until stdin or cancel pipe becomes readable.
                 if unsafe { libc::poll(pfds.as_mut_ptr(), 2, -1) } <= 0 {
@@ -224,9 +217,7 @@ fn spawn_stdin_relay(
                 }
                 // Stdin readable → read one byte.
                 if pfds[0].revents & libc::POLLIN != 0 {
-                    let n = unsafe {
-                        libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, 1)
-                    };
+                    let n = unsafe { libc::read(0, buf.as_mut_ptr() as *mut libc::c_void, 1) };
                     if n <= 0 {
                         unsafe { libc::close(pipe_read) };
                         return DetachReason::ProcessExit;
@@ -447,17 +438,12 @@ impl BackgroundSession {
             return Ok(DetachReason::ProcessExit);
         }
 
-        // Replay the tail of the log so the user sees recent context.
-        // Strip ANSI sequences: not in raw mode yet, so PTY control bytes like
-        // \033[?1049h (enter alternate screen) would corrupt the terminal display.
+        // Clear screen so the agent's TUI fills it cleanly from scratch once output flows.
+        // (Replaying the log in cooked mode looked garbled because the raw PTY bytes were
+        // intended for an alternate-screen context that we don't have yet.)
         {
-            const REPLAY_BYTES: usize = 8 * 1024;
-            if let Ok(contents) = std::fs::read(&self.log_path) {
-                let start = contents.len().saturating_sub(REPLAY_BYTES);
-                let clean = strip_ansi(&contents[start..]);
-                let _ = std::io::stdout().write_all(&clean);
-                let _ = std::io::stdout().flush();
-            }
+            let _ = std::io::stdout().write_all(b"\x1b[2J\x1b[H");
+            let _ = std::io::stdout().flush();
         }
 
         // Enable raw mode BEFORE setting stdout_sink.
@@ -474,36 +460,43 @@ impl BackgroundSession {
         // If the process exits between here and the select, changed() fires immediately.
         let mut exit_rx = self.exit_rx.clone();
 
-        let (mut relay, cancel) =
-            match spawn_stdin_relay(Arc::clone(&self.stdin_writer)) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    { let mut s = self.stdout_sink.lock().unwrap(); *s = None; }
-                    disable_raw_mode().ok();
-                    return Err(e);
+        let (mut relay, cancel) = match spawn_stdin_relay(Arc::clone(&self.stdin_writer)) {
+            Ok(pair) => pair,
+            Err(e) => {
+                {
+                    let mut s = self.stdout_sink.lock().unwrap();
+                    *s = None;
                 }
-            };
+                disable_raw_mode().ok();
+                return Err(e);
+            }
+        };
 
         // Wait for relay to finish (user detach / stdin EOF) or process to exit.
+        //
+        // IMPORTANT: we capture the relay result here via `r` so we don't have to
+        // await the JoinHandle a second time.  Awaiting a JoinHandle that was already
+        // polled to completion via `&mut relay` would panic.
+        let mut relay_result: Option<DetachReason> = None;
         let process_exited = tokio::select! {
             // relay arm: relay returned on its own (UserDetach or stdin EOF).
-            // `&mut relay` so we keep ownership for the cancel path below.
-            _ = &mut relay => false,
+            // Capture result immediately — don't await relay again after this.
+            r = &mut relay => {
+                relay_result = Some(r.unwrap_or(DetachReason::ProcessExit));
+                false
+            }
             // exit arm: process exited; relay is still running — we must cancel it.
             _ = exit_rx.changed() => true,
         };
 
-        // Extract the relay result for the reason we're returning.
-        // If process_exited, relay hasn't finished yet; signal it and wait briefly
-        // so stdin is free before rustyline takes over.
+        // Signal relay to stop (if it's still running) and wait briefly so stdin is
+        // free before rustyline takes over.
         let reason = if process_exited {
             cancel.signal_and_wait(relay, 100).await;
             DetachReason::ProcessExit
         } else {
-            // relay finished on its own — read its result.
-            let r = relay.await.unwrap_or(DetachReason::ProcessExit);
             drop(cancel);
-            r
+            relay_result.unwrap_or(DetachReason::ProcessExit)
         };
 
         // Stop mirroring to stdout before terminal restore so the drain thread

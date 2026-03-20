@@ -19,7 +19,7 @@ pub async fn run() -> Result<()> {
     use rustyline::DefaultEditor;
 
     reconcile_agent_pids().await;
-    display::print_info("ferrus HQ — /status, /reset, /plan, /attach <name>, /quit, /help");
+    display::print_info("ferrus HQ — type /help for commands");
 
     let (state_tx, state_rx) = watch::channel::<Option<StateData>>(None);
     tokio::spawn(state_watcher::watch(state_tx));
@@ -78,7 +78,22 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 }
             }
         }
+        ShellCommand::Help => {
+            display::print_info(concat!(
+                "ferrus HQ commands:\n",
+                "  /plan              Spawn supervisor, plan a task, then run executor→review loop\n",
+                "  /review            Manually spawn supervisor in review mode\n",
+                "  /status            Show task state, agent list, and session log paths\n",
+                "  /attach <name>     Attach to a running background session (Ctrl+] d to detach)\n",
+                "  /stop              Stop all running agent sessions\n",
+                "  /reset             Reset state to Idle (clears task files)\n",
+                "  /init              Initialize ferrus in the current directory\n",
+                "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
+                "  /quit              Exit HQ",
+            ));
+        }
         ShellCommand::Reset => ctx.reset().await?,
+        ShellCommand::Stop => ctx.stop().await?,
         ShellCommand::Plan => ctx.plan().await?,
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
@@ -379,6 +394,39 @@ impl HqContext {
 
         self.last_task_state = Some(TaskState::Idle);
         display::print_info("State reset to Idle. All task files cleared.");
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> Result<()> {
+        let answer = tokio::task::block_in_place(|| -> String {
+            print!("  Stop all running agents? [y/N] ");
+            let _ = std::io::stdout().flush();
+            let mut buf = String::new();
+            let _ = std::io::stdin().read_line(&mut buf);
+            buf.trim().to_lowercase()
+        });
+
+        if !matches!(answer.as_str(), "y" | "yes") {
+            display::print_info("Stop cancelled.");
+            return Ok(());
+        }
+
+        // Drop PTY sessions — this closes the PTY master, which on Unix typically
+        // sends SIGHUP to the child process. Not guaranteed across all platforms.
+        self.sessions.remove("executor-1");
+        self.sessions.remove("supervisor-1");
+
+        // Update agents.json to reflect Suspended status.
+        let mut reg = agents::read_agents().await?;
+        for role in ["executor", "supervisor"] {
+            if let Some(entry) = reg.by_role_mut(role) {
+                entry.pid = None;
+                entry.status = agents::AgentStatus::Suspended;
+            }
+        }
+        agents::write_agents(&reg).await?;
+
+        display::print_info("All agent sessions stopped.");
         Ok(())
     }
 

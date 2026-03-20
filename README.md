@@ -52,14 +52,19 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/review` | Manually spawn supervisor in review mode (if automatic spawning failed or HQ restarted) |
 | `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl+] d to detach |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`) |
+| `/stop` | Stop all running agent sessions (prompts for confirmation) |
+| `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
-| `/register` | Register agents (same as `ferrus register`) |
+| `/register` | Register agent configs (same as `ferrus register`) |
+| `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
-> **Detach key:** `Ctrl+] d` detaches from an attached session without killing it. `Ctrl+] Ctrl+]` sends a literal `Ctrl+]` to the agent.
->
-> `Ctrl+]` is ASCII 0x1D (GS) — not intercepted by tmux, readline, or Claude Code.
+> **Detach key:** While attached to a session, press **Ctrl+]** then **d** to detach without killing the agent.
+> - Ctrl+] is the prefix — pressing it alone does nothing visible (it's held until the next key).
+> - Ctrl+] d → detach and return to HQ.
+> - Ctrl+] Ctrl+] → send a literal Ctrl+] to the agent (escape hatch).
+> - Ctrl+] is ASCII 0x1D (GS) — not intercepted by tmux, readline, or Claude Code.
 
 ### How the loop works
 
