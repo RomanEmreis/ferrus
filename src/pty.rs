@@ -277,8 +277,12 @@ fn spawn_stdin_relay(
 /// Why attach() returned.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DetachReason {
+    /// User pressed Ctrl+] d.
     UserDetach,
+    /// The PTY process exited.
     ProcessExit,
+    /// HQ determined the session's work is done (state transitioned out of the active range).
+    AutoDetach,
 }
 
 /// A live background PTY session.
@@ -293,6 +297,9 @@ pub struct BackgroundSession {
     pub log_path: PathBuf,
     /// Swapped to Some(stdout) during /attach, None otherwise.
     pub stdout_sink: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    /// Fire to auto-detach any currently-attached terminal.
+    /// Typically signalled by HQ when a state transition indicates the session is done.
+    pub force_detach: Arc<tokio::sync::Notify>,
 }
 
 /// Spawn `binary args` in a background PTY.  Output streams to `log_path` always;
@@ -399,6 +406,7 @@ pub fn spawn_background(
         exit_rx,
         log_path: log_path.to_path_buf(),
         stdout_sink,
+        force_detach: Arc::new(tokio::sync::Notify::new()),
     })
 }
 
@@ -472,31 +480,32 @@ impl BackgroundSession {
             }
         };
 
-        // Wait for relay to finish (user detach / stdin EOF) or process to exit.
+        // Wait for relay to finish, process to exit, or HQ to force-detach.
         //
-        // IMPORTANT: we capture the relay result here via `r` so we don't have to
-        // await the JoinHandle a second time.  Awaiting a JoinHandle that was already
-        // polled to completion via `&mut relay` would panic.
-        let mut relay_result: Option<DetachReason> = None;
-        let process_exited = tokio::select! {
+        // IMPORTANT: capture the relay result via `r` here — don't await relay again
+        // after the select since the JoinHandle is consumed on the first poll-to-completion.
+        enum SelectOutcome { RelayDone(DetachReason), ProcessExited, ForceDetach }
+        let outcome = tokio::select! {
             // relay arm: relay returned on its own (UserDetach or stdin EOF).
-            // Capture result immediately — don't await relay again after this.
-            r = &mut relay => {
-                relay_result = Some(r.unwrap_or(DetachReason::ProcessExit));
-                false
-            }
-            // exit arm: process exited; relay is still running — we must cancel it.
-            _ = exit_rx.changed() => true,
+            r = &mut relay => SelectOutcome::RelayDone(r.unwrap_or(DetachReason::ProcessExit)),
+            // exit arm: PTY process exited.
+            _ = exit_rx.changed() => SelectOutcome::ProcessExited,
+            // force-detach arm: HQ determined this session's work is done.
+            _ = self.force_detach.notified() => SelectOutcome::ForceDetach,
         };
 
-        // Signal relay to stop (if it's still running) and wait briefly so stdin is
-        // free before rustyline takes over.
-        let reason = if process_exited {
-            cancel.signal_and_wait(relay, 100).await;
-            DetachReason::ProcessExit
-        } else {
-            drop(cancel);
-            relay_result.unwrap_or(DetachReason::ProcessExit)
+        // If relay is still running (non-relay arms), signal it to stop and wait briefly
+        // so stdin is free before rustyline takes over.
+        let reason = match outcome {
+            SelectOutcome::RelayDone(r) => { drop(cancel); r }
+            SelectOutcome::ProcessExited => {
+                cancel.signal_and_wait(relay, 100).await;
+                DetachReason::ProcessExit
+            }
+            SelectOutcome::ForceDetach => {
+                cancel.signal_and_wait(relay, 100).await;
+                DetachReason::AutoDetach
+            }
         };
 
         // Stop mirroring to stdout before terminal restore so the drain thread

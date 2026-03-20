@@ -100,7 +100,39 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
             if let Some(session) = ctx.sessions.get(&name) {
-                display::print_info(&format!("Attaching to {name}. Ctrl+] d to detach.",));
+                // Spawn a watcher that fires force_detach when the state transitions
+                // out of the range where this session should still be running.
+                // This is needed because drain_state_changes() only runs between readline
+                // calls — it can't fire while the HQ loop is blocked in attach().
+                let force_detach = std::sync::Arc::clone(&session.force_detach);
+                let mut state_rx_clone = ctx.state_rx.clone();
+                let is_executor = name.starts_with("executor");
+                let watcher = tokio::spawn(async move {
+                    use crate::state::machine::TaskState;
+                    loop {
+                        if state_rx_clone.changed().await.is_err() {
+                            break;
+                        }
+                        let done = state_rx_clone.borrow().as_ref().is_some_and(|sd| {
+                            if is_executor {
+                                !matches!(
+                                    sd.state,
+                                    TaskState::Executing
+                                        | TaskState::Addressing
+                                        | TaskState::Checking
+                                )
+                            } else {
+                                sd.state != TaskState::Reviewing
+                            }
+                        });
+                        if done {
+                            force_detach.notify_one();
+                            break;
+                        }
+                    }
+                });
+
+                display::print_info(&format!("Attaching to {name}. Ctrl+] d to detach."));
                 match session.attach().await {
                     Ok(crate::pty::DetachReason::UserDetach) => display::print_info(&format!(
                         "Detached from {name}. Use /attach {name} to reconnect."
@@ -109,8 +141,14 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                         display::print_info(&format!("{name} process exited."));
                         ctx.sessions.remove(&name);
                     }
+                    Ok(crate::pty::DetachReason::AutoDetach) => {
+                        display::print_info(&format!(
+                            "{name} task is done — returning to HQ. Agent may still be running; use /attach {name} to reconnect."
+                        ));
+                    }
                     Err(e) => display::print_error(&format!("Attach error: {e}")),
                 }
+                watcher.abort();
             } else {
                 display::print_error(&format!(
                     "No session named '{name}'. Run /status to see active sessions."

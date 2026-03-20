@@ -186,6 +186,8 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
+             **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
+             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
         "supervisor" => format!(
@@ -194,7 +196,7 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              The Supervisor runs in one of two modes — check your initial prompt:\n\n\
              **Plan mode** (\"You are in planning mode\"): Collaborate with the user to define the task, \
-             then call `/create_task`. After success, tell the user to press Ctrl-D to return to HQ. \
+             then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds. \
              Do NOT call `/wait_for_review`.\n\n\
              **Review mode** (\"You are in review mode\"): Call `/wait_for_review`, then `/review_pending`, \
              then `/approve` or `/reject`. After deciding, you are done — exit.\n\n\
@@ -239,6 +241,8 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
+             **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
+             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
         "supervisor" => format!(
@@ -247,7 +251,7 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              The Supervisor runs in one of two modes — check your initial prompt:\n\n\
              **Plan mode** (\"You are in planning mode\"): Collaborate with the user to define the task, \
-             then call `/create_task`. After success, tell the user to press Ctrl-D to return to HQ. \
+             then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds. \
              Do NOT call `/wait_for_review`.\n\n\
              **Review mode** (\"You are in review mode\"): Call `/wait_for_review`, then `/review_pending`, \
              then `/approve` or `/reject`. After deciding, you are done — exit.\n\n\

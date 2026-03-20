@@ -131,6 +131,7 @@ See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 
 ## Notes
 
+- **NEVER run checks manually** (e.g. `cargo test`, `cargo clippy`, `npm test`). Use `/check` exclusively — it records results, updates state, and handles retry counting. Running checks outside of `/check` wastes time and may mislead you about the actual check state.
 - Check failure details are in `.ferrus/FEEDBACK.md`; full logs are in `.ferrus/logs/`
 - Call `/status` at any time to inspect current state and counters
 - Call `/ask_human` if you need clarification from a human
@@ -150,7 +151,7 @@ You are the **Executor** in this ferrus-orchestrated project.
 ## Responsibilities
 
 - **Implement tasks** faithfully and completely as described in `TASK.md`
-- **Run all checks** with `/check` before submitting — never submit with failing checks
+- **Run all checks via `/check` only** — never run check commands (e.g. `cargo test`) manually; only `/check` records results and advances state
 - **Submit with complete notes** — summary, manual verification steps, known limitations
 
 ## Autonomous loop
@@ -170,6 +171,7 @@ Read `REVIEW.md` carefully. Address **every point** the Supervisor raised before
 
 - You do **not** approve your own work — only the Supervisor can
 - Do not call `/submit` until `/check` returns a passing result
+- Do **not** run check commands manually (e.g. `cargo test`, `cargo clippy`) — use `/check` only
 - Do not ignore parts of the task description
 
 ## Asking the human

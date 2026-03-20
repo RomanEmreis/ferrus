@@ -65,6 +65,8 @@ When spawned by `ferrus` HQ, your initial prompt will tell you what to do.
 
 If started manually: call MCP tool `/wait_for_task` as your first action.
 
+**IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`, `npm test`). Always use the `/check` MCP tool — it records results, updates state, and handles retry counting. Running checks outside of `/check` wastes a round-trip and may mislead you about whether the task is actually passing.
+
 Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
 
 ## Ferrus Supervisor
