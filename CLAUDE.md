@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`ferrus` is a Rust MCP server that coordinates AI agents: a **Supervisor** (plans, reviews) and one or more **Executors** (writes code, fixes issues). State is shared via `.ferrus/` on disk; two separate ferrus processes (one per agent) communicate through that directory.
+`ferrus` is a Rust AI agent orchestrator for software projects. It drives a **Supervisor–Executor** workflow: the Supervisor plans tasks and reviews submissions, the Executor implements and checks its own work. State is shared via `.ferrus/` on disk; agents coordinate through that directory using MCP as the tool transport.
 
 Licensed under Apache 2.0.
 
@@ -46,7 +46,7 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl+] d to detach |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
 | `/register` | Register agents (same as `ferrus register`) |
 | `/quit` | Exit HQ |
@@ -186,14 +186,14 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
-  pty.rs                     # BackgroundSession, spawn_background, Ctrl-B d FSM, attach()
+  pty.rs                     # BackgroundSession, spawn_background, Ctrl+] d FSM, attach()
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, sends on watch channel
-  hq/repl.rs                 # readline_loop (rustyline, runs in spawn_blocking)
+  hq/repl.rs                 # readline_once (rustyline, runs via block_in_place — DefaultEditor is !Send)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # print_status, print_transition, print_info, print_error
-  hq/agent_manager.rs        # spawn_and_wait, spawn_background_pty, kill_role; agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (foreground + background PTY); agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
     heartbeat.rs             # /heartbeat — lease renewal
@@ -208,7 +208,7 @@ This repository is orchestrated by Ferrus HQ.
 
 The Supervisor runs in one of two modes — check your initial prompt:
 
-**Plan mode** ("You are in planning mode"): Collaborate with the user to define the task, then call `/create_task`. After `/create_task` succeeds, **exit immediately**. Do NOT call `/wait_for_review`.
+**Plan mode** ("You are in planning mode"): Collaborate with the user to define the task, then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds — you do not need to exit. Do NOT call `/wait_for_review`.
 
 **Review mode** ("You are in review mode"): Call `/wait_for_review`, then `/review_pending` to read TASK.md + SUBMISSION.md, then `/approve` or `/reject`. After deciding, **exit**.
 

@@ -16,8 +16,8 @@ Your initial prompt says: *"You are in planning mode."*
 
 1. Collaborate with the user to define what needs to be done
 2. Call `/create_task` with a detailed Markdown description of what must be done
-3. **Exit immediately.** You are done. Do NOT call `/wait_for_review`.
-   The HQ will spawn a reviewer automatically when the Executor submits.
+3. You are done. The HQ automatically terminates this session and starts the executor.
+   Do NOT call `/wait_for_review`.
 
 ## Review mode
 

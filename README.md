@@ -52,14 +52,14 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/review` | Manually spawn supervisor in review mode (if automatic spawning failed or HQ restarted) |
 | `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl+] d to detach |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
 | `/register` | Register agents (same as `ferrus register`) |
 | `/quit` | Exit HQ |
 
-> **Detach key:** `Ctrl-B d` detaches from an attached session without killing it. `Ctrl-B Ctrl-B` sends a literal `Ctrl-B` to the agent.
+> **Detach key:** `Ctrl+] d` detaches from an attached session without killing it. `Ctrl+] Ctrl+]` sends a literal `Ctrl+]` to the agent.
 >
-> **Inside tmux:** tmux intercepts `Ctrl-B` as its own prefix. Press `Ctrl-B Ctrl-B d` instead — tmux consumes the first `Ctrl-B`, forwards the second as a literal to ferrus, and `d` triggers detach.
+> `Ctrl+]` is ASCII 0x1D (GS) — not intercepted by tmux, readline, or Claude Code.
 
 ### How the loop works
 

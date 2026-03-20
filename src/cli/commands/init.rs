@@ -46,8 +46,8 @@ Your initial prompt says: *"You are in planning mode."*
 
 1. Collaborate with the user to define what needs to be done
 2. Call `/create_task` with a detailed Markdown description of what must be done
-3. **Exit immediately.** You are done. Do NOT call `/wait_for_review`.
-   The HQ will spawn a reviewer automatically when the Executor submits.
+3. You are done. The HQ automatically terminates this session and starts the executor.
+   Do NOT call `/wait_for_review`.
 
 ## Review mode
 
@@ -229,7 +229,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 |---|---|
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/review` | Manually spawn supervisor in review mode (if automatic spawning failed) |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl-B d to detach |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`). Ctrl+] d to detach |
 | `/status` | Show task state, agent list, and PTY session log paths |
 | `/init` | Initialize ferrus in the current directory |
 | `/register` | Register agents |

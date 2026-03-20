@@ -9,41 +9,47 @@ use tokio::sync::watch;
 
 // ── Prefix-key FSM ────────────────────────────────────────────────────────────
 
+/// Detach prefix key: Ctrl+] (0x1D, ASCII GS).
+/// Chosen to avoid conflicts with tmux (Ctrl+B), readline (Ctrl+A/E/B/F), and Claude Code.
+const PREFIX_KEY: u8 = 0x1D;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrefixKeyState {
     Normal,
-    GotCtrlB,
+    /// Received PREFIX_KEY; waiting to see if next byte is 'd' (detach) or another PREFIX_KEY
+    /// (pass-through), or something else (forward both).
+    GotPrefix,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum RelayDecision {
     /// Bytes to forward to the PTY (may be empty — swallowed prefix char).
     Forward(Vec<u8>),
-    /// Ctrl-B d was detected — caller should detach.
+    /// Ctrl+] d was detected — caller should detach.
     Detach,
 }
 
-/// Pure function: process one byte through the Ctrl-B d FSM.
-/// Ctrl-B Ctrl-B → forward a literal Ctrl-B (escape hatch).
+/// Pure function: process one byte through the Ctrl+] d FSM.
+/// Ctrl+] Ctrl+] → forward a literal Ctrl+] (escape hatch).
 pub fn process_byte(byte: u8, state: &mut PrefixKeyState) -> RelayDecision {
     match (&*state, byte) {
-        (PrefixKeyState::Normal, 0x02) => {
-            *state = PrefixKeyState::GotCtrlB;
+        (PrefixKeyState::Normal, b) if b == PREFIX_KEY => {
+            *state = PrefixKeyState::GotPrefix;
             RelayDecision::Forward(vec![]) // swallow until we know intent
         }
-        (PrefixKeyState::GotCtrlB, b'd') => {
+        (PrefixKeyState::GotPrefix, b'd') => {
             *state = PrefixKeyState::Normal;
             RelayDecision::Detach
         }
-        (PrefixKeyState::GotCtrlB, 0x02) => {
-            // Ctrl-B Ctrl-B → forward a literal Ctrl-B
+        (PrefixKeyState::GotPrefix, b) if b == PREFIX_KEY => {
+            // Ctrl+] Ctrl+] → forward a literal Ctrl+]
             *state = PrefixKeyState::Normal;
-            RelayDecision::Forward(vec![0x02])
+            RelayDecision::Forward(vec![PREFIX_KEY])
         }
-        (PrefixKeyState::GotCtrlB, other) => {
-            // Unknown sequence → forward Ctrl-B + the key verbatim
+        (PrefixKeyState::GotPrefix, other) => {
+            // Unknown sequence → forward Ctrl+] + the key verbatim
             *state = PrefixKeyState::Normal;
-            RelayDecision::Forward(vec![0x02, other])
+            RelayDecision::Forward(vec![PREFIX_KEY, other])
         }
         // Use `b` not `byte` to avoid shadowing the function parameter of the same name.
         (PrefixKeyState::Normal, b) => RelayDecision::Forward(vec![b]),
@@ -95,6 +101,15 @@ pub fn spawn_background(
     for arg in args {
         cmd.arg(arg);
     }
+    // Explicitly set CWD so the child finds project-local config files (e.g. .codex/config.toml).
+    // Relying on fork-inherited CWD is not always reliable across portable-pty backends.
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.cwd(cwd);
+    }
+    // Forward TERM so agents that inspect it (e.g. codex) see a real terminal type.
+    let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
+    cmd.env("TERM", term);
+
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -178,8 +193,8 @@ impl BackgroundSession {
     /// Attach the terminal to this session.
     ///
     /// - Enables crossterm raw mode so all keystrokes go to the PTY.
-    /// - Spawns a blocking stdin relay with Ctrl-B d interception.
-    /// - Returns when the user presses Ctrl-B d or the process exits.
+    /// - Spawns a blocking stdin relay with Ctrl+] d interception.
+    /// - Returns when the user presses Ctrl+] d or the process exits.
     ///
     /// Stdin is not contended: HQ's one-shot readline returns *before* calling
     /// attach(), so there is no background readline task during attach.
@@ -260,13 +275,25 @@ impl BackgroundSession {
             _ = exit_rx.changed() => DetachReason::ProcessExit,
         };
 
-        // Always restore terminal before returning.
-        disable_raw_mode().ok();
-
-        // Stop mirroring output to stdout.
+        // Stop mirroring output to stdout first, so the drain thread doesn't race
+        // with our terminal restore writes.
         {
             let mut sink = self.stdout_sink.lock().unwrap();
             *sink = None;
+        }
+
+        // Always restore terminal before returning.
+        disable_raw_mode().ok();
+
+        // Restore terminal state that the attached agent may have modified:
+        //   \x1b[?1049l  leave alternate screen (Claude Code uses it for its TUI)
+        //   \x1b[?25h    show cursor (may have been hidden by the agent)
+        //   \x1b[0m      reset SGR attributes (colors, bold, etc.)
+        // These are no-ops if the terminal was not in those modes.
+        {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(b"\x1b[?1049l\x1b[?25h\x1b[0m\r\n");
+            let _ = std::io::stdout().flush();
         }
 
         Ok(reason)
@@ -288,49 +315,55 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_b_swallowed_and_transitions() {
+    fn prefix_swallowed_and_transitions() {
         let mut s = PrefixKeyState::Normal;
-        assert_eq!(process_byte(0x02, &mut s), RelayDecision::Forward(vec![]));
-        assert_eq!(s, PrefixKeyState::GotCtrlB);
+        assert_eq!(
+            process_byte(PREFIX_KEY, &mut s),
+            RelayDecision::Forward(vec![])
+        );
+        assert_eq!(s, PrefixKeyState::GotPrefix);
     }
 
     #[test]
-    fn ctrl_b_d_detaches() {
-        let mut s = PrefixKeyState::GotCtrlB;
+    fn prefix_d_detaches() {
+        let mut s = PrefixKeyState::GotPrefix;
         assert_eq!(process_byte(b'd', &mut s), RelayDecision::Detach);
         assert_eq!(s, PrefixKeyState::Normal);
     }
 
     #[test]
-    fn ctrl_b_ctrl_b_forwards_literal_ctrl_b() {
-        let mut s = PrefixKeyState::GotCtrlB;
+    fn prefix_prefix_forwards_literal_prefix() {
+        let mut s = PrefixKeyState::GotPrefix;
         assert_eq!(
-            process_byte(0x02, &mut s),
-            RelayDecision::Forward(vec![0x02])
+            process_byte(PREFIX_KEY, &mut s),
+            RelayDecision::Forward(vec![PREFIX_KEY])
         );
         assert_eq!(s, PrefixKeyState::Normal);
     }
 
     #[test]
-    fn ctrl_b_unknown_key_forwards_both() {
-        let mut s = PrefixKeyState::GotCtrlB;
+    fn prefix_unknown_key_forwards_both() {
+        let mut s = PrefixKeyState::GotPrefix;
         assert_eq!(
             process_byte(b'x', &mut s),
-            RelayDecision::Forward(vec![0x02, b'x'])
+            RelayDecision::Forward(vec![PREFIX_KEY, b'x'])
         );
         assert_eq!(s, PrefixKeyState::Normal);
     }
 
     #[test]
-    fn sequence_normal_ctrl_b_d_detach() {
+    fn sequence_normal_prefix_d_detach() {
         let mut s = PrefixKeyState::Normal;
         // 'h' forwarded
         assert_eq!(
             process_byte(b'h', &mut s),
             RelayDecision::Forward(vec![b'h'])
         );
-        // Ctrl-B swallowed
-        assert_eq!(process_byte(0x02, &mut s), RelayDecision::Forward(vec![]));
+        // Ctrl+] swallowed
+        assert_eq!(
+            process_byte(PREFIX_KEY, &mut s),
+            RelayDecision::Forward(vec![])
+        );
         // 'd' → detach
         assert_eq!(process_byte(b'd', &mut s), RelayDecision::Detach);
     }

@@ -123,10 +123,17 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
     let index = count_codex_entries(mcp_servers, role, agent_name) + 1;
     let key = format!("ferrus-{role}-{index}");
 
+    // Use the absolute path of the running binary so codex can find it
+    // regardless of whether ~/.cargo/bin is in its PATH.
+    let command = std::env::current_exe()
+        .context("Failed to resolve current executable path")?
+        .to_string_lossy()
+        .into_owned();
+
     let mut entry = toml::Table::new();
     entry.insert(
         "command".to_string(),
-        toml::Value::String("ferrus".to_string()),
+        toml::Value::String(command),
     );
     entry.insert(
         "args".to_string(),
@@ -188,11 +195,13 @@ fn agents_md_section(role: &str, marker: &str) -> String {
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
-             When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`.\n\n\
-             When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md,\n\
-             then call `/review_pending`, `/approve` or `/reject`.\n\n\
-             If started manually: call `/status` first, then follow \
-             `.agents/skills/ferrus-supervisor/SKILL.md`.\n"
+             The Supervisor runs in one of two modes — check your initial prompt:\n\n\
+             **Plan mode** (\"You are in planning mode\"): Collaborate with the user to define the task, \
+             then call `/create_task`. After success, tell the user to press Ctrl-D to return to HQ. \
+             Do NOT call `/wait_for_review`.\n\n\
+             **Review mode** (\"You are in review mode\"): Call `/wait_for_review`, then `/review_pending`, \
+             then `/approve` or `/reject`. After deciding, you are done — exit.\n\n\
+             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.\n"
         ),
         _ => format!(
             "\n{marker}\n\
@@ -239,11 +248,13 @@ fn claude_md_section(role: &str, marker: &str) -> String {
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
-             When spawned via `/plan`: collaborate with the user to define the task, then call `/create_task`.\n\n\
-             When spawned for review: your initial prompt will direct you — read TASK.md + SUBMISSION.md,\n\
-             then call `/review_pending`, `/approve` or `/reject`.\n\n\
-             If started manually: call `/status` first, then follow \
-             `.agents/skills/ferrus-supervisor/SKILL.md`.\n"
+             The Supervisor runs in one of two modes — check your initial prompt:\n\n\
+             **Plan mode** (\"You are in planning mode\"): Collaborate with the user to define the task, \
+             then call `/create_task`. After success, tell the user to press Ctrl-D to return to HQ. \
+             Do NOT call `/wait_for_review`.\n\n\
+             **Review mode** (\"You are in review mode\"): Call `/wait_for_review`, then `/review_pending`, \
+             then `/approve` or `/reject`. After deciding, you are done — exit.\n\n\
+             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.\n"
         ),
         _ => format!(
             "\n{marker}\n\

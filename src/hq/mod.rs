@@ -4,7 +4,7 @@ mod display;
 mod repl;
 mod state_watcher; // stub for next task
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::watch;
 
 use crate::state::{
@@ -333,10 +333,13 @@ impl HqContext {
         .await
     }
 
-    /// Synchronous planning flow (still interactive — user types with supervisor).
+    /// Planning flow: spawn supervisor interactively, then kill it automatically as soon as
+    /// /create_task transitions the state to Executing.
     async fn plan(&mut self) -> Result<()> {
         use crate::config::Config;
         use crate::state::machine::TaskState;
+        use std::process::Stdio;
+        use tokio::process::Command;
 
         let config = Config::load().await?;
         let hq = config.hq.ok_or_else(|| {
@@ -357,23 +360,69 @@ impl HqContext {
         self.executor_type = Some(hq.executor.clone());
 
         display::print_info(&format!("Spawning supervisor ({})…", hq.supervisor));
-        display::print_info(
-            "Collaborate with the supervisor to define the task. Exit it when done.",
-        );
+        display::print_info("Collaborate with the supervisor to define the task.");
 
-        // Interactive planning — foreground so user can type.
-        agent_manager::spawn_and_wait(
-            &hq.supervisor,
-            "supervisor",
-            "supervisor-1",
-            Some(agent_manager::supervisor_plan_prompt()),
-        )
-        .await?;
+        let binary = agent_manager::agent_binary(&hq.supervisor);
+        let prompt = agent_manager::supervisor_plan_prompt();
 
-        // After supervisor exits, check if a task was created.
+        let mut child = Command::new(binary)
+            .arg(prompt)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("Failed to spawn {binary}"))?;
+
+        // Register in agents.json.
+        {
+            use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+            let mut reg = read_agents().await?;
+            reg.upsert(AgentEntry {
+                role: "supervisor".into(),
+                agent_type: hq.supervisor.clone(),
+                name: "supervisor-1".into(),
+                pid: child.id(),
+                status: AgentStatus::Running,
+                started_at: Some(chrono::Utc::now()),
+            });
+            write_agents(&reg).await?;
+        }
+
+        // Poll STATE.json every 300 ms while the supervisor runs.
+        // As soon as /create_task moves state to Executing, kill the supervisor
+        // and let HQ take over — no need for the user to manually exit.
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
+        loop {
+            tokio::select! {
+                _ = child.wait() => break, // exited naturally
+                _ = ticker.tick() => {
+                    if let Ok(s) = store::read_state().await {
+                        if s.state == TaskState::Executing {
+                            display::print_info("Task created — stopping supervisor…");
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark supervisor as Suspended in agents.json.
+        {
+            use agents::{read_agents, write_agents, AgentStatus};
+            let mut reg = read_agents().await?;
+            if let Some(e) = reg.by_role_mut("supervisor") {
+                e.pid = None;
+                e.status = AgentStatus::Suspended;
+            }
+            write_agents(&reg).await?;
+        }
+
+        // Spawn executor if task was created.
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
-            display::print_info("Task created — spawning executor in background…");
+            display::print_info("Spawning executor in background…");
             self.spawn_background_session(
                 &hq.executor,
                 "executor",
@@ -382,7 +431,7 @@ impl HqContext {
             )
             .await?;
             display::print_info(
-                "Executor running. State changes will print automatically. Use /attach executor-1 to observe.",
+                "Executor running. State changes print automatically. Use /attach executor-1 to observe.",
             );
         } else {
             display::print_info(&format!(
