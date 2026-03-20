@@ -44,9 +44,10 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | Command | Description |
 |---|---|
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
+| `/execute` | Manually start or resume the executor (escape hatch if automatic spawning failed) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`) |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`); auto-detaches when agent's task completes |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
@@ -125,7 +126,7 @@ executor = "codex"          # agent for executor role: claude-code | codex
 | `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman (fallback) | Ask the human a question; uses MCP elicitation when supported, otherwise pauses to AwaitingHuman |
 | `/answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `/status` | any | — | Print current state + retry counters |
-| `/reset` | Failed | Idle | Human escape hatch; clears feedback, review, and submission files |
+| `/reset` | any | Idle | Human escape hatch; clears feedback, review, and submission files; prompts if agent is actively working |
 
 ## MCP Resources
 
@@ -163,7 +164,8 @@ Idle
 
 Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human` when elicitation is unavailable. `/answer` restores the previous state.
 
-`/reset`: Failed → Idle (human intervention).
+- `/plan` from `Complete` → silently resets to Idle and starts the next task.
+- `/reset`: works from any state; prompts for confirmation if Executing or Reviewing.
 
 ## Runtime Files (`.ferrus/`)
 

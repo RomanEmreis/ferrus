@@ -33,7 +33,7 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
-  pty.rs                     # BackgroundSession, spawn_background, Ctrl+] d FSM, attach()
+  pty.rs                     # BackgroundSession (+ force_detach: Arc<Notify>), spawn_background, Ctrl+] d FSM, attach(); DetachReason enum (UserDetach / ProcessExit / AutoDetach); strip_ansi(); RelayCancel + libc::poll-based stdin relay
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel

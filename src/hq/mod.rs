@@ -445,8 +445,14 @@ impl HqContext {
     }
 
     async fn reset(&mut self) -> Result<()> {
+        self.do_reset(true).await
+    }
+
+    /// Core reset logic.  If `prompt` is true and the state is active (Executing/Reviewing),
+    /// ask for confirmation before proceeding.
+    async fn do_reset(&mut self, prompt: bool) -> Result<()> {
         let mut state = store::read_state().await?;
-        if matches!(state.state, TaskState::Executing | TaskState::Reviewing) {
+        if prompt && matches!(state.state, TaskState::Executing | TaskState::Reviewing) {
             let answer = tokio::task::block_in_place(|| -> String {
                 print!(
                     "  Reset while state is {:?} — agents may be running. Continue? [y/N] ",
@@ -540,11 +546,19 @@ impl HqContext {
         })?;
 
         let state = store::read_state().await?;
-        if state.state != TaskState::Idle {
-            anyhow::bail!(
-                "State is {:?} — /plan requires Idle. Use /status.",
-                state.state
-            );
+        match state.state {
+            TaskState::Idle => {} // ready
+            TaskState::Complete => {
+                // Previous task is done — silently reset so the user can plan the next one
+                // without an extra /reset step. No confirmation needed: Complete is a success state.
+                display::print_info("Previous task complete — resetting for new task.");
+                self.do_reset(false).await?;
+            }
+            other => {
+                anyhow::bail!(
+                    "State is {other:?} — /plan requires Idle or Complete. Use /reset first if needed."
+                );
+            }
         }
 
         self.supervisor_type = Some(hq.supervisor.clone());

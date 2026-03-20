@@ -50,9 +50,10 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 | Command | Description |
 |---|---|
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
+| `/execute` | Manually start or resume the executor (escape hatch if automatic spawning failed) |
 | `/review` | Manually spawn supervisor in review mode (if automatic spawning failed or HQ restarted) |
 | `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`) |
+| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`); auto-detaches when the agent's task completes |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
@@ -95,7 +96,10 @@ Idle
                    └─► Complete ← approve (Supervisor)
 ```
 
-Any active state can pause to `AwaitingHuman` when an agent needs human input. `/reset` recovers `Failed → Idle`.
+Any active state can pause to `AwaitingHuman` when an agent needs human input.
+
+- `/plan` from `Complete` → silently resets to Idle and starts the next task (no extra step needed).
+- `/reset` → Idle from any state; prompts for confirmation if an agent is actively working.
 
 ---
 
