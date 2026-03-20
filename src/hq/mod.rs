@@ -5,6 +5,7 @@ mod repl;
 mod state_watcher; // stub for next task
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use tokio::sync::watch;
 
 use crate::state::{
@@ -18,7 +19,7 @@ pub async fn run() -> Result<()> {
     use rustyline::DefaultEditor;
 
     reconcile_agent_pids().await;
-    display::print_info("ferrus HQ — /status, /plan, /attach <name>, /quit, /help");
+    display::print_info("ferrus HQ — /status, /reset, /plan, /attach <name>, /quit, /help");
 
     let (state_tx, state_rx) = watch::channel::<Option<StateData>>(None);
     tokio::spawn(state_watcher::watch(state_tx));
@@ -77,6 +78,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 }
             }
         }
+        ShellCommand::Reset => ctx.reset().await?,
         ShellCommand::Plan => ctx.plan().await?,
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
@@ -331,6 +333,53 @@ impl HqContext {
             Some(agent_manager::reviewer_prompt()),
         )
         .await
+    }
+
+    async fn reset(&mut self) -> Result<()> {
+        let mut state = store::read_state().await?;
+        if matches!(state.state, TaskState::Executing | TaskState::Reviewing) {
+            let answer = tokio::task::block_in_place(|| -> String {
+                print!(
+                    "  Reset while state is {:?} — agents may be running. Continue? [y/N] ",
+                    state.state
+                );
+                let _ = std::io::stdout().flush();
+                let mut buf = String::new();
+                let _ = std::io::stdin().read_line(&mut buf);
+                buf.trim().to_lowercase()
+            });
+
+            if !matches!(answer.as_str(), "y" | "yes") {
+                display::print_info("Reset cancelled.");
+                return Ok(());
+            }
+        }
+
+        self.sessions.remove("executor-1");
+        self.sessions.remove("supervisor-1");
+
+        let mut reg = agents::read_agents().await?;
+        for role in ["executor", "supervisor"] {
+            if let Some(entry) = reg.by_role_mut(role) {
+                entry.pid = None;
+                entry.status = agents::AgentStatus::Suspended;
+            }
+        }
+        agents::write_agents(&reg).await?;
+
+        store::clear_task().await?;
+        store::clear_submission().await?;
+        store::clear_answer().await?;
+        store::clear_feedback().await?;
+        store::clear_question().await?;
+        store::clear_review().await?;
+
+        state.force_reset();
+        store::write_state(&state).await?;
+
+        self.last_task_state = Some(TaskState::Idle);
+        display::print_info("State reset to Idle. All task files cleared.");
+        Ok(())
     }
 
     /// Planning flow: spawn supervisor interactively, then kill it automatically as soon as

@@ -91,6 +91,11 @@ pub enum TransitionError {
 }
 
 impl StateData {
+    /// Reset to Idle from any state. Used by the HQ `/reset` command.
+    pub fn force_reset(&mut self) {
+        *self = Self::default();
+    }
+
     /// True if a non-expired lease exists (`lease_until` is set and in the future).
     #[allow(dead_code)]
     pub fn is_claimed(&self) -> bool {

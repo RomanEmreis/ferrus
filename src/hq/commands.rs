@@ -12,6 +12,8 @@ struct HqCli {
 pub enum ShellCommand {
     /// Show task state and agent list.
     Status,
+    /// Reset all task files and set state to Idle (prompts for confirmation if state is Executing or Reviewing).
+    Reset,
     /// Exit HQ.
     Quit,
     /// Spawn the supervisor and plan a task.
@@ -62,6 +64,13 @@ mod tests {
         assert!(matches!(
             parse_command("/status").unwrap(),
             ShellCommand::Status
+        ));
+    }
+    #[test]
+    fn parse_reset() {
+        assert!(matches!(
+            parse_command("/reset").unwrap(),
+            ShellCommand::Reset
         ));
     }
     #[test]

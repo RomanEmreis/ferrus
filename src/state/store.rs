@@ -69,6 +69,10 @@ pub async fn write_task(content: &str) -> Result<()> {
     write_file("TASK.md", content).await
 }
 
+pub async fn clear_task() -> Result<()> {
+    write_task("").await
+}
+
 pub async fn read_feedback() -> Result<String> {
     read_file("FEEDBACK.md").await
 }
@@ -126,6 +130,14 @@ pub async fn write_question(content: &str) -> Result<()> {
 
 pub async fn write_answer(content: &str) -> Result<()> {
     write_file("ANSWER.md", content).await
+}
+
+pub async fn clear_question() -> Result<()> {
+    write_file("QUESTION.md", "").await
+}
+
+pub async fn clear_answer() -> Result<()> {
+    write_file("ANSWER.md", "").await
 }
 
 async fn read_file(filename: &str) -> Result<String> {

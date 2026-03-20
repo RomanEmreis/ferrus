@@ -131,10 +131,7 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
         .into_owned();
 
     let mut entry = toml::Table::new();
-    entry.insert(
-        "command".to_string(),
-        toml::Value::String(command),
-    );
+    entry.insert("command".to_string(), toml::Value::String(command));
     entry.insert(
         "args".to_string(),
         toml::Value::Array(vec![
