@@ -2,7 +2,11 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "ferrus-hq", no_binary_name = true, disable_help_subcommand = true)]
+#[command(
+    name = "ferrus-hq",
+    no_binary_name = true,
+    disable_help_subcommand = true
+)]
 struct HqCli {
     #[command(subcommand)]
     command: ShellCommand,
@@ -20,6 +24,8 @@ pub enum ShellCommand {
     Quit,
     /// Spawn the supervisor and plan a task.
     Plan,
+    /// Start or resume the executor.
+    Execute,
     /// Attach terminal to a running background session. Ctrl+] d to detach.
     Attach { name: String },
     /// Manually spawn supervisor in review mode (for the current Reviewing submission).
@@ -96,6 +102,13 @@ mod tests {
         assert!(matches!(
             parse_command("/review").unwrap(),
             ShellCommand::Review
+        ));
+    }
+    #[test]
+    fn parse_execute() {
+        assert!(matches!(
+            parse_command("/execute").unwrap(),
+            ShellCommand::Execute
         ));
     }
     #[test]

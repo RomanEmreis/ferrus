@@ -82,6 +82,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             display::print_info(concat!(
                 "ferrus HQ commands:\n",
                 "  /plan              Spawn supervisor, plan a task, then run executor→review loop\n",
+                "  /execute           Start or resume the executor for the current task\n",
                 "  /review            Manually spawn supervisor in review mode\n",
                 "  /status            Show task state, agent list, and session log paths\n",
                 "  /attach <name>     Attach to a running background session (Ctrl+] d to detach)\n",
@@ -95,6 +96,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Reset => ctx.reset().await?,
         ShellCommand::Stop => ctx.stop().await?,
         ShellCommand::Plan => ctx.plan().await?,
+        ShellCommand::Execute => ctx.execute().await?,
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
             if let Some(session) = ctx.sessions.get(&name) {
@@ -310,6 +312,60 @@ impl HqContext {
         ));
         self.sessions.insert(name.to_string(), session);
         Ok(())
+    }
+
+    /// Manually start or resume the executor for the current task.
+    /// Uses live PTY sessions plus current task state to avoid duplicate spawns.
+    async fn execute(&mut self) -> Result<()> {
+        use crate::config::Config;
+
+        if self
+            .sessions
+            .iter()
+            .any(|(name, session)| name.starts_with("executor") && session.is_alive())
+        {
+            display::print_info(
+                "An executor is already running — work is in progress. Plan a new task first with /plan.",
+            );
+            return Ok(());
+        }
+
+        let state = store::read_state().await?;
+        match state.state {
+            TaskState::Complete => {
+                display::print_info("Task is already complete. Use /plan to start a new task.");
+                return Ok(());
+            }
+            TaskState::Reviewing => {
+                display::print_info(
+                    "Execution is done and submission is pending review. Use /review to review it.",
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        let exe_type = if let Some(ref t) = self.executor_type {
+            t.clone()
+        } else {
+            let config = Config::load().await?;
+            let hq = config.hq.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+                )
+            })?;
+            self.supervisor_type = Some(hq.supervisor.clone());
+            self.executor_type = Some(hq.executor.clone());
+            hq.executor
+        };
+
+        self.spawn_background_session(
+            &exe_type,
+            "executor",
+            "executor-1",
+            Some(agent_manager::executor_prompt()),
+        )
+        .await
     }
 
     /// Manually spawn supervisor in review mode for a pending submission.
