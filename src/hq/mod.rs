@@ -83,7 +83,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
             if let Some(session) = ctx.sessions.get(&name) {
-                display::print_info(&format!("Attaching to {name}. Ctrl-B d to detach.",));
+                display::print_info(&format!("Attaching to {name}. Ctrl+] d to detach.",));
                 match session.attach().await {
                     Ok(crate::pty::DetachReason::UserDetach) => display::print_info(&format!(
                         "Detached from {name}. Use /attach {name} to reconnect."
