@@ -207,6 +207,10 @@ impl App {
     }
 
     fn history_up(&mut self) {
+        if self.has_command_context() {
+            self.previous_completion();
+            return;
+        }
         if self.history.is_empty() {
             return;
         }
@@ -226,6 +230,10 @@ impl App {
     }
 
     fn history_down(&mut self) {
+        if self.has_command_context() {
+            self.next_completion();
+            return;
+        }
         match self.history_idx {
             None => {}
             Some(idx) if idx + 1 < self.history.len() => {
@@ -336,12 +344,14 @@ impl App {
             self.accept_completion();
             return;
         }
+        if !self.completion_active {
+            self.completion_active = true;
+            self.completion_selected = 0;
+            return;
+        }
         if self.completion_active {
             self.completion_selected =
                 (self.completion_selected + 1) % self.completion_candidates.len();
-        } else {
-            self.completion_active = true;
-            self.completion_selected = 0;
         }
     }
 
@@ -732,7 +742,12 @@ fn draw_completion_popup(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Commands ")),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(" Commands "),
+        ),
         area,
     );
 }
