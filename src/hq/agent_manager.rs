@@ -28,6 +28,15 @@ pub fn agent_binary(agent_type: &str) -> &str {
     }
 }
 
+/// Extra CLI args to activate the agent's native plan mode.
+/// Returns an empty slice for agents that have no such mode (graceful fallback).
+pub fn plan_mode_args(agent_type: &str) -> &'static [&'static str] {
+    match agent_type {
+        "claude-code" => &["--permission-mode", "plan"],
+        _ => &[],
+    }
+}
+
 /// Returns the initial prompt as a single-element vec, or empty if none.
 /// Both `claude` and `codex` accept the initial message as the first positional arg.
 #[allow(dead_code)]
@@ -192,6 +201,21 @@ mod tests {
     #[test]
     fn binary_passthrough_for_unknown() {
         assert_eq!(agent_binary("my-agent"), "my-agent");
+    }
+    #[test]
+    fn plan_mode_args_claude_code() {
+        assert_eq!(
+            plan_mode_args("claude-code"),
+            &["--permission-mode", "plan"]
+        );
+    }
+    #[test]
+    fn plan_mode_args_codex_is_empty() {
+        assert!(plan_mode_args("codex").is_empty());
+    }
+    #[test]
+    fn plan_mode_args_unknown_is_empty() {
+        assert!(plan_mode_args("my-agent").is_empty());
     }
     #[test]
     fn no_prompt_gives_empty_args() {

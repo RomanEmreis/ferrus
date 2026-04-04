@@ -569,9 +569,15 @@ impl HqContext {
 
         let binary = agent_manager::agent_binary(&hq.supervisor);
         let prompt = agent_manager::supervisor_plan_prompt();
+        let plan_args = agent_manager::plan_mode_args(&hq.supervisor);
 
-        let mut child = Command::new(binary)
-            .arg(prompt)
+        let mut cmd = Command::new(binary);
+        for arg in plan_args {
+            cmd.arg(arg);
+        }
+        cmd.arg(prompt);
+
+        let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

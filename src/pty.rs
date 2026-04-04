@@ -484,7 +484,11 @@ impl BackgroundSession {
         //
         // IMPORTANT: capture the relay result via `r` here — don't await relay again
         // after the select since the JoinHandle is consumed on the first poll-to-completion.
-        enum SelectOutcome { RelayDone(DetachReason), ProcessExited, ForceDetach }
+        enum SelectOutcome {
+            RelayDone(DetachReason),
+            ProcessExited,
+            ForceDetach,
+        }
         let outcome = tokio::select! {
             // relay arm: relay returned on its own (UserDetach or stdin EOF).
             r = &mut relay => SelectOutcome::RelayDone(r.unwrap_or(DetachReason::ProcessExit)),
@@ -497,7 +501,10 @@ impl BackgroundSession {
         // If relay is still running (non-relay arms), signal it to stop and wait briefly
         // so stdin is free before rustyline takes over.
         let reason = match outcome {
-            SelectOutcome::RelayDone(r) => { drop(cancel); r }
+            SelectOutcome::RelayDone(r) => {
+                drop(cancel);
+                r
+            }
             SelectOutcome::ProcessExited => {
                 cancel.signal_and_wait(relay, 100).await;
                 DetachReason::ProcessExit
