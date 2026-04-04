@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
 
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
@@ -165,6 +167,19 @@ pub async fn spawn_background_pty(
 
     let session = crate::pty::spawn_background(binary, &args, name, &log_path)
         .with_context(|| format!("Failed to spawn {binary} as {role} in PTY"))?;
+
+    // Codex requires an Enter keypress before it begins processing its initial prompt.
+    // Send one automatically after a short startup delay so it wakes without user intervention.
+    if agent_type == "codex" {
+        let writer = Arc::clone(&session.stdin_writer);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            if let Ok(mut w) = writer.lock() {
+                let _ = w.write_all(b"\n");
+                let _ = w.flush();
+            }
+        });
+    }
 
     // Update agents.json.
     let mut reg = read_agents().await?;
