@@ -21,3 +21,7 @@ target
 .idea/
 .worktrees/
 .ferrus/
+
+# MCP config
+.claude/settings.local.json
+.codex/config.toml
