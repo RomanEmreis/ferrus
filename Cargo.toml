@@ -1,6 +1,6 @@
 [package]
 name = "ferrus"
-version = "0.2.0-alpha.6"
+version = "0.2.0-alpha.19"
 edition = "2021"
 license = "Apache-2.0"
 description = "AI agent orchestrator - drives a Supervisor–Executor workflow for autonomous software development"
@@ -22,10 +22,13 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 fs2 = "0.4.3"
-rustyline = "18.0.0"
 shlex = "1.3.0"
 portable-pty = "0.9.0"
-crossterm = "0.29.0"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+ratatui = { version = "0.30", features = ["crossterm"] }
+tui-big-text = "0.8.1"
+dirs = "5"
+futures = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

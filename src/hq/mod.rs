@@ -1,11 +1,11 @@
 pub mod agent_manager;
 mod commands;
 mod display;
-mod repl;
-mod state_watcher; // stub for next task
+mod state_watcher;
+mod tui;
 
 use anyhow::{Context, Result};
-use std::io::Write;
+use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::state::{
@@ -14,72 +14,153 @@ use crate::state::{
     store,
 };
 use commands::{parse_command, ShellCommand};
+use display::Display;
 
 pub async fn run() -> Result<()> {
-    use rustyline::DefaultEditor;
-
     reconcile_agent_pids().await;
-    display::print_info("ferrus HQ — type /help for commands");
 
     let (state_tx, state_rx) = watch::channel::<Option<StateData>>(None);
     tokio::spawn(state_watcher::watch(state_tx));
 
-    let mut ctx = HqContext::new(state_rx);
-    // DefaultEditor is !Send — use block_in_place (same thread) rather than spawn_blocking.
-    let mut rl = DefaultEditor::new()?;
+    let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<tui::UiMessage>();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    let (supervisor_type, executor_type) = load_agent_types_from_config().await;
+    let (supervisor_version, executor_version) =
+        load_agent_versions(&supervisor_type, &executor_type).await;
+
+    let display = Display(msg_tx);
+    let mut ctx = HqContext::new(state_rx.clone(), display.clone());
+    ctx.supervisor_type = (!supervisor_type.is_empty()).then_some(supervisor_type.clone());
+    ctx.executor_type = (!executor_type.is_empty()).then_some(executor_type.clone());
+
+    let mut tui_task = tokio::spawn(tui::run_tui(
+        msg_rx,
+        cmd_tx,
+        state_rx.clone(),
+        supervisor_type,
+        executor_type,
+        supervisor_version,
+        executor_version,
+    ));
 
     loop {
-        // Print any state transitions that arrived while we were waiting.
-        ctx.drain_state_changes().await;
-
-        let prompt = repl::hq_prompt().to_string();
-        // block_in_place: runs blocking readline on the current thread without spawning.
-        // rl stays in scope — no Send requirement, no move-in/move-out dance.
-        let line = tokio::task::block_in_place(|| repl::readline_once(&mut rl, &prompt));
-
-        match line {
-            Some(l) if !l.is_empty() => {
-                if let Err(e) = dispatch(&l, &mut ctx).await {
-                    display::print_error(&e.to_string());
+        tokio::select! {
+            changed = ctx.state_rx.changed() => {
+                if changed.is_ok() {
+                    let snap = ctx.state_rx.borrow_and_update().clone();
+                    if let Some(new_state) = snap {
+                        let prev = ctx.last_task_state.clone();
+                        if prev.as_ref() != Some(&new_state.state) {
+                            if let Some(ref previous) = prev {
+                                ctx.display.transition(previous, &new_state.state);
+                            }
+                            ctx.on_state_change(&new_state).await;
+                        }
+                        ctx.last_task_state = Some(new_state.state.clone());
+                    }
+                } else {
+                    break;
                 }
             }
-            Some(_) => {} // blank line or Ctrl-C
-            None => {
-                display::print_info("Bye.");
-                break;
+            maybe_cmd = cmd_rx.recv() => {
+                match maybe_cmd {
+                    Some(cmd) => {
+                        let line = cmd.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if line == "/quit" {
+                            ctx.display.info("Bye.");
+                            break;
+                        }
+                        if let Err(err) = dispatch(line, &mut ctx).await {
+                            ctx.display.error(err.to_string());
+                        }
+                    }
+                    None => break,
+                }
+            }
+            result = &mut tui_task => {
+                return result?;
             }
         }
     }
+
+    drop(ctx);
+    match tui_task.await {
+        Ok(result) => result?,
+        Err(err) if err.is_cancelled() => {}
+        Err(err) => return Err(err.into()),
+    }
+
     Ok(())
+}
+
+async fn load_agent_types_from_config() -> (String, String) {
+    use crate::config::Config;
+
+    if let Ok(cfg) = Config::load().await {
+        if let Some(hq) = cfg.hq {
+            return (hq.supervisor, hq.executor);
+        }
+    }
+    (String::new(), String::new())
+}
+
+async fn load_agent_versions(supervisor_type: &str, executor_type: &str) -> (String, String) {
+    let supervisor = load_agent_version(supervisor_type).await;
+    let executor = load_agent_version(executor_type).await;
+    (supervisor, executor)
+}
+
+async fn load_agent_version(agent_type: &str) -> String {
+    if agent_type.is_empty() {
+        return String::new();
+    }
+
+    let binary = agent_manager::agent_binary(agent_type);
+    let Ok(output) = Command::new(binary).arg("--version").output().await else {
+        return String::new();
+    };
+    if !output.status.success() {
+        return String::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
     match parse_command(line)? {
         ShellCommand::Quit => {
-            display::print_info("Bye.");
-            std::process::exit(0);
+            ctx.display.info("Bye.");
         }
         ShellCommand::Status => {
             let state = store::read_state().await?;
             let reg = agents::read_agents().await?;
-            display::print_status(&state, &reg);
+            ctx.display.status(&state, &reg);
             if !ctx.sessions.is_empty() {
-                display::print_info("PTY sessions:");
+                ctx.display.info("PTY sessions:");
                 for (name, session) in &ctx.sessions {
                     let status = if session.is_alive() {
                         "running"
                     } else {
                         "exited"
                     };
-                    display::print_info(&format!(
+                    ctx.display.info(format!(
                         "  {name} ({status}) — /attach {name} — logs: {}",
-                        session.log_path.display(),
+                        session.log_path.display()
                     ));
                 }
             }
         }
         ShellCommand::Help => {
-            display::print_info(concat!(
+            ctx.display.info(concat!(
                 "ferrus HQ commands:\n",
                 "  /plan              Spawn supervisor, plan a task, then run executor→review loop\n",
                 "  /execute           Start or resume the executor for the current task\n",
@@ -100,15 +181,12 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
             if let Some(session) = ctx.sessions.get(&name) {
-                // Spawn a watcher that fires force_detach when the state transitions
-                // out of the range where this session should still be running.
-                // This is needed because drain_state_changes() only runs between readline
-                // calls — it can't fire while the HQ loop is blocked in attach().
                 let force_detach = std::sync::Arc::clone(&session.force_detach);
                 let mut state_rx_clone = ctx.state_rx.clone();
                 let is_executor = name.starts_with("executor");
                 let watcher = tokio::spawn(async move {
                     use crate::state::machine::TaskState;
+
                     loop {
                         if state_rx_clone.changed().await.is_err() {
                             break;
@@ -132,25 +210,28 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                     }
                 });
 
-                display::print_info(&format!("Attaching to {name}. Ctrl+] d to detach."));
-                match session.attach().await {
-                    Ok(crate::pty::DetachReason::UserDetach) => display::print_info(&format!(
-                        "Detached from {name}. Use /attach {name} to reconnect."
-                    )),
+                ctx.display
+                    .info(format!("Attaching to {name}. Ctrl+] d to detach."));
+                let ack_rx = ctx.display.suspend();
+                let _ = ack_rx.await;
+                let result = session.attach().await;
+                ctx.display.resume();
+                match result {
+                    Ok(crate::pty::DetachReason::UserDetach) => ctx
+                        .display
+                        .info(format!("Detached from {name}. Use /attach {name} to reconnect.")),
                     Ok(crate::pty::DetachReason::ProcessExit) => {
-                        display::print_info(&format!("{name} process exited."));
+                        ctx.display.info(format!("{name} process exited."));
                         ctx.sessions.remove(&name);
                     }
-                    Ok(crate::pty::DetachReason::AutoDetach) => {
-                        display::print_info(&format!(
-                            "{name} task is done — returning to HQ. Agent may still be running; use /attach {name} to reconnect."
-                        ));
-                    }
-                    Err(e) => display::print_error(&format!("Attach error: {e}")),
+                    Ok(crate::pty::DetachReason::AutoDetach) => ctx.display.info(format!(
+                        "{name} task is done — returning to HQ. Agent may still be running; use /attach {name} to reconnect."
+                    )),
+                    Err(err) => ctx.display.error(format!("Attach error: {err}")),
                 }
                 watcher.abort();
             } else {
-                display::print_error(&format!(
+                ctx.display.error(format!(
                     "No session named '{name}'. Run /status to see active sessions."
                 ));
             }
@@ -165,7 +246,8 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             let sup = supervisor.as_deref().and_then(parse_agent_type);
             let exe = executor.as_deref().and_then(parse_agent_type);
             if sup.is_none() && exe.is_none() {
-                display::print_error("At least one of --supervisor or --executor required");
+                ctx.display
+                    .error("At least one of --supervisor or --executor required");
             } else {
                 crate::cli::commands::register::run(sup, exe).await?;
             }
@@ -176,6 +258,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
 
 fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
     use crate::cli::commands::register::Agent;
+
     match s {
         "claude-code" => Some(Agent::ClaudeCode),
         "codex" => Some(Agent::Codex),
@@ -183,83 +266,46 @@ fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
     }
 }
 
-// --- HqContext ---
-
 pub(crate) struct HqContext {
     pub(crate) supervisor_type: Option<String>,
     pub(crate) executor_type: Option<String>,
-    /// Active background PTY sessions, keyed by name (e.g. "executor-1").
     pub(crate) sessions: std::collections::HashMap<String, crate::pty::BackgroundSession>,
-    /// Last observed task state (for transition detection in on_state_change).
-    pub(crate) last_task_state: Option<crate::state::machine::TaskState>,
-    /// State watcher receiver — drained before each readline call.
+    pub(crate) last_task_state: Option<TaskState>,
     state_rx: watch::Receiver<Option<StateData>>,
+    pub(crate) display: Display,
 }
 
 impl HqContext {
-    fn new(state_rx: watch::Receiver<Option<StateData>>) -> Self {
+    fn new(state_rx: watch::Receiver<Option<StateData>>, display: Display) -> Self {
         Self {
             supervisor_type: None,
             executor_type: None,
             sessions: std::collections::HashMap::new(),
             last_task_state: None,
             state_rx,
+            display,
         }
     }
 
-    /// Drain any state changes that arrived since the last readline call.
-    /// Prints transition banners and triggers on_state_change without blocking.
-    pub(crate) async fn drain_state_changes(&mut self) {
-        while let Ok(true) = self.state_rx.has_changed() {
-            let new = self.state_rx.borrow_and_update().clone();
-            if let Some(new_state) = new {
-                let prev = self.last_task_state.clone();
-                if prev.as_ref() != Some(&new_state.state) {
-                    if let Some(ref p) = prev {
-                        display::print_transition(p, &new_state.state);
-                    }
-                    self.on_state_change(&new_state).await;
-                }
-                self.last_task_state = Some(new_state.state.clone());
-            }
-        }
-    }
-
-    /// Called when STATE.json transitions to a new TaskState.
-    /// Phase B: drives automatic spawning of executor/reviewer background sessions.
-    ///
-    /// # Design note: bootstrap guard
-    /// `on_state_change` requires a known previous state to compute `transition_action`.
-    /// When `last_task_state` is None (HQ just started or restarted with an active task),
-    /// there is no previous state, so we record the current state and return — no spawning.
-    /// This prevents a cold-start observation of e.g. `Executing` from being misread as
-    /// a fresh Idle→Executing transition that needs a new executor spawned.
-    ///
-    /// The Idle→Executing transition triggered by `/plan` is handled *explicitly* in
-    /// `plan()` via `spawn_background_session` — not via this path.
-    ///
-    /// TODO(Phase C): `bootstrap_from_state` — when HQ restarts with an active task and
-    /// no live session, auto-reattach or prompt the user to resume.
     pub(crate) async fn on_state_change(&mut self, state: &StateData) {
-        // Bootstrap guard: first observation records state without spawning anything.
-        // Prevents misinterpreting a cold-start observation as a new transition.
         if self.last_task_state.is_none() {
             self.last_task_state = Some(state.state.clone());
             return;
         }
-        // Requires last_task_state to compute the transition action.
         let Some(ref prev) = self.last_task_state else {
             return;
         };
+
         let action = transition_action(prev, &state.state);
         let exe_type = self.executor_type.clone().unwrap_or_else(|| "codex".into());
         let sup_type = self
             .supervisor_type
             .clone()
             .unwrap_or_else(|| "claude-code".into());
+
         match action {
             TransitionAction::SpawnExecutor => {
-                if let Err(e) = self
+                if let Err(err) = self
                     .spawn_background_session(
                         &exe_type,
                         "executor",
@@ -268,15 +314,13 @@ impl HqContext {
                     )
                     .await
                 {
-                    display::print_error(&format!("Failed to spawn executor: {e}"));
+                    self.display
+                        .error(format!("Failed to spawn executor: {err}"));
                 }
             }
             TransitionAction::SpawnReviewer => {
-                // Close the executor session before spawning the reviewer.
-                // If the executor is still alive (rare), dropping closes the PTY.
-                // On Unix this typically sends SIGHUP; not guaranteed on all platforms.
                 self.sessions.remove("executor-1");
-                if let Err(e) = self
+                if let Err(err) = self
                     .spawn_background_session(
                         &sup_type,
                         "supervisor",
@@ -285,15 +329,13 @@ impl HqContext {
                     )
                     .await
                 {
-                    display::print_error(&format!("Failed to spawn reviewer: {e}"));
+                    self.display
+                        .error(format!("Failed to spawn reviewer: {err}"));
                 }
             }
             TransitionAction::KillReviewerSpawnExecutor => {
-                // Dropping the session closes the PTY master.
-                // On Unix this typically results in SIGHUP to the child,
-                // but this is not guaranteed across all platforms or agents.
                 self.sessions.remove("supervisor-1");
-                if let Err(e) = self
+                if let Err(err) = self
                     .spawn_background_session(
                         &exe_type,
                         "executor",
@@ -302,31 +344,26 @@ impl HqContext {
                     )
                     .await
                 {
-                    display::print_error(&format!("Failed to spawn executor: {e}"));
+                    self.display
+                        .error(format!("Failed to spawn executor: {err}"));
                 }
             }
             TransitionAction::TaskComplete => {
-                // Clean up all sessions — task is done.
                 self.sessions.remove("executor-1");
                 self.sessions.remove("supervisor-1");
-                display::print_info("Task complete! Use /plan to start a new task.");
+                self.display
+                    .info("Task complete! Use /plan to start a new task.");
             }
             TransitionAction::TaskFailed => {
-                // Clean up all sessions — nothing useful left running.
                 self.sessions.remove("executor-1");
                 self.sessions.remove("supervisor-1");
-                display::print_info("Task failed. Use /status for details, /reset to try again.");
+                self.display
+                    .info("Task failed. Use /status for details, /reset to try again.");
             }
             TransitionAction::NoOp => {}
         }
     }
 
-    /// Spawn a named background PTY session, skipping if one is already alive.
-    ///
-    /// # Session name contract
-    /// Session names (e.g. "executor-1", "supervisor-1") are unique by role. The reuse
-    /// check is by name only — callers must ensure the name always maps to the same
-    /// role/agent_type combination. This invariant holds for Phase B's fixed roles.
     pub(crate) async fn spawn_background_session(
         &mut self,
         agent_type: &str,
@@ -334,26 +371,25 @@ impl HqContext {
         name: &str,
         prompt: Option<&str>,
     ) -> Result<()> {
-        // Reuse if already alive.
         if let Some(existing) = self.sessions.get(name) {
             if existing.is_alive() {
-                display::print_info(&format!("{name} already running."));
+                self.display.info(format!("{name} already running."));
                 return Ok(());
             }
             self.sessions.remove(name);
         }
-        display::print_info(&format!("Spawning {name} ({agent_type}) in background…"));
+
+        self.display
+            .info(format!("Spawning {name} ({agent_type}) in background…"));
         let session = agent_manager::spawn_background_pty(agent_type, role, name, prompt).await?;
-        display::print_info(&format!(
+        self.display.info(format!(
             "{name} started. Use /attach {name} to observe. Logs: {}",
-            session.log_path.display(),
+            session.log_path.display()
         ));
         self.sessions.insert(name.to_string(), session);
         Ok(())
     }
 
-    /// Manually start or resume the executor for the current task.
-    /// Uses live PTY sessions plus current task state to avoid duplicate spawns.
     async fn execute(&mut self) -> Result<()> {
         use crate::config::Config;
 
@@ -362,7 +398,7 @@ impl HqContext {
             .iter()
             .any(|(name, session)| name.starts_with("executor") && session.is_alive())
         {
-            display::print_info(
+            self.display.info(
                 "An executor is already running — work is in progress. Plan a new task first with /plan.",
             );
             return Ok(());
@@ -371,11 +407,12 @@ impl HqContext {
         let state = store::read_state().await?;
         match state.state {
             TaskState::Complete => {
-                display::print_info("Task is already complete. Use /plan to start a new task.");
+                self.display
+                    .info("Task is already complete. Use /plan to start a new task.");
                 return Ok(());
             }
             TaskState::Reviewing => {
-                display::print_info(
+                self.display.info(
                     "Execution is done and submission is pending review. Use /review to review it.",
                 );
                 return Ok(());
@@ -406,11 +443,8 @@ impl HqContext {
         .await
     }
 
-    /// Manually spawn supervisor in review mode for a pending submission.
-    /// Use when automatic reviewer spawning failed or HQ was restarted mid-review.
     async fn review(&mut self) -> Result<()> {
         use crate::config::Config;
-        use crate::state::machine::TaskState;
 
         let state = store::read_state().await?;
         if state.state != TaskState::Reviewing {
@@ -420,7 +454,6 @@ impl HqContext {
             );
         }
 
-        // Use cached type or load from config.
         let sup_type = if let Some(ref t) = self.supervisor_type {
             t.clone()
         } else {
@@ -448,24 +481,16 @@ impl HqContext {
         self.do_reset(true).await
     }
 
-    /// Core reset logic.  If `prompt` is true and the state is active (Executing/Reviewing),
-    /// ask for confirmation before proceeding.
     async fn do_reset(&mut self, prompt: bool) -> Result<()> {
         let mut state = store::read_state().await?;
         if prompt && matches!(state.state, TaskState::Executing | TaskState::Reviewing) {
-            let answer = tokio::task::block_in_place(|| -> String {
-                print!(
-                    "  Reset while state is {:?} — agents may be running. Continue? [y/N] ",
-                    state.state
-                );
-                let _ = std::io::stdout().flush();
-                let mut buf = String::new();
-                let _ = std::io::stdin().read_line(&mut buf);
-                buf.trim().to_lowercase()
-            });
-
-            if !matches!(answer.as_str(), "y" | "yes") {
-                display::print_info("Reset cancelled.");
+            let reply_rx = self.display.confirm(format!(
+                "Reset while state is {:?} — agents may be running. Continue?",
+                state.state
+            ));
+            let confirmed = reply_rx.await.unwrap_or(false);
+            if !confirmed {
+                self.display.info("Reset cancelled.");
                 return Ok(());
             }
         }
@@ -493,30 +518,22 @@ impl HqContext {
         store::write_state(&state).await?;
 
         self.last_task_state = Some(TaskState::Idle);
-        display::print_info("State reset to Idle. All task files cleared.");
+        self.display
+            .info("State reset to Idle. All task files cleared.");
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
-        let answer = tokio::task::block_in_place(|| -> String {
-            print!("  Stop all running agents? [y/N] ");
-            let _ = std::io::stdout().flush();
-            let mut buf = String::new();
-            let _ = std::io::stdin().read_line(&mut buf);
-            buf.trim().to_lowercase()
-        });
-
-        if !matches!(answer.as_str(), "y" | "yes") {
-            display::print_info("Stop cancelled.");
+        let reply_rx = self.display.confirm("Stop all running agents?");
+        let confirmed = reply_rx.await.unwrap_or(false);
+        if !confirmed {
+            self.display.info("Stop cancelled.");
             return Ok(());
         }
 
-        // Drop PTY sessions — this closes the PTY master, which on Unix typically
-        // sends SIGHUP to the child process. Not guaranteed across all platforms.
         self.sessions.remove("executor-1");
         self.sessions.remove("supervisor-1");
 
-        // Update agents.json to reflect Suspended status.
         let mut reg = agents::read_agents().await?;
         for role in ["executor", "supervisor"] {
             if let Some(entry) = reg.by_role_mut(role) {
@@ -526,17 +543,41 @@ impl HqContext {
         }
         agents::write_agents(&reg).await?;
 
-        display::print_info("All agent sessions stopped.");
+        self.display.info("All agent sessions stopped.");
         Ok(())
     }
 
-    /// Planning flow: spawn supervisor interactively, then kill it automatically as soon as
-    /// /create_task transitions the state to Executing.
     async fn plan(&mut self) -> Result<()> {
         use crate::config::Config;
-        use crate::state::machine::TaskState;
         use std::process::Stdio;
         use tokio::process::Command;
+
+        struct ResumeGuard {
+            display: Display,
+            active: bool,
+        }
+
+        impl ResumeGuard {
+            fn new(display: Display) -> Self {
+                Self {
+                    display,
+                    active: true,
+                }
+            }
+
+            fn resume_now(&mut self) {
+                if self.active {
+                    self.display.resume();
+                    self.active = false;
+                }
+            }
+        }
+
+        impl Drop for ResumeGuard {
+            fn drop(&mut self) {
+                self.resume_now();
+            }
+        }
 
         let config = Config::load().await?;
         let hq = config.hq.ok_or_else(|| {
@@ -547,11 +588,10 @@ impl HqContext {
 
         let state = store::read_state().await?;
         match state.state {
-            TaskState::Idle => {} // ready
+            TaskState::Idle => {}
             TaskState::Complete => {
-                // Previous task is done — silently reset so the user can plan the next one
-                // without an extra /reset step. No confirmation needed: Complete is a success state.
-                display::print_info("Previous task complete — resetting for new task.");
+                self.display
+                    .info("Previous task complete — resetting for new task.");
                 self.do_reset(false).await?;
             }
             other => {
@@ -564,8 +604,10 @@ impl HqContext {
         self.supervisor_type = Some(hq.supervisor.clone());
         self.executor_type = Some(hq.executor.clone());
 
-        display::print_info(&format!("Spawning supervisor ({})…", hq.supervisor));
-        display::print_info("Collaborate with the supervisor to define the task.");
+        self.display
+            .info(format!("Spawning supervisor ({})…", hq.supervisor));
+        self.display
+            .info("Collaborate with the supervisor to define the task.");
 
         let binary = agent_manager::agent_binary(&hq.supervisor);
         let prompt = agent_manager::supervisor_plan_prompt();
@@ -577,6 +619,9 @@ impl HqContext {
         }
         cmd.arg(prompt);
 
+        let ack_rx = self.display.suspend();
+        let _ = ack_rx.await;
+        let mut resume_guard = ResumeGuard::new(self.display.clone());
         let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -584,9 +629,9 @@ impl HqContext {
             .spawn()
             .with_context(|| format!("Failed to spawn {binary}"))?;
 
-        // Register in agents.json.
         {
             use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
                 role: "supervisor".into(),
@@ -599,17 +644,14 @@ impl HqContext {
             write_agents(&reg).await?;
         }
 
-        // Poll STATE.json every 300 ms while the supervisor runs.
-        // As soon as /create_task moves state to Executing, kill the supervisor
-        // and let HQ take over — no need for the user to manually exit.
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
-                _ = child.wait() => break, // exited naturally
+                _ = child.wait() => break,
                 _ = ticker.tick() => {
                     if let Ok(s) = store::read_state().await {
                         if s.state == TaskState::Executing {
-                            display::print_info("Task created — stopping supervisor…");
+                            self.display.info("Task created — stopping supervisor…");
                             let _ = child.kill().await;
                             let _ = child.wait().await;
                             break;
@@ -618,22 +660,22 @@ impl HqContext {
                 }
             }
         }
+        resume_guard.resume_now();
 
-        // Mark supervisor as Suspended in agents.json.
         {
             use agents::{read_agents, write_agents, AgentStatus};
+
             let mut reg = read_agents().await?;
-            if let Some(e) = reg.by_role_mut("supervisor") {
-                e.pid = None;
-                e.status = AgentStatus::Suspended;
+            if let Some(entry) = reg.by_role_mut("supervisor") {
+                entry.pid = None;
+                entry.status = AgentStatus::Suspended;
             }
             write_agents(&reg).await?;
         }
 
-        // Spawn executor if task was created.
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
-            display::print_info("Spawning executor in background…");
+            self.display.info("Spawning executor in background…");
             self.spawn_background_session(
                 &hq.executor,
                 "executor",
@@ -641,11 +683,11 @@ impl HqContext {
                 Some(agent_manager::executor_prompt()),
             )
             .await?;
-            display::print_info(
+            self.display.info(
                 "Executor running. State changes print automatically. Use /attach executor-1 to observe.",
             );
         } else {
-            display::print_info(&format!(
+            self.display.info(format!(
                 "No task created (state is {:?}). Re-run /plan when ready.",
                 new_state.state
             ));
@@ -654,14 +696,9 @@ impl HqContext {
     }
 }
 
-// --- PID Reconciliation ---
-
-/// Returns true if a process with the given PID is alive on this system.
 pub(crate) fn pid_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // kill(pid, 0): returns 0 → alive; EPERM → alive (no permission to signal,
-        // but process exists); ESRCH → dead. Any other error → assume dead.
         let ret = unsafe { libc::kill(pid as i32, 0) };
         if ret == 0 {
             return true;
@@ -676,9 +713,9 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
-/// On startup, mark any Running entries whose PID is no longer alive as Suspended.
 async fn reconcile_agent_pids() {
     use crate::state::agents::{read_agents, write_agents, AgentStatus};
+
     if let Ok(mut reg) = read_agents().await {
         let mut changed = false;
         for entry in &mut reg.agents {
@@ -697,8 +734,6 @@ async fn reconcile_agent_pids() {
     }
 }
 
-// --- Transition routing ---
-
 #[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub(crate) enum TransitionAction {
@@ -713,6 +748,7 @@ pub(crate) enum TransitionAction {
 #[allow(dead_code)]
 pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionAction {
     use TaskState::*;
+
     match (from, to) {
         (Idle, Executing) => TransitionAction::SpawnExecutor,
         (Executing | Addressing | Checking, Reviewing) => TransitionAction::SpawnReviewer,
@@ -735,6 +771,7 @@ mod tests {
             TransitionAction::SpawnExecutor
         );
     }
+
     #[test]
     fn executing_to_reviewing_spawns_reviewer() {
         assert_eq!(
@@ -742,6 +779,7 @@ mod tests {
             TransitionAction::SpawnReviewer
         );
     }
+
     #[test]
     fn reviewing_to_addressing_kills_reviewer_spawns_executor() {
         assert_eq!(
@@ -749,6 +787,7 @@ mod tests {
             TransitionAction::KillReviewerSpawnExecutor
         );
     }
+
     #[test]
     fn reviewing_to_complete() {
         assert_eq!(
@@ -756,6 +795,7 @@ mod tests {
             TransitionAction::TaskComplete
         );
     }
+
     #[test]
     fn any_to_failed() {
         assert_eq!(
@@ -763,6 +803,7 @@ mod tests {
             TransitionAction::TaskFailed
         );
     }
+
     #[test]
     fn executing_to_checking_is_noop() {
         assert_eq!(
@@ -770,11 +811,10 @@ mod tests {
             TransitionAction::NoOp
         );
     }
+
     #[test]
     fn stale_pid_detection() {
-        // The current process is always alive — solid invariant on all Unix.
         assert!(pid_is_alive(std::process::id()));
-        // 999999 is virtually guaranteed not to be a live PID.
         assert!(!pid_is_alive(999999));
     }
 }
