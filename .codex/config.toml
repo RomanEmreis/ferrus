@@ -9,3 +9,9 @@ args = [
     "1",
 ]
 command = "ferrus"
+
+[mcp_servers.ferrus-executor-1.tools.check]
+approval_mode = "approve"
+
+[mcp_servers.ferrus-executor-1.tools.submit]
+approval_mode = "approve"
