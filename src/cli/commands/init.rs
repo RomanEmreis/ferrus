@@ -441,23 +441,48 @@ async fn create_skill_files(agents_path: &str) -> Result<()> {
 
 async fn update_gitignore() -> Result<()> {
     let path = Path::new(".gitignore");
-    let entry = ".ferrus/\n";
+    let entries = [
+        ".ferrus/",
+        ".claude/settings.local.json",
+        ".codex/config.toml",
+    ];
+
     if path.exists() {
-        let contents = tokio::fs::read_to_string(path)
+        let mut contents = tokio::fs::read_to_string(path)
             .await
             .context("Failed to read .gitignore")?;
-        if contents.contains(".ferrus/") {
+
+        let mut added_entries = Vec::new();
+        for entry in entries {
+            if contents.lines().any(|line| line == entry) {
+                continue;
+            }
+
+            if !contents.is_empty() && !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+            contents.push_str(entry);
+            contents.push('\n');
+            added_entries.push(entry);
+        }
+
+        if added_entries.is_empty() {
             return Ok(());
         }
-        tokio::fs::write(path, format!("{contents}{entry}"))
+
+        tokio::fs::write(path, contents)
             .await
             .context("Failed to update .gitignore")?;
-        println!("Added .ferrus/ to .gitignore");
+
+        for entry in added_entries {
+            println!("Added {entry} to .gitignore");
+        }
     } else {
-        tokio::fs::write(path, entry)
+        let contents = format!("{}\n", entries.join("\n"));
+        tokio::fs::write(path, contents)
             .await
             .context("Failed to create .gitignore")?;
-        println!("Created .gitignore with .ferrus/ entry");
+        println!("Created .gitignore");
     }
     Ok(())
 }
