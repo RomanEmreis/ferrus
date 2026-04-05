@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
@@ -8,6 +9,12 @@ use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
 const EXECUTOR_PROMPT: &str =
     "You are in executor mode. Call the /wait_for_task MCP tool and complete the assigned task. \
+     See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
+
+const EXECUTOR_RESUME_PROMPT: &str =
+    "You are a Ferrus executor being relaunched after a human answered your question. \
+     The answer is in `.ferrus/ANSWER.md`. Read it to get context, then continue your work. \
+     Call /wait_for_task and resume the assigned task from where you left off. \
      See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
 
 const REVIEWER_PROMPT: &str =
@@ -135,11 +142,137 @@ pub async fn kill_role(role: &str) -> Result<()> {
 pub fn executor_prompt() -> &'static str {
     EXECUTOR_PROMPT
 }
+pub fn executor_resume_prompt() -> &'static str {
+    EXECUTOR_RESUME_PROMPT
+}
 pub fn reviewer_prompt() -> &'static str {
     REVIEWER_PROMPT
 }
 pub fn supervisor_plan_prompt() -> &'static str {
     SUPERVISOR_PLAN_PROMPT
+}
+
+/// CLI args that run the agent non-interactively with `prompt` as the initial message.
+/// - Codex:       `codex exec "<prompt>"`
+/// - Claude Code: `claude -p "<prompt>"`   (non-interactive / headless mode)
+/// - Other:       `<prompt>` as a positional arg (fallback; may not work for all agents)
+pub fn headless_args(agent_type: &str, prompt: &str) -> Vec<String> {
+    match agent_type {
+        "codex" => vec!["exec".to_string(), prompt.to_string()],
+        "claude-code" => vec!["-p".to_string(), prompt.to_string()],
+        _ => vec![prompt.to_string()],
+    }
+}
+
+/// Handle for a headless background executor process.
+pub struct HeadlessHandle {
+    #[allow(dead_code)] // retained for future display / diagnostics use
+    pub name: String,
+    pub log_path: PathBuf,
+    /// OS PID of the child process, used for liveness checks and SIGTERM.
+    pub pid: u32,
+    /// `None` = alive, `Some(code)` = exited.
+    pub exit_rx: tokio::sync::watch::Receiver<Option<i32>>,
+}
+
+impl HeadlessHandle {
+    pub fn is_alive(&self) -> bool {
+        self.exit_rx.borrow().is_none()
+    }
+
+    /// Send SIGTERM to the headless process. No-op if the process has already exited.
+    pub fn kill(&self) {
+        #[cfg(unix)]
+        // SAFETY: kill(pid, SIGTERM) is a well-defined syscall. We intentionally ignore
+        // ESRCH (process already gone) and other errors — this is best-effort cleanup.
+        unsafe {
+            libc::kill(self.pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+}
+
+/// Spawn `agent_type` headlessly (no PTY, no TUI).
+/// Stdout and stderr are both streamed to `.ferrus/logs/{role}_{ts}.log`.
+/// Returns a `HeadlessHandle` for lifecycle tracking.
+/// `agents.json` is updated to `Running` immediately.
+pub async fn spawn_headless(
+    agent_type: &str,
+    role: &str,
+    name: &str,
+    prompt: &str,
+) -> Result<HeadlessHandle> {
+    let binary = agent_binary(agent_type);
+
+    let log_dir = std::path::Path::new(".ferrus/logs");
+    tokio::fs::create_dir_all(log_dir)
+        .await
+        .context("Failed to create .ferrus/logs")?;
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S");
+    let log_path = log_dir.join(format!("{role}_{ts}.log"));
+
+    // Open log file; clone the handle so both stdout and stderr point to it.
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("Failed to open log file {}", log_path.display()))?;
+    let log_stderr = log_file
+        .try_clone()
+        .context("Failed to clone log file handle")?;
+
+    let args = headless_args(agent_type, prompt);
+    let mut cmd = Command::new(binary);
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_stderr));
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("Failed to spawn {binary} headlessly as {role}"))?;
+
+    let pid = child.id().unwrap_or(0);
+
+    // Update agents.json: Running with real PID.
+    let mut reg = read_agents().await?;
+    reg.upsert(AgentEntry {
+        role: role.to_string(),
+        agent_type: agent_type.to_string(),
+        name: name.to_string(),
+        pid: Some(pid),
+        status: AgentStatus::Running,
+        started_at: Some(chrono::Utc::now()),
+    });
+    write_agents(&reg).await?;
+
+    // Background task: wait for exit, update agents.json, notify via watch channel.
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<i32>>(None);
+    let role_owned = role.to_string();
+    tokio::spawn(async move {
+        let code = child
+            .wait()
+            .await
+            .map(|s| s.code().unwrap_or(-1))
+            .unwrap_or(-1);
+        let _ = exit_tx.send(Some(code));
+
+        if let Ok(mut reg) = read_agents().await {
+            if let Some(e) = reg.by_role_mut(&role_owned) {
+                e.pid = None;
+                e.status = AgentStatus::Suspended;
+            }
+            let _ = write_agents(&reg).await;
+        }
+    });
+
+    Ok(HeadlessHandle {
+        name: name.to_string(),
+        log_path,
+        pid,
+        exit_rx,
+    })
 }
 
 #[allow(dead_code)]

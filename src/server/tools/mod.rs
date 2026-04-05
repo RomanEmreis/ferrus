@@ -10,6 +10,7 @@ pub mod reset;
 pub mod review_pending;
 pub mod status;
 pub mod submit;
+pub mod wait_for_answer;
 pub mod wait_for_review;
 pub mod wait_for_task;
 

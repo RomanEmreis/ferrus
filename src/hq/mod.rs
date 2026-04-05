@@ -136,6 +136,15 @@ async fn load_agent_version(agent_type: &str) -> String {
 }
 
 async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
+    // When state is AwaitingHuman, non-command input is treated as the human's answer.
+    if !line.starts_with('/') {
+        let state = store::read_state().await?;
+        if state.state == TaskState::AwaitingHuman {
+            return ctx.answer(line.to_string()).await;
+        }
+        anyhow::bail!("Commands must start with '/' — try /status, /plan, /quit");
+    }
+
     match parse_command(line)? {
         ShellCommand::Quit => {
             ctx.display.info("Bye.");
@@ -144,6 +153,20 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             let state = store::read_state().await?;
             let reg = agents::read_agents().await?;
             ctx.display.status(&state, &reg);
+            if !ctx.headless.is_empty() {
+                ctx.display.info("Headless executors:");
+                for (name, handle) in &ctx.headless {
+                    let status = if handle.is_alive() {
+                        "running"
+                    } else {
+                        "exited"
+                    };
+                    ctx.display.info(format!(
+                        "  {name} ({status}) — logs: {}",
+                        handle.log_path.display()
+                    ));
+                }
+            }
             if !ctx.sessions.is_empty() {
                 ctx.display.info("PTY sessions:");
                 for (name, session) in &ctx.sessions {
@@ -166,12 +189,15 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /execute           Start or resume the executor for the current task\n",
                 "  /review            Manually spawn supervisor in review mode\n",
                 "  /status            Show task state, agent list, and session log paths\n",
-                "  /attach <name>     Attach to a running background session (Ctrl+] d to detach)\n",
+                "  /attach <name>     Attach to a PTY session (supervisor only; executor runs headlessly)\n",
                 "  /stop              Stop all running agent sessions\n",
                 "  /reset             Reset state to Idle (clears task files)\n",
                 "  /init              Initialize ferrus in the current directory\n",
                 "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
-                "  /quit              Exit HQ",
+                "  /quit              Exit HQ\n",
+                "\n",
+                "When the executor asks a question (state = AwaitingHuman):\n",
+                "  Type your answer and press Enter (no slash prefix needed).",
             ));
         }
         ShellCommand::Reset => ctx.reset().await?,
@@ -180,7 +206,14 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Execute => ctx.execute().await?,
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
-            if let Some(session) = ctx.sessions.get(&name) {
+            // Headless executors have no PTY; /attach is meaningless for them.
+            if let Some(handle) = ctx.headless.get(&name) {
+                let log = handle.log_path.display().to_string();
+                ctx.display.info(format!(
+                    "{name} runs headlessly — no terminal to attach.\n\
+                     Tail its log to observe: tail -f {log}"
+                ));
+            } else if let Some(session) = ctx.sessions.get(&name) {
                 let force_detach = std::sync::Arc::clone(&session.force_detach);
                 let mut state_rx_clone = ctx.state_rx.clone();
                 let is_executor = name.starts_with("executor");
@@ -269,7 +302,10 @@ fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
 pub(crate) struct HqContext {
     pub(crate) supervisor_type: Option<String>,
     pub(crate) executor_type: Option<String>,
+    /// PTY sessions — used for the supervisor (plan + review modes).
     pub(crate) sessions: std::collections::HashMap<String, crate::pty::BackgroundSession>,
+    /// Headless executor handles — no PTY, no /attach.
+    pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
     state_rx: watch::Receiver<Option<StateData>>,
     pub(crate) display: Display,
@@ -281,6 +317,7 @@ impl HqContext {
             supervisor_type: None,
             executor_type: None,
             sessions: std::collections::HashMap::new(),
+            headless: std::collections::HashMap::new(),
             last_task_state: None,
             state_rx,
             display,
@@ -306,11 +343,11 @@ impl HqContext {
         match action {
             TransitionAction::SpawnExecutor => {
                 if let Err(err) = self
-                    .spawn_background_session(
+                    .spawn_headless_executor(
                         &exe_type,
                         "executor",
                         "executor-1",
-                        Some(agent_manager::executor_prompt()),
+                        agent_manager::executor_prompt(),
                     )
                     .await
                 {
@@ -319,7 +356,8 @@ impl HqContext {
                 }
             }
             TransitionAction::SpawnReviewer => {
-                self.sessions.remove("executor-1");
+                // Executor is now headless — just drop its handle (process may still run).
+                self.headless.remove("executor-1");
                 if let Err(err) = self
                     .spawn_background_session(
                         &sup_type,
@@ -336,11 +374,11 @@ impl HqContext {
             TransitionAction::KillReviewerSpawnExecutor => {
                 self.sessions.remove("supervisor-1");
                 if let Err(err) = self
-                    .spawn_background_session(
+                    .spawn_headless_executor(
                         &exe_type,
                         "executor",
                         "executor-1",
-                        Some(agent_manager::executor_prompt()),
+                        agent_manager::executor_prompt(),
                     )
                     .await
                 {
@@ -349,19 +387,61 @@ impl HqContext {
                 }
             }
             TransitionAction::TaskComplete => {
-                self.sessions.remove("executor-1");
+                self.headless.remove("executor-1");
                 self.sessions.remove("supervisor-1");
                 self.display
                     .info("Task complete! Use /plan to start a new task.");
             }
             TransitionAction::TaskFailed => {
-                self.sessions.remove("executor-1");
+                self.headless.remove("executor-1");
                 self.sessions.remove("supervisor-1");
                 self.display
                     .info("Task failed. Use /status for details, /reset to try again.");
             }
+            TransitionAction::PauseForHuman => match store::read_question().await {
+                Ok(q) if !q.trim().is_empty() => {
+                    self.display.info(format!(
+                        "\n[AWAITING YOUR ANSWER]\n{q}\n\nType your answer and press Enter."
+                    ));
+                }
+                _ => {
+                    self.display
+                        .info("[AWAITING YOUR ANSWER] Type your response and press Enter.");
+                }
+            },
+            // (AwaitingHuman, Executing|Addressing|...) → NoOp: the executor either
+            // resumed via /wait_for_answer (alive path) or was relaunched by answer()
+            // (dead path). No further action needed from the state watcher.
             TransitionAction::NoOp => {}
         }
+    }
+
+    /// Spawn the executor headlessly (no PTY). Replaces the old PTY-based spawn for executors.
+    pub(crate) async fn spawn_headless_executor(
+        &mut self,
+        agent_type: &str,
+        role: &str,
+        name: &str,
+        prompt: &str,
+    ) -> Result<()> {
+        if let Some(existing) = self.headless.get(name) {
+            if existing.is_alive() {
+                self.display
+                    .info(format!("{name} already running headlessly."));
+                return Ok(());
+            }
+            self.headless.remove(name);
+        }
+
+        self.display
+            .info(format!("Spawning {name} ({agent_type}) headlessly…"));
+        let handle = agent_manager::spawn_headless(agent_type, role, name, prompt).await?;
+        self.display.info(format!(
+            "{name} started in background. Logs: {}",
+            handle.log_path.display()
+        ));
+        self.headless.insert(name.to_string(), handle);
+        Ok(())
     }
 
     pub(crate) async fn spawn_background_session(
@@ -394,9 +474,9 @@ impl HqContext {
         use crate::config::Config;
 
         if self
-            .sessions
+            .headless
             .iter()
-            .any(|(name, session)| name.starts_with("executor") && session.is_alive())
+            .any(|(name, handle)| name.starts_with("executor") && handle.is_alive())
         {
             self.display.info(
                 "An executor is already running — work is in progress. Plan a new task first with /plan.",
@@ -434,13 +514,15 @@ impl HqContext {
             hq.executor
         };
 
-        self.spawn_background_session(
-            &exe_type,
-            "executor",
-            "executor-1",
-            Some(agent_manager::executor_prompt()),
-        )
-        .await
+        // Use resume prompt if state is AwaitingHuman (executor was relaunched after answer).
+        let prompt = if state.state == TaskState::AwaitingHuman {
+            agent_manager::executor_resume_prompt()
+        } else {
+            agent_manager::executor_prompt()
+        };
+
+        self.spawn_headless_executor(&exe_type, "executor", "executor-1", prompt)
+            .await
     }
 
     async fn review(&mut self) -> Result<()> {
@@ -495,6 +577,9 @@ impl HqContext {
             }
         }
 
+        for (_, handle) in self.headless.drain() {
+            handle.kill();
+        }
         self.sessions.remove("executor-1");
         self.sessions.remove("supervisor-1");
 
@@ -531,6 +616,9 @@ impl HqContext {
             return Ok(());
         }
 
+        for (_, handle) in self.headless.drain() {
+            handle.kill();
+        }
         self.sessions.remove("executor-1");
         self.sessions.remove("supervisor-1");
 
@@ -675,22 +763,62 @@ impl HqContext {
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
-            self.display.info("Spawning executor in background…");
-            self.spawn_background_session(
+            self.spawn_headless_executor(
                 &hq.executor,
                 "executor",
                 "executor-1",
-                Some(agent_manager::executor_prompt()),
+                agent_manager::executor_prompt(),
             )
             .await?;
-            self.display.info(
-                "Executor running. State changes print automatically. Use /attach executor-1 to observe.",
-            );
+            self.display
+                .info("Executor running headlessly. State changes print automatically.");
         } else {
             self.display.info(format!(
                 "No task created (state is {:?}). Re-run /plan when ready.",
                 new_state.state
             ));
+        }
+        Ok(())
+    }
+
+    /// Handle a raw-text answer from the user when state is AwaitingHuman.
+    async fn answer(&mut self, response: String) -> Result<()> {
+        if response.trim().is_empty() {
+            anyhow::bail!("Answer cannot be empty.");
+        }
+        let state = store::read_state().await?;
+        if state.state != TaskState::AwaitingHuman {
+            anyhow::bail!(
+                "State is {:?} — not currently waiting for an answer.",
+                state.state
+            );
+        }
+
+        // Write ANSWER.md. If the executor is alive and blocking on /wait_for_answer,
+        // the tool will detect this, restore state, and return the answer automatically.
+        store::write_answer(&response).await?;
+        self.display
+            .info("Answer recorded. Waiting for executor to resume…");
+
+        // Fallback: if the executor has exited, /wait_for_answer will never poll again.
+        // Restore state directly so /execute can relaunch it.
+        let executor_dead = self
+            .headless
+            .get("executor-1")
+            .map(|h| !h.is_alive())
+            .unwrap_or(true); // not in map = definitely not running
+
+        if executor_dead {
+            let mut st = store::read_state().await?;
+            if st.state == TaskState::AwaitingHuman {
+                let resumed = st.answer()?;
+                store::write_state(&st).await?;
+                store::clear_question().await?;
+                self.display.info(format!(
+                    "Executor is not running. State restored to {resumed:?}. \
+                     Use /execute to relaunch — it will read ANSWER.md and continue."
+                ));
+            }
         }
         Ok(())
     }
@@ -742,6 +870,8 @@ pub(crate) enum TransitionAction {
     KillReviewerSpawnExecutor,
     TaskComplete,
     TaskFailed,
+    /// Executor asked a question; display it and wait for user input.
+    PauseForHuman,
     NoOp,
 }
 
@@ -755,6 +885,14 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
         (Reviewing, Addressing) => TransitionAction::KillReviewerSpawnExecutor,
         (Reviewing, Complete) => TransitionAction::TaskComplete,
         (_, Failed) => TransitionAction::TaskFailed,
+        // Executor paused to ask the human a question.
+        (Executing | Addressing | Checking | Reviewing, AwaitingHuman) => {
+            TransitionAction::PauseForHuman
+        }
+        // State restored after human answered:
+        //   - alive path: /wait_for_answer unblocked the still-running executor
+        //   - dead path: answer() in HqContext restored state; user will /execute
+        // Either way, no spawning needed here.
         _ => TransitionAction::NoOp,
     }
 }
@@ -816,5 +954,39 @@ mod tests {
     fn stale_pid_detection() {
         assert!(pid_is_alive(std::process::id()));
         assert!(!pid_is_alive(999999));
+    }
+
+    #[test]
+    fn executing_to_awaiting_human_pauses() {
+        assert_eq!(
+            transition_action(&Executing, &AwaitingHuman),
+            TransitionAction::PauseForHuman
+        );
+    }
+
+    #[test]
+    fn addressing_to_awaiting_human_pauses() {
+        assert_eq!(
+            transition_action(&Addressing, &AwaitingHuman),
+            TransitionAction::PauseForHuman
+        );
+    }
+
+    #[test]
+    fn reviewing_to_awaiting_human_pauses() {
+        assert_eq!(
+            transition_action(&Reviewing, &AwaitingHuman),
+            TransitionAction::PauseForHuman
+        );
+    }
+
+    #[test]
+    fn awaiting_human_to_executing_is_noop() {
+        // Executor resumes via /wait_for_answer (alive) or is relaunched by answer()
+        // (dead). Either way, HQ doesn't spawn again from this transition.
+        assert_eq!(
+            transition_action(&AwaitingHuman, &Executing),
+            TransitionAction::NoOp
+        );
     }
 }

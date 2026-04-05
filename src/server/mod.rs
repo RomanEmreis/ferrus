@@ -69,6 +69,8 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         app.map_tool("submit", tools::submit::handler)
             .with_description(tools::submit::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::submit::INPUT_SCHEMA));
+        app.map_tool("wait_for_answer", tools::wait_for_answer::handler)
+            .with_description(tools::wait_for_answer::DESCRIPTION);
     }
 
     // Resources

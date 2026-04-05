@@ -105,7 +105,6 @@ The HQ drives the full lifecycle; your job is to execute one step and exit.
 ## Asking the human
 
 Call `/ask_human` when you need clarification the task description does not cover.
-MCP elicitation is used where supported; otherwise state pauses and the human calls `/answer`.
 "#;
 
 const EXECUTOR_SKILL: &str = r#"---
@@ -134,9 +133,24 @@ See [ROLE.md](./ROLE.md) for your full role definition and responsibilities.
 - **NEVER run checks manually** (e.g. `cargo test`, `cargo clippy`, `npm test`). Use `/check` exclusively — it records results, updates state, and handles retry counting. Running checks outside of `/check` wastes time and may mislead you about the actual check state.
 - Check failure details are in `.ferrus/FEEDBACK.md`; full logs are in `.ferrus/logs/`
 - Call `/status` at any time to inspect current state and counters
-- Call `/ask_human` if you need clarification from a human
 - Use the `executor-context` MCP prompt for bundled task context
 - Read runtime files as MCP resources: `ferrus://task`, `ferrus://feedback`, `ferrus://review`
+
+## Asking the human a question
+
+If you need information from the human that the task does not provide:
+
+1. Call `/ask_human` with your question.
+2. **Immediately** call `/wait_for_answer` — this blocks until the human responds (up to `wait_timeout_secs`).
+   - On `"status": "answered"`: the `"answer"` field contains the human's response. Continue your work.
+   - On `"status": "timeout"`: call `/wait_for_answer` again to keep waiting.
+3. Do **not** call any other tools between `/ask_human` and `/wait_for_answer`.
+
+If you are relaunched after being stopped while waiting (e.g. after a crash):
+- Check `.ferrus/ANSWER.md` — if it has content, that is the answer; use it and continue.
+- If `.ferrus/ANSWER.md` is empty, call `/wait_for_answer` again.
+
+You run **headlessly** — there is no interactive terminal. All human interaction goes through `/ask_human` + `/wait_for_answer`.
 "#;
 
 const EXECUTOR_ROLE: &str = r#"---
@@ -176,8 +190,11 @@ Read `REVIEW.md` carefully. Address **every point** the Supervisor raised before
 
 ## Asking the human
 
-Call `/ask_human` when you encounter ambiguity the task doesn't resolve.
-MCP elicitation is used where supported; otherwise state pauses and the human calls `/answer`.
+Call `/ask_human` when you encounter ambiguity the task doesn't resolve, then immediately call
+`/wait_for_answer` to block until the human responds. Do **not** call any other tools in between.
+
+You run **headlessly** — there is no interactive terminal. Do not expect permission prompts or
+interactive dialogs to work. Use `/ask_human` + `/wait_for_answer` for all human interaction.
 "#;
 
 const FERRUS_SKILL: &str = r#"---
@@ -212,7 +229,8 @@ Idle
                    └─► Complete ← /approve (Supervisor)
 ```
 
-Any active state can pause to `AwaitingHuman` via `/ask_human`. `/answer` restores it.
+Any active state can pause to `AwaitingHuman` via `/ask_human` (executor then calls `/wait_for_answer`
+to block until the human responds). The human types their answer in the HQ terminal.
 `/reset` moves `Failed → Idle`.
 
 ## CLI
@@ -255,12 +273,12 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `next_task` | Executing, Addressing | Read task + feedback + review notes |
 | `check` | Executing, Addressing | Run all configured checks |
 | `submit` | Checking | Write submission notes; moves to Reviewing |
+| `ask_human` | Executing, Addressing, Checking, Reviewing | Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
+| `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 
 ### Shared
 | Tool | From state | Description |
 |---|---|---|
-| `ask_human` | any active | Ask human a question (elicitation or AwaitingHuman fallback) |
-| `answer` | AwaitingHuman | Provide answer; restores previous state |
 | `status` | any | Print current state and counters |
 | `reset` | Failed | Return to Idle |
 | `heartbeat` | any claimed | Renew lease; returns `{"status":"renewed"}` or `{"status":"error","code":"..."}` |

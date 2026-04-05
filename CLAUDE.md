@@ -46,8 +46,8 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/execute` | Manually start or resume the executor (escape hatch if automatic spawning failed) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
-| `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`); auto-detaches when agent's task completes |
+| `/status` | Show task state, agent list, and session log paths |
+| `/attach <name>` | Attach terminal to a PTY session (supervisor only; executor runs headlessly) |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
@@ -118,14 +118,14 @@ executor = "codex"          # agent for executor role: claude-code | codex
 | `/next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `/check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
 | `/submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
+| `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman | Write question to QUESTION.md; executor must immediately call `/wait_for_answer` |
+| `/wait_for_answer` | AwaitingHuman | (previous state) | Block until the human answers; restores paused state and returns the answer |
 
 ### Shared tools
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `/heartbeat` | any claimed | — | Renew lease; call every ~30s while working |
-| `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman (fallback) | Ask the human a question; uses MCP elicitation when supported, otherwise pauses to AwaitingHuman |
-| `/answer` | AwaitingHuman | (previous state) | Provide a response when MCP elicitation is unavailable; restores the paused state |
 | `/status` | any | — | Print current state + retry counters |
 | `/reset` | any | Idle | Human escape hatch; clears feedback, review, and submission files; prompts if agent is actively working |
 
@@ -163,7 +163,7 @@ Idle
                    └─► Complete ← /approve
 ```
 
-Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human` when elicitation is unavailable. `/answer` restores the previous state.
+Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human`. The executor immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
 - `/plan` from `Complete` → silently resets to Idle and starts the next task.
 - `/reset`: works from any state; prompts for confirmation if Executing or Reviewing.
@@ -201,12 +201,14 @@ src/
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (foreground + background PTY); agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (PTY for supervisor; headless for executor); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
     heartbeat.rs             # /heartbeat — lease renewal
     wait_for_task.rs         # /wait_for_task — atomic claim loop (STATE.lock + fs2)
     wait_for_review.rs       # /wait_for_review — same pattern for Supervisor
+    ask_human.rs             # /ask_human — writes QUESTION.md, transitions to AwaitingHuman
+    wait_for_answer.rs       # /wait_for_answer — polls ANSWER.md, restores state, returns answer
 ```
 
 <!-- ferrus-supervisor-instructions -->

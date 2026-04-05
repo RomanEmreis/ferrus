@@ -24,7 +24,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/execute", "start executor manually"),
     ("/review", "spawn supervisor in review mode"),
     ("/status", "show task state and agents"),
-    ("/attach", "attach terminal to session"),
+    (
+        "/attach",
+        "attach terminal to PTY session (supervisor only)",
+    ),
     ("/stop", "stop all running sessions"),
     ("/reset", "reset state to Idle"),
     ("/init", "initialize ferrus in current directory"),
@@ -1082,6 +1085,23 @@ fn print_status_line(
         PrintStyledContent(style(state_text.clone()).with(task_state_color(state)))
     )?;
     remaining = remaining.saturating_sub(state_text.chars().count());
+
+    // When the executor is waiting for a human answer, show a prominent hint.
+    if state == "AwaitingHuman" {
+        let hint = "  ← type your answer and press Enter";
+        let hint_text = truncate_to_width(hint, remaining);
+        if !hint_text.is_empty() {
+            queue!(
+                stdout,
+                PrintStyledContent(
+                    style(hint_text.clone())
+                        .with(Color::Magenta)
+                        .attribute(Attribute::Bold)
+                )
+            )?;
+            remaining = remaining.saturating_sub(hint_text.chars().count());
+        }
+    }
 
     for segment in [
         (" | ", Color::DarkGrey),

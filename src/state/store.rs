@@ -124,8 +124,16 @@ pub async fn clear_submission() -> Result<()> {
     write_submission("").await
 }
 
+pub async fn read_question() -> Result<String> {
+    read_file("QUESTION.md").await
+}
+
 pub async fn write_question(content: &str) -> Result<()> {
     write_file("QUESTION.md", content).await
+}
+
+pub async fn read_answer() -> Result<String> {
+    read_file("ANSWER.md").await
 }
 
 pub async fn write_answer(content: &str) -> Result<()> {
