@@ -678,23 +678,31 @@ fn clear_live_area(stdout: &mut Stdout, ui: &TerminalUi) -> Result<()> {
     if !ui.prompt_visible && !ui.status_visible {
         return Ok(());
     }
-    queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-    if ui.status_visible {
-        queue!(
-            stdout,
-            MoveDown(1),
-            MoveToColumn(0),
-            Clear(ClearType::UntilNewLine),
-            MoveUp(1),
-            MoveToColumn(0)
-        )?;
-    }
+    queue!(
+        stdout,
+        MoveUp(1),
+        MoveToColumn(0),
+        Clear(ClearType::UntilNewLine),
+        MoveDown(1),
+        MoveToColumn(0),
+        Clear(ClearType::UntilNewLine),
+        MoveDown(1),
+        MoveToColumn(0),
+        Clear(ClearType::UntilNewLine),
+        MoveDown(1),
+        MoveToColumn(0),
+        Clear(ClearType::UntilNewLine),
+        MoveUp(3),
+        MoveToColumn(0)
+    )?;
     stdout.flush()?;
     Ok(())
 }
 
 fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Result<()> {
     let width = terminal_width() as usize;
+    print_live_area_border(stdout, width)?;
+    crlf(stdout)?;
     let prompt_cursor_col = if let Some(confirm) = app.confirmation.as_ref() {
         let prompt_text = truncate_to_width(&confirm.prompt, width.max(1));
         queue!(
@@ -719,8 +727,11 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
 
     crlf(stdout)?;
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+    print_live_area_border(stdout, width)?;
+    crlf(stdout)?;
+    queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
     print_status_line(stdout, &app.status, width)?;
-    queue!(stdout, MoveUp(1), MoveToColumn(prompt_cursor_col))?;
+    queue!(stdout, MoveUp(2), MoveToColumn(prompt_cursor_col))?;
     ui.prompt_visible = true;
     ui.status_visible = true;
     stdout.flush()?;
@@ -1068,6 +1079,15 @@ fn print_status_line(stdout: &mut Stdout, status: &StatusSnapshot, width: usize)
         remaining = remaining.saturating_sub(text.chars().count());
     }
 
+    Ok(())
+}
+
+fn print_live_area_border(stdout: &mut Stdout, width: usize) -> Result<()> {
+    let border_width = width.max(1);
+    queue!(
+        stdout,
+        PrintStyledContent(style("─".repeat(border_width)).with(Color::DarkGrey))
+    )?;
     Ok(())
 }
 
