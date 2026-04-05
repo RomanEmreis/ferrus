@@ -23,7 +23,7 @@ Licensed under Apache 2.0.
                    │ exits after approve/reject
 ```
 
-Each agent runs headlessly in a background PTY session. HQ watches state transitions and spawns the right agent at the right time. You can attach to any session at any point with `/attach <name>` to observe or interact.
+The supervisor runs in a background PTY session - you can attach to it with `/attach <name>` to observe or interact. The executor runs headlessly; HQ captures its output in a log file. HQ watches state transitions and spawns the right agent at the right time.
 
 State is shared through `.ferrus/` on disk — plain text files agents read and write via their tools. If an agent crashes and restarts, it picks up exactly where it left off.
 
@@ -52,8 +52,8 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 | `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
 | `/execute` | Manually start or resume the executor (escape hatch if automatic spawning failed) |
 | `/review` | Manually spawn supervisor in review mode (if automatic spawning failed or HQ restarted) |
-| `/status` | Show task state, agent list, and PTY session log paths |
-| `/attach <name>` | Attach terminal to a running background session (e.g. `executor-1`); auto-detaches when the agent's task completes |
+| `/status` | Show task state, agent list, and session log paths |
+| `/attach <name>` | Attach terminal to a PTY session (supervisor only; executor runs headlessly) |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
@@ -74,8 +74,8 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 
 ```
 ferrus> /plan
-  └─ supervisor spawns (foreground) → you describe the task → supervisor calls create_task
-       └─ executor spawns (background PTY) → implements → check → submit
+  └─ supervisor spawns (background PTY) → you describe the task → supervisor calls create_task
+       └─ executor spawns (headless) → implements → check → submit
             └─ reviewer spawns (background PTY) → reads submission → approve or reject
                  ├─ approved → Complete
                  └─ rejected → executor re-spawns with feedback
@@ -99,7 +99,7 @@ Idle
                    └─► Complete ← approve (Supervisor)
 ```
 
-Any active state can pause to `AwaitingHuman` when an agent needs human input.
+Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human`. The executor immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
 - `/plan` from `Complete` → silently resets to Idle and starts the next task (no extra step needed).
 - `/reset` → Idle from any state; prompts for confirmation if an agent is actively working.
@@ -126,8 +126,8 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `answer`, `status`, `reset` |
-| `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `ask_human`, `answer`, `status`, `reset` |
+| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `wait_for_answer`, `status`, `reset` |
+| `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `ask_human`, `wait_for_answer`, `status`, `reset` |
 | *(omitted)* | All tools |
 
 ### `ferrus register --supervisor <agent> --executor <agent>`

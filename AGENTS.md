@@ -40,7 +40,7 @@ src/
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs; double-Ctrl+C-to-quit (2-second window)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (foreground + background PTY); agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (PTY for supervisor; headless for executor); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool (one module = one tool)
   server/resources.rs        # MCP resource handler (ferrus://{file})
