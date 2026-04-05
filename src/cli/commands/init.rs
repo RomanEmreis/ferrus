@@ -444,6 +444,8 @@ async fn update_gitignore() -> Result<()> {
     let entries = [
         ".ferrus/",
         ".claude/settings.local.json",
+        ".claude/.mcp.json",
+        ".mcp.json",
         ".codex/config.toml",
     ];
 
