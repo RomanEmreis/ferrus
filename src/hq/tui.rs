@@ -635,6 +635,7 @@ fn handle_message(
 
 // The transcript is real terminal output; only the prompt area is ephemeral.
 fn print_startup_header(stdout: &mut Stdout, startup: &StartupHeader) -> Result<()> {
+    queue!(stdout, Print("\r\n"))?;
     let width = terminal_width() as usize;
 
     for line in ferrus_logo_lines() {
@@ -663,13 +664,15 @@ fn print_metadata_box(stdout: &mut Stdout, lines: &[TranscriptLine], width: usiz
     let border = "─".repeat(inner_width + 2);
     queue!(
         stdout,
-        PrintStyledContent(style(format!("┌{border}┐")).with(Color::DarkGrey))
+        Print("  "),
+        PrintStyledContent(style(format!("╭{border}╮")).with(Color::DarkGrey))
     )?;
     crlf(stdout)?;
 
     for line in lines {
         queue!(
             stdout,
+            Print("  "),
             PrintStyledContent(style("│ ").with(Color::DarkGrey))
         )?;
         print_meta_line(stdout, line, inner_width)?;
@@ -687,7 +690,8 @@ fn print_metadata_box(stdout: &mut Stdout, lines: &[TranscriptLine], width: usiz
 
     queue!(
         stdout,
-        PrintStyledContent(style(format!("└{border}┘")).with(Color::DarkGrey))
+        Print("  "),
+        PrintStyledContent(style(format!("╰{border}╯")).with(Color::DarkGrey))
     )?;
     Ok(())
 }
@@ -796,6 +800,7 @@ fn print_logo_line(stdout: &mut Stdout, line: &str, width: usize) -> Result<()> 
     let line = truncate_to_width(line, width.max(1));
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len().max(1);
+    queue!(stdout, Print("  "))?;
     for (idx, ch) in chars.into_iter().enumerate() {
         queue!(
             stdout,
@@ -907,16 +912,16 @@ fn crlf(stdout: &mut Stdout) -> Result<()> {
 
 fn ferrus_logo_lines() -> &'static [&'static str] {
     &[
-        "███████ ███████ ██████  ██████  ██   ██ ███████",
+        "███████ ███████ █████   █████   ██   ██ ███████",
         "██      ██      ██  ██  ██  ██  ██   ██ ██",
-        "█████   █████   ██████  ██████  ██   ██ ███████",
+        "█████   █████   █████   █████   ██   ██ ███████",
         "██      ██      ██  ██  ██  ██  ██   ██      ██",
         "██      ███████ ██  ██  ██  ██   █████  ███████",
     ]
 }
 
 fn metadata_inner_width(lines: &[TranscriptLine], width: usize) -> usize {
-    let max_visible = width.saturating_sub(4).max(1);
+    let max_visible = width.saturating_sub(6).max(1);
     lines
         .iter()
         .map(|line| truncate_to_width(&line.text, max_visible).chars().count())
