@@ -66,6 +66,7 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 > - Ctrl+] d → detach and return to HQ.
 > - Ctrl+] Ctrl+] → send a literal Ctrl+] to the agent (escape hatch).
 > - Ctrl+] is ASCII 0x1D (GS) — not intercepted by tmux, readline, or Claude Code.
+> **Quit HQ:** Press **Ctrl+C** twice within 2 seconds to exit. The first press shows a yellow "Press Ctrl+C again to exit" prompt in the status line; the second confirms and exits. The prompt clears automatically after 2 seconds if you change your mind.
 
 > **TUI features:** Type `/` to see autocomplete suggestions; press **Tab** / **Shift+Tab** to navigate and **Enter** to accept. A status line at the bottom of the terminal shows the current task state and retry/cycle counters in real time.
 

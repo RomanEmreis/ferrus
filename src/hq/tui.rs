@@ -108,6 +108,8 @@ pub struct App {
     confirmation: Option<ConfirmationState>,
     suspended: bool,
     should_quit: bool,
+    ctrl_c_pending: bool,
+    ctrl_c_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -127,6 +129,8 @@ impl App {
             confirmation: None,
             suspended: false,
             should_quit: false,
+            ctrl_c_pending: false,
+            ctrl_c_at: None,
         }
     }
 
@@ -418,6 +422,7 @@ pub async fn run_tui(
     redraw_live_area(&mut stdout, &app, &mut ui)?;
 
     let mut event_stream = EventStream::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
     loop {
         tokio::select! {
             maybe_event = event_stream.next(), if !app.suspended => {
@@ -441,6 +446,20 @@ pub async fn run_tui(
                 match maybe_msg {
                     Some(msg) => handle_message(msg, &mut app, &mut stdout, &mut ui)?,
                     None => app.should_quit = true,
+                }
+            }
+            _ = tick.tick() => {
+                if app.ctrl_c_pending
+                    && app
+                        .ctrl_c_at
+                        .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2))
+                {
+                    app.ctrl_c_pending = false;
+                    app.ctrl_c_at = None;
+                    if !app.suspended {
+                        clear_live_area(&mut stdout, &ui)?;
+                        redraw_live_area(&mut stdout, &app, &mut ui)?;
+                    }
                 }
             }
             changed = state_rx.changed() => {
@@ -500,7 +519,14 @@ fn handle_event(
                 handle_confirmation_key(key, app);
             } else {
                 match (key.code, key.modifiers) {
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => app.should_quit = true,
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        if app.ctrl_c_pending {
+                            app.should_quit = true;
+                        } else {
+                            app.ctrl_c_pending = true;
+                            app.ctrl_c_at = Some(std::time::Instant::now());
+                        }
+                    }
                     (KeyCode::Char('l'), KeyModifiers::CONTROL) => {}
                     (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
                         app.move_home()
@@ -738,7 +764,7 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
     for line in &lower_lines {
         crlf(stdout)?;
         queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-        print_live_area_line(stdout, line, &app.status, width)?;
+        print_live_area_line(stdout, line, app.ctrl_c_pending, &app.status, width)?;
     }
     queue!(
         stdout,
@@ -1025,8 +1051,22 @@ fn render_prompt_line(app: &App, width: usize) -> PromptLine {
     }
 }
 
-fn print_status_line(stdout: &mut Stdout, status: &StatusSnapshot, width: usize) -> Result<()> {
+fn print_status_line(
+    stdout: &mut Stdout,
+    status: &StatusSnapshot,
+    ctrl_c_pending: bool,
+    width: usize,
+) -> Result<()> {
     let max_width = width.max(1);
+    if ctrl_c_pending {
+        let warning = truncate_to_width("Press Ctrl+C again to exit", max_width);
+        queue!(
+            stdout,
+            PrintStyledContent(style(warning).with(Color::Yellow))
+        )?;
+        return Ok(());
+    }
+
     let state = if status.task_state.is_empty() {
         "Idle"
     } else {
@@ -1124,11 +1164,12 @@ fn visible_completion_rows(app: &App) -> Vec<(bool, &'static str, &'static str)>
 fn print_live_area_line(
     stdout: &mut Stdout,
     line: &LiveAreaLine,
+    ctrl_c_pending: bool,
     status: &StatusSnapshot,
     width: usize,
 ) -> Result<()> {
     match line {
-        LiveAreaLine::Status => print_status_line(stdout, status, width),
+        LiveAreaLine::Status => print_status_line(stdout, status, ctrl_c_pending, width),
         LiveAreaLine::Completion {
             selected,
             command,

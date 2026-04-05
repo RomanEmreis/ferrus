@@ -56,6 +56,7 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | `/quit` | Exit HQ |
 
 **Detach from attached session:** press **Ctrl+]** (prefix, swallowed silently) then **d**. Ctrl+] Ctrl+] sends a literal Ctrl+] to the agent.
+**Quit HQ:** Press **Ctrl+C** twice within 2 seconds to exit. The first press shows a confirmation prompt in the status line; the second confirms and exits.
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity.
 Logs go to **stderr** so they don't interfere with the stdio MCP stream.
