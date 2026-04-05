@@ -104,6 +104,7 @@ pub struct App {
     completion_candidates: Vec<(&'static str, &'static str)>,
     completion_selected: usize,
     completion_active: bool,
+    completion_hidden: bool,
     confirmation: Option<ConfirmationState>,
     suspended: bool,
     should_quit: bool,
@@ -122,6 +123,7 @@ impl App {
             completion_candidates: Vec::new(),
             completion_selected: 0,
             completion_active: false,
+            completion_hidden: false,
             confirmation: None,
             suspended: false,
             should_quit: false,
@@ -132,6 +134,12 @@ impl App {
         self.completion_candidates.clear();
         self.completion_selected = 0;
         self.completion_active = false;
+        self.completion_hidden = false;
+    }
+
+    fn hide_completion_popup(&mut self) {
+        self.completion_active = false;
+        self.completion_hidden = true;
     }
 
     fn insert_char(&mut self, ch: char) {
@@ -183,7 +191,7 @@ impl App {
     }
 
     fn history_up(&mut self) {
-        if self.has_command_context() {
+        if self.completion_popup_visible() {
             self.previous_completion();
             return;
         }
@@ -206,7 +214,7 @@ impl App {
     }
 
     fn history_down(&mut self) {
-        if self.has_command_context() {
+        if self.completion_popup_visible() {
             self.next_completion();
             return;
         }
@@ -232,6 +240,10 @@ impl App {
 
     fn has_command_context(&self) -> bool {
         self.completion_prefix().starts_with('/') && !self.completion_candidates.is_empty()
+    }
+
+    fn completion_popup_visible(&self) -> bool {
+        self.confirmation.is_none() && self.has_command_context() && !self.completion_hidden
     }
 
     fn compute_completions(&mut self) {
@@ -262,8 +274,12 @@ impl App {
             self.compute_completions();
             if self.completion_candidates.is_empty() {
                 self.completion_active = false;
+                self.completion_hidden = false;
             } else if self.completion_selected >= self.completion_candidates.len() {
                 self.completion_selected = 0;
+                self.completion_hidden = false;
+            } else {
+                self.completion_hidden = false;
             }
         } else {
             self.clear_completion();
@@ -284,6 +300,7 @@ impl App {
             self.completion_active = false;
             return;
         }
+        self.completion_hidden = false;
 
         let prefix = self.completion_prefix().to_string();
         let shared_prefix = longest_common_prefix(&self.completion_candidates);
@@ -315,6 +332,7 @@ impl App {
     fn previous_completion(&mut self) {
         self.refresh_completions();
         if !self.completion_candidates.is_empty() {
+            self.completion_hidden = false;
             self.completion_active = true;
             self.completion_selected = if self.completion_selected == 0 {
                 self.completion_candidates.len() - 1
@@ -359,7 +377,7 @@ struct StartupHeader {
 
 struct TerminalUi {
     prompt_visible: bool,
-    status_visible: bool,
+    lower_lines: u16,
 }
 
 pub async fn run_tui(
@@ -390,7 +408,7 @@ pub async fn run_tui(
 
     let mut ui = TerminalUi {
         prompt_visible: false,
-        status_visible: false,
+        lower_lines: 0,
     };
     redraw_live_area(&mut stdout, &app, &mut ui)?;
 
@@ -473,7 +491,6 @@ fn handle_event(
                 return Ok(());
             }
 
-            let mut transcript = None;
             if app.confirmation.is_some() {
                 handle_confirmation_key(key, app);
             } else {
@@ -493,8 +510,8 @@ fn handle_event(
                     (KeyCode::Backspace, _) => app.delete_before_cursor(),
                     (KeyCode::Delete, _) => app.delete_after_cursor(),
                     (KeyCode::Esc, _) => {
-                        if app.completion_active {
-                            app.clear_completion();
+                        if app.completion_popup_visible() {
+                            app.hide_completion_popup();
                         } else {
                             app.input.clear();
                             app.cursor_pos = 0;
@@ -502,16 +519,10 @@ fn handle_event(
                             app.history_saved.clear();
                         }
                     }
-                    (KeyCode::Tab, _) => {
-                        app.next_completion();
-                        transcript = completion_transcript_lines(app);
-                    }
-                    (KeyCode::BackTab, _) => {
-                        app.previous_completion();
-                        transcript = completion_transcript_lines(app);
-                    }
+                    (KeyCode::Tab, _) => app.next_completion(),
+                    (KeyCode::BackTab, _) => app.previous_completion(),
                     (KeyCode::Enter, _) => {
-                        if app.completion_active {
+                        if app.completion_popup_visible() {
                             app.accept_completion();
                         } else {
                             app.submit_input(cmd_tx);
@@ -525,12 +536,8 @@ fn handle_event(
             }
 
             if !app.should_quit {
-                if let Some(lines) = transcript {
-                    print_message_and_restore_prompt(stdout, app, ui, lines)?;
-                } else {
-                    clear_live_area(stdout, ui)?;
-                    redraw_live_area(stdout, app, ui)?;
-                }
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
             }
         }
         _ => {}
@@ -597,7 +604,7 @@ fn handle_message(
             enter_tui()?;
             app.suspended = false;
             ui.prompt_visible = false;
-            ui.status_visible = false;
+            ui.lower_lines = 0;
             redraw_live_area(stdout, app, ui)?;
         }
         UiMessage::ConfirmationRequest { prompt, reply } => {
@@ -675,32 +682,27 @@ fn print_metadata_box(stdout: &mut Stdout, lines: &[TranscriptLine], width: usiz
 }
 
 fn clear_live_area(stdout: &mut Stdout, ui: &TerminalUi) -> Result<()> {
-    if !ui.prompt_visible && !ui.status_visible {
+    if !ui.prompt_visible || ui.lower_lines == 0 {
         return Ok(());
     }
-    queue!(
-        stdout,
-        MoveUp(1),
-        MoveToColumn(0),
-        Clear(ClearType::UntilNewLine),
-        MoveDown(1),
-        MoveToColumn(0),
-        Clear(ClearType::UntilNewLine),
-        MoveDown(1),
-        MoveToColumn(0),
-        Clear(ClearType::UntilNewLine),
-        MoveDown(1),
-        MoveToColumn(0),
-        Clear(ClearType::UntilNewLine),
-        MoveUp(3),
-        MoveToColumn(0)
-    )?;
+    let lower_lines = ui.lower_lines;
+    let total_lines = lower_lines + 3;
+
+    queue!(stdout, MoveUp(1), MoveToColumn(0))?;
+    for idx in 0..total_lines {
+        queue!(stdout, Clear(ClearType::UntilNewLine), MoveToColumn(0))?;
+        if idx + 1 < total_lines {
+            queue!(stdout, MoveDown(1), MoveToColumn(0))?;
+        }
+    }
+    queue!(stdout, MoveUp(total_lines - 1), MoveToColumn(0))?;
     stdout.flush()?;
     Ok(())
 }
 
 fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Result<()> {
     let width = terminal_width() as usize;
+    let lower_lines = render_lower_live_area(app, width);
     print_live_area_border(stdout, width)?;
     crlf(stdout)?;
     let prompt_cursor_col = if let Some(confirm) = app.confirmation.as_ref() {
@@ -728,12 +730,18 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
     crlf(stdout)?;
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
     print_live_area_border(stdout, width)?;
-    crlf(stdout)?;
-    queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-    print_status_line(stdout, &app.status, width)?;
-    queue!(stdout, MoveUp(2), MoveToColumn(prompt_cursor_col))?;
+    for line in &lower_lines {
+        crlf(stdout)?;
+        queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+        print_live_area_line(stdout, line, &app.status, width)?;
+    }
+    queue!(
+        stdout,
+        MoveUp((lower_lines.len() + 1) as u16),
+        MoveToColumn(prompt_cursor_col)
+    )?;
     ui.prompt_visible = true;
-    ui.status_visible = true;
+    ui.lower_lines = lower_lines.len() as u16;
     stdout.flush()?;
     Ok(())
 }
@@ -750,7 +758,7 @@ fn print_message_and_restore_prompt(
         print_transcript_line(stdout, line)?;
     }
     ui.prompt_visible = false;
-    ui.status_visible = false;
+    ui.lower_lines = 0;
     redraw_live_area(stdout, app, ui)
 }
 
@@ -1012,33 +1020,6 @@ fn render_prompt_line(app: &App, width: usize) -> PromptLine {
     }
 }
 
-fn completion_transcript_lines(app: &App) -> Option<Vec<TranscriptLine>> {
-    if app.confirmation.is_some()
-        || !app.has_command_context()
-        || app.completion_candidates.len() <= 1
-    {
-        return None;
-    }
-
-    let lines = app
-        .completion_candidates
-        .iter()
-        .enumerate()
-        .map(|(idx, (cmd, desc))| {
-            let marker = if app.completion_active && idx == app.completion_selected {
-                ">"
-            } else {
-                " "
-            };
-            TranscriptLine {
-                text: format!("{marker} {cmd:<12} {desc}"),
-                kind: TranscriptKind::Info,
-            }
-        })
-        .collect();
-    Some(lines)
-}
-
 fn print_status_line(stdout: &mut Stdout, status: &StatusSnapshot, width: usize) -> Result<()> {
     let max_width = width.max(1);
     let state = if status.task_state.is_empty() {
@@ -1088,6 +1069,108 @@ fn print_live_area_border(stdout: &mut Stdout, width: usize) -> Result<()> {
         stdout,
         PrintStyledContent(style("─".repeat(border_width)).with(Color::DarkGrey))
     )?;
+    Ok(())
+}
+
+enum LiveAreaLine {
+    Status,
+    Completion {
+        selected: bool,
+        command: String,
+        description: String,
+    },
+}
+
+fn render_lower_live_area(app: &App, width: usize) -> Vec<LiveAreaLine> {
+    if app.completion_popup_visible() {
+        visible_completion_rows(app)
+            .into_iter()
+            .map(
+                |(selected, command, description)| LiveAreaLine::Completion {
+                    selected,
+                    command: truncate_to_width(command, width.max(1)),
+                    description: truncate_to_width(description, width.max(1)),
+                },
+            )
+            .collect()
+    } else {
+        vec![LiveAreaLine::Status]
+    }
+}
+
+fn visible_completion_rows(app: &App) -> Vec<(bool, &'static str, &'static str)> {
+    let total = app.completion_candidates.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let window = total.min(3);
+    let start = if total <= window {
+        0
+    } else {
+        app.completion_selected.min(total.saturating_sub(window))
+    };
+    app.completion_candidates[start..start + window]
+        .iter()
+        .enumerate()
+        .map(|(offset, (cmd, desc))| (start + offset == app.completion_selected, *cmd, *desc))
+        .collect()
+}
+
+fn print_live_area_line(
+    stdout: &mut Stdout,
+    line: &LiveAreaLine,
+    status: &StatusSnapshot,
+    width: usize,
+) -> Result<()> {
+    match line {
+        LiveAreaLine::Status => print_status_line(stdout, status, width),
+        LiveAreaLine::Completion {
+            selected,
+            command,
+            description,
+        } => print_completion_line(stdout, *selected, command, description, width),
+    }
+}
+
+fn print_completion_line(
+    stdout: &mut Stdout,
+    selected: bool,
+    command: &str,
+    description: &str,
+    width: usize,
+) -> Result<()> {
+    let marker = if selected { "› " } else { "  " };
+    let command_width = command.chars().count();
+    let separator = if description.is_empty() { "" } else { "  " };
+    let used = marker.chars().count() + command_width + separator.chars().count();
+    let desc_width = width.saturating_sub(used).max(1);
+    let desc = truncate_to_width(description, desc_width);
+
+    if selected {
+        queue!(
+            stdout,
+            PrintStyledContent(style(marker).with(Color::Yellow)),
+            PrintStyledContent(
+                style(command)
+                    .with(Color::Yellow)
+                    .attribute(Attribute::Bold)
+            )
+        )?;
+    } else {
+        queue!(
+            stdout,
+            PrintStyledContent(style(marker).with(Color::DarkGrey)),
+            PrintStyledContent(style(command).with(Color::Grey))
+        )?;
+    }
+
+    if !desc.is_empty() {
+        queue!(
+            stdout,
+            PrintStyledContent(style(separator).with(Color::DarkGrey)),
+            PrintStyledContent(style(desc).with(Color::DarkGrey))
+        )?;
+    }
     Ok(())
 }
 
