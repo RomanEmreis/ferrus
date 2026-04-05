@@ -1,25 +1,19 @@
 use std::{
     env, fs,
-    io::{self, Stdout},
+    io::{self, Stdout, Write},
     path::{Path, PathBuf},
 };
 
 use anyhow::Result;
 use crossterm::{
+    cursor::MoveToColumn,
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    queue,
+    style::{style, Attribute, Color, Print, PrintStyledContent, Stylize},
+    terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType},
 };
 use futures::StreamExt;
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Flex, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph},
-    Frame, Terminal, TerminalOptions, Viewport,
-};
 use tokio::sync::{mpsc, oneshot, watch};
-use tui_big_text::{BigText, PixelSize};
 
 use crate::state::machine::StateData;
 
@@ -85,17 +79,22 @@ struct ConfirmationState {
     reply: oneshot::Sender<bool>,
 }
 
+#[derive(Clone)]
+struct TranscriptLine {
+    text: String,
+    kind: TranscriptKind,
+}
+
+#[derive(Clone, Copy)]
+enum TranscriptKind {
+    Info,
+    Error,
+    Transition,
+}
+
 pub struct App {
-    version: String,
-    current_dir: String,
-    supervisor_type: String,
-    executor_type: String,
-    supervisor_version: String,
-    executor_version: String,
     status: StatusSnapshot,
-    messages: Vec<Line<'static>>,
-    scroll_offset: usize,
-    new_messages_while_scrolled: usize,
+    messages: Vec<TranscriptLine>,
     input: String,
     cursor_pos: usize,
     history: Vec<String>,
@@ -110,23 +109,10 @@ pub struct App {
 }
 
 impl App {
-    fn new(
-        supervisor_type: String,
-        executor_type: String,
-        supervisor_version: String,
-        executor_version: String,
-    ) -> Self {
+    fn new() -> Self {
         Self {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            current_dir: current_dir_label(),
-            supervisor_type,
-            executor_type,
-            supervisor_version,
-            executor_version,
             status: StatusSnapshot::default(),
             messages: Vec::new(),
-            scroll_offset: 0,
-            new_messages_while_scrolled: 0,
             input: String::new(),
             cursor_pos: 0,
             history: load_history(),
@@ -138,15 +124,6 @@ impl App {
             confirmation: None,
             suspended: false,
             should_quit: false,
-        }
-    }
-
-    fn push_message(&mut self, line: Line<'static>) {
-        self.messages.push(line);
-        if self.scroll_offset == 0 {
-            self.new_messages_while_scrolled = 0;
-        } else {
-            self.new_messages_while_scrolled += 1;
         }
     }
 
@@ -202,8 +179,6 @@ impl App {
 
     fn move_end(&mut self) {
         self.cursor_pos = self.input.chars().count();
-        self.scroll_offset = 0;
-        self.new_messages_while_scrolled = 0;
     }
 
     fn history_up(&mut self) {
@@ -248,23 +223,6 @@ impl App {
             }
         }
         self.update_command_context();
-    }
-
-    fn page_up(&mut self, height: usize) {
-        self.scroll_offset += (height.max(2)) / 2;
-    }
-
-    fn page_down(&mut self, height: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub((height.max(2)) / 2);
-        if self.scroll_offset == 0 {
-            self.new_messages_while_scrolled = 0;
-        }
-    }
-
-    fn clear_messages(&mut self) {
-        self.messages.clear();
-        self.scroll_offset = 0;
-        self.new_messages_while_scrolled = 0;
     }
 
     fn completion_prefix(&self) -> &str {
@@ -349,10 +307,8 @@ impl App {
             self.completion_selected = 0;
             return;
         }
-        if self.completion_active {
-            self.completion_selected =
-                (self.completion_selected + 1) % self.completion_candidates.len();
-        }
+        self.completion_selected =
+            (self.completion_selected + 1) % self.completion_candidates.len();
     }
 
     fn previous_completion(&mut self) {
@@ -391,6 +347,19 @@ impl App {
     }
 }
 
+struct StartupHeader {
+    version: String,
+    directory: String,
+    supervisor_type: String,
+    supervisor_version: String,
+    executor_type: String,
+    executor_version: String,
+}
+
+struct TerminalUi {
+    prompt_visible: bool,
+}
+
 pub async fn run_tui(
     mut msg_rx: mpsc::UnboundedReceiver<UiMessage>,
     cmd_tx: mpsc::UnboundedSender<String>,
@@ -400,39 +369,51 @@ pub async fn run_tui(
     supervisor_version: String,
     executor_version: String,
 ) -> Result<()> {
-    let mut app = App::new(
+    let startup = StartupHeader {
+        version: format!("v{}", env!("CARGO_PKG_VERSION")),
+        directory: current_dir_label(),
         supervisor_type,
-        executor_type,
         supervisor_version,
+        executor_type,
         executor_version,
-    );
+    };
+    let mut app = App::new();
     if let Some(state) = state_rx.borrow().clone() {
         app.status = StatusSnapshot::from_state_data(&state);
     }
 
-    let mut terminal = enter_tui()?;
-    let mut event_stream = EventStream::new();
-    terminal.draw(|f| draw(f, &app))?;
+    let mut stdout = io::stdout();
+    enter_tui()?;
+    print_startup_header(&mut stdout, &startup)?;
 
+    let mut ui = TerminalUi {
+        prompt_visible: false,
+    };
+    redraw_prompt_line(&mut stdout, &app, &mut ui)?;
+
+    let mut event_stream = EventStream::new();
     loop {
         tokio::select! {
             maybe_event = event_stream.next(), if !app.suspended => {
                 match maybe_event {
-                    Some(Ok(event)) => {
-                        let terminal_height = terminal.size()?.height;
-                        let popup_height = completion_popup_height(&app, terminal_height);
-                        let scroll_height = terminal_height
-                            .saturating_sub(11 + popup_height)
-                            as usize;
-                        handle_event(event, &mut app, &cmd_tx, scroll_height)
+                    Some(Ok(event)) => handle_event(event, &mut app, &cmd_tx, &mut stdout, &mut ui)?,
+                    Some(Err(err)) => {
+                        print_message_and_restore_prompt(
+                            &mut stdout,
+                            &app,
+                            &mut ui,
+                            vec![TranscriptLine {
+                                text: format!("Event error: {err}"),
+                                kind: TranscriptKind::Error,
+                            }],
+                        )?;
                     }
-                    Some(Err(err)) => app.push_message(error_line(format!("Event error: {err}"))),
                     None => app.should_quit = true,
                 }
             }
             maybe_msg = msg_rx.recv() => {
                 match maybe_msg {
-                    Some(msg) => handle_message(msg, &mut app, &mut terminal)?,
+                    Some(msg) => handle_message(msg, &mut app, &mut stdout, &mut ui)?,
                     None => app.should_quit = true,
                 }
             }
@@ -441,9 +422,28 @@ pub async fn run_tui(
                     if let Some(state) = state_rx.borrow_and_update().clone() {
                         let supervisor_status = app.status.supervisor_status.clone();
                         let executor_status = app.status.executor_status.clone();
-                        app.status = StatusSnapshot::from_state_data(&state);
-                        app.status.supervisor_status = supervisor_status;
-                        app.status.executor_status = executor_status;
+                        let previous = compact_status_text(&app.status);
+                        let mut next = StatusSnapshot::from_state_data(&state);
+                        next.supervisor_status = supervisor_status;
+                        next.executor_status = executor_status;
+                        let current = compact_status_text(&next);
+                        app.status = next;
+                        if !app.suspended {
+                            if previous != current {
+                                print_message_and_restore_prompt(
+                                    &mut stdout,
+                                    &app,
+                                    &mut ui,
+                                    vec![TranscriptLine {
+                                        text: current,
+                                        kind: TranscriptKind::Info,
+                                    }],
+                                )?;
+                            } else {
+                                clear_prompt_line(&mut stdout, &ui)?;
+                                redraw_prompt_line(&mut stdout, &app, &mut ui)?;
+                            }
+                        }
                     }
                 }
             }
@@ -452,13 +452,14 @@ pub async fn run_tui(
         if app.should_quit {
             break;
         }
-        if !app.suspended {
-            terminal.draw(|f| draw(f, &app))?;
-        }
     }
 
+    clear_prompt_line(&mut stdout, &ui)?;
+    queue!(stdout, MoveToColumn(0))?;
+    crlf(&mut stdout)?;
+    stdout.flush()?;
     save_history(&app.history);
-    leave_tui(&mut terminal);
+    leave_tui()?;
     Ok(())
 }
 
@@ -466,59 +467,87 @@ fn handle_event(
     event: Event,
     app: &mut App,
     cmd_tx: &mpsc::UnboundedSender<String>,
-    scroll_height: usize,
-) {
+    stdout: &mut Stdout,
+    ui: &mut TerminalUi,
+) -> Result<()> {
     if app.suspended {
-        return;
+        return Ok(());
     }
 
-    let Event::Key(key) = event else {
-        return;
-    };
-    if key.kind != KeyEventKind::Press {
-        return;
-    }
+    match event {
+        Event::Resize(_, _) => {
+            clear_prompt_line(stdout, ui)?;
+            redraw_prompt_line(stdout, app, ui)?;
+        }
+        Event::Key(key) => {
+            if key.kind != KeyEventKind::Press {
+                return Ok(());
+            }
 
-    if app.confirmation.is_some() {
-        handle_confirmation_key(key, app);
-        return;
-    }
-
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => app.should_quit = true,
-        (KeyCode::Char('l'), KeyModifiers::CONTROL) => app.clear_messages(),
-        (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => app.move_home(),
-        (KeyCode::Char('e'), KeyModifiers::CONTROL) | (KeyCode::End, _) => app.move_end(),
-        (KeyCode::Left, _) => app.move_left(),
-        (KeyCode::Right, _) => app.move_right(),
-        (KeyCode::Up, _) => app.history_up(),
-        (KeyCode::Down, _) => app.history_down(),
-        (KeyCode::PageUp, _) => app.page_up(scroll_height),
-        (KeyCode::PageDown, _) => app.page_down(scroll_height),
-        (KeyCode::Backspace, _) => app.delete_before_cursor(),
-        (KeyCode::Delete, _) => app.delete_after_cursor(),
-        (KeyCode::Esc, _) => {
-            if app.completion_active {
-                app.clear_completion();
+            let mut transcript = None;
+            if app.confirmation.is_some() {
+                handle_confirmation_key(key, app);
             } else {
-                app.input.clear();
-                app.cursor_pos = 0;
-                app.history_idx = None;
-                app.history_saved.clear();
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => app.should_quit = true,
+                    (KeyCode::Char('l'), KeyModifiers::CONTROL) => {}
+                    (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
+                        app.move_home()
+                    }
+                    (KeyCode::Char('e'), KeyModifiers::CONTROL) | (KeyCode::End, _) => {
+                        app.move_end()
+                    }
+                    (KeyCode::Left, _) => app.move_left(),
+                    (KeyCode::Right, _) => app.move_right(),
+                    (KeyCode::Up, _) => app.history_up(),
+                    (KeyCode::Down, _) => app.history_down(),
+                    (KeyCode::Backspace, _) => app.delete_before_cursor(),
+                    (KeyCode::Delete, _) => app.delete_after_cursor(),
+                    (KeyCode::Esc, _) => {
+                        if app.completion_active {
+                            app.clear_completion();
+                        } else {
+                            app.input.clear();
+                            app.cursor_pos = 0;
+                            app.history_idx = None;
+                            app.history_saved.clear();
+                        }
+                    }
+                    (KeyCode::Tab, _) => {
+                        app.next_completion();
+                        transcript = completion_transcript_lines(app);
+                    }
+                    (KeyCode::BackTab, _) => {
+                        app.previous_completion();
+                        transcript = completion_transcript_lines(app);
+                    }
+                    (KeyCode::Enter, _) => {
+                        if app.completion_active {
+                            app.accept_completion();
+                        } else {
+                            app.submit_input(cmd_tx);
+                        }
+                    }
+                    (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        app.insert_char(ch)
+                    }
+                    _ => {}
+                }
+            }
+
+            if !app.should_quit {
+                if let Some(lines) = transcript {
+                    print_message_and_restore_prompt(stdout, app, ui, lines)?;
+                } else {
+                    clear_prompt_line(stdout, ui)?;
+                    redraw_prompt_line(stdout, app, ui)?;
+                }
             }
         }
-        (KeyCode::Tab, _) => app.next_completion(),
-        (KeyCode::BackTab, _) => app.previous_completion(),
-        (KeyCode::Enter, _) => {
-            if app.completion_active {
-                app.accept_completion();
-            } else {
-                app.submit_input(cmd_tx);
-            }
-        }
-        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => app.insert_char(ch),
         _ => {}
     }
+
+    Ok(())
 }
 
 fn handle_confirmation_key(key: KeyEvent, app: &mut App) {
@@ -538,274 +567,502 @@ fn confirm(app: &mut App, accepted: bool) {
 fn handle_message(
     msg: UiMessage,
     app: &mut App,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    stdout: &mut Stdout,
+    ui: &mut TerminalUi,
 ) -> Result<()> {
     match msg {
-        UiMessage::Info(text) => app.push_message(Line::from(text)),
-        UiMessage::Error(text) => app.push_message(error_line(text)),
-        UiMessage::Transition { from, to } => app.push_message(Line::styled(
-            format!("── {from} → {to} ──"),
-            Style::default()
-                .fg(Color::Rgb(210, 100, 10))
-                .add_modifier(Modifier::BOLD),
-        )),
-        UiMessage::StatusUpdate(status) => app.status = status,
+        UiMessage::Info(text) => {
+            let lines = split_transcript(&text, TranscriptKind::Info);
+            app.messages.extend(lines.clone());
+            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+        }
+        UiMessage::Error(text) => {
+            let lines = split_transcript(&text, TranscriptKind::Error);
+            app.messages.extend(lines.clone());
+            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+        }
+        UiMessage::Transition { from, to } => {
+            let line = TranscriptLine {
+                text: format!("── {from} → {to} ──"),
+                kind: TranscriptKind::Transition,
+            };
+            app.messages.push(line.clone());
+            print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
+        }
+        UiMessage::StatusUpdate(status) => {
+            let previous = compact_status_text(&app.status);
+            let current = compact_status_text(&status);
+            app.status = status;
+            if !app.suspended && previous != current {
+                print_message_and_restore_prompt(
+                    stdout,
+                    app,
+                    ui,
+                    vec![TranscriptLine {
+                        text: current,
+                        kind: TranscriptKind::Info,
+                    }],
+                )?;
+            } else if !app.suspended {
+                clear_prompt_line(stdout, ui)?;
+                redraw_prompt_line(stdout, app, ui)?;
+            }
+        }
         UiMessage::Suspend { ack } => {
-            leave_tui(terminal);
+            clear_prompt_line(stdout, ui)?;
+            queue!(stdout, MoveToColumn(0))?;
+            stdout.flush()?;
+            leave_tui()?;
             app.suspended = true;
             let _ = ack.send(());
         }
         UiMessage::Resume => {
-            reenter_tui(terminal)?;
+            enter_tui()?;
             app.suspended = false;
-            terminal.clear()?;
+            ui.prompt_visible = false;
+            redraw_prompt_line(stdout, app, ui)?;
         }
         UiMessage::ConfirmationRequest { prompt, reply } => {
             app.confirmation = Some(ConfirmationState { prompt, reply });
+            if !app.suspended {
+                clear_prompt_line(stdout, ui)?;
+                redraw_prompt_line(stdout, app, ui)?;
+            }
         }
     }
     Ok(())
 }
 
-fn draw(frame: &mut Frame, app: &App) {
-    let popup_height = completion_popup_height(app, frame.area().height);
-    let scrollback_height = scrollback_height(app, frame.area().height, popup_height);
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6),
-            Constraint::Length(1),
-            Constraint::Length(scrollback_height),
-            Constraint::Length(3),
-            Constraint::Length(popup_height),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
+// The transcript is real terminal output; only the prompt area is ephemeral.
+fn print_startup_header(stdout: &mut Stdout, startup: &StartupHeader) -> Result<()> {
+    let width = terminal_width() as usize;
 
-    draw_header(frame, layout[0], app);
-    draw_tip(frame, layout[1]);
-    draw_scrollback(frame, layout[2], app);
-    draw_input(frame, layout[3], app);
-    if popup_height > 0 {
-        draw_completion_popup(frame, layout[4], app);
+    for line in ferrus_logo_lines() {
+        print_logo_line(stdout, line, width)?;
+        crlf(stdout)?;
     }
-    draw_state_line(frame, layout[5], app);
+    crlf(stdout)?;
 
-    if app.confirmation.is_some() {
-        draw_confirmation_popup(frame, app);
+    let meta_lines = startup_metadata_lines(startup);
+    print_metadata_box(stdout, &meta_lines, width)?;
+    crlf(stdout)?;
+    crlf(stdout)?;
+
+    print_tip_line(
+        stdout,
+        "Tip: /plan to start a task · /status to check state · /help for all commands",
+        width,
+    )?;
+    crlf(stdout)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn print_metadata_box(stdout: &mut Stdout, lines: &[TranscriptLine], width: usize) -> Result<()> {
+    let inner_width = metadata_inner_width(lines, width);
+    let border = "─".repeat(inner_width + 2);
+    queue!(
+        stdout,
+        PrintStyledContent(style(format!("┌{border}┐")).with(Color::DarkGrey))
+    )?;
+    crlf(stdout)?;
+
+    for line in lines {
+        queue!(
+            stdout,
+            PrintStyledContent(style("│ ").with(Color::DarkGrey))
+        )?;
+        print_meta_line(stdout, line, inner_width)?;
+        let visible = truncate_to_width(&line.text, inner_width);
+        let padding = inner_width.saturating_sub(visible.chars().count());
+        if padding > 0 {
+            queue!(stdout, Print(" ".repeat(padding)))?;
+        }
+        queue!(
+            stdout,
+            PrintStyledContent(style(" │").with(Color::DarkGrey))
+        )?;
+        crlf(stdout)?;
     }
+
+    queue!(
+        stdout,
+        PrintStyledContent(style(format!("└{border}┘")).with(Color::DarkGrey))
+    )?;
+    Ok(())
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(30), Constraint::Min(24)])
-        .split(area);
-
-    let logo_area = chunks[0].inner(Margin {
-        vertical: 1,
-        horizontal: 3,
-    });
-    let logo = BigText::builder()
-        .pixel_size(PixelSize::Quadrant)
-        .lines(vec![Line::from(vec![
-            Span::styled("F", Style::default().fg(Color::Rgb(204, 85, 0))),
-            Span::styled("E", Style::default().fg(Color::Rgb(189, 63, 0))),
-            Span::styled("R", Style::default().fg(Color::Rgb(160, 40, 0))),
-            Span::styled("R", Style::default().fg(Color::Rgb(139, 25, 0))),
-            Span::styled("U", Style::default().fg(Color::Rgb(180, 55, 0))),
-            Span::styled("S", Style::default().fg(Color::Rgb(210, 100, 10))),
-        ])])
-        .build();
-    frame.render_widget(logo, logo_area);
-
-    let info = vec![
-        header_line(
-            "version:",
-            format!("v{}", app.version),
-            Style::default().fg(Color::Rgb(180, 180, 160)),
-            None,
-        ),
-        header_line(
-            "directory:",
-            app.current_dir.clone(),
-            Style::default(),
-            None,
-        ),
-        header_line(
-            "supervisor:",
-            app.supervisor_type.clone(),
-            Style::default().fg(Color::Rgb(210, 100, 10)),
-            (!app.supervisor_version.is_empty()).then_some(app.supervisor_version.clone()),
-        ),
-        header_line(
-            "executor:",
-            app.executor_type.clone(),
-            Style::default().fg(Color::Rgb(210, 100, 10)),
-            (!app.executor_version.is_empty()).then_some(app.executor_version.clone()),
-        ),
-    ];
-    let paragraph = Paragraph::new(info).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
-    frame.render_widget(paragraph, chunks[1]);
-}
-
-fn draw_tip(frame: &mut Frame, area: Rect) {
-    let tip = Line::from(vec![
-        Span::styled("Tip: ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/plan", Style::default().fg(Color::Rgb(200, 140, 50))),
-        Span::styled(" to start a task · ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/status", Style::default().fg(Color::Rgb(200, 140, 50))),
-        Span::styled(" to check state · ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/help", Style::default().fg(Color::Rgb(200, 140, 50))),
-        Span::styled(" for all commands", Style::default().fg(Color::DarkGray)),
-    ]);
-    frame.render_widget(Paragraph::new(tip), area);
-}
-
-fn draw_scrollback(frame: &mut Frame, area: Rect, app: &App) {
-    let inner_height = area.height as usize;
-    let total_lines = app.messages.len();
-    let base_scroll = total_lines.saturating_sub(inner_height);
-    let vertical_scroll = base_scroll.saturating_sub(app.scroll_offset) as u16;
-
-    let paragraph = Paragraph::new(Text::from(app.messages.clone())).scroll((vertical_scroll, 0));
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(Line::from(format!(" > {}", app.input))),
-        inner,
-    );
-
-    if inner.width >= 3 {
-        let cursor_x = inner.x + (3 + app.cursor_pos as u16).min(inner.width.saturating_sub(1));
-        frame.set_cursor_position((cursor_x, inner.y));
+fn clear_prompt_line(stdout: &mut Stdout, ui: &TerminalUi) -> Result<()> {
+    if !ui.prompt_visible {
+        return Ok(());
     }
+    queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+    stdout.flush()?;
+    Ok(())
 }
 
-fn draw_state_line(frame: &mut Frame, area: Rect, app: &App) {
-    let task_state = if app.status.task_state.is_empty() {
-        "Idle"
+fn redraw_prompt_line(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Result<()> {
+    let width = terminal_width() as usize;
+    if let Some(confirm) = app.confirmation.as_ref() {
+        let prompt_text = truncate_to_width(&confirm.prompt, width.max(1));
+        queue!(
+            stdout,
+            MoveToColumn(0),
+            Clear(ClearType::UntilNewLine),
+            Print(prompt_text),
+            Print(" [y/N]")
+        )?;
     } else {
-        app.status.task_state.as_str()
-    };
-    let claimed_by = app.status.claimed_by.as_deref().unwrap_or("—");
-    let line = Line::from(vec![
-        Span::styled(task_state, task_state_style(task_state)),
-        Span::styled(
-            format!(
-                "  ·  claimed_by: {claimed_by}  ·  retries: {}  ·  cycles: {}",
-                app.status.retries, app.status.cycles
-            ),
-            Style::default().fg(Color::DarkGray),
-        ),
-        if app.new_messages_while_scrolled > 0 {
-            Span::styled(
-                format!("  ·  {} new below", app.new_messages_while_scrolled),
-                Style::default().fg(Color::Rgb(210, 100, 10)),
-            )
-        } else {
-            Span::raw("")
-        },
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+        let prompt = render_prompt_line(app, width);
+        queue!(
+            stdout,
+            MoveToColumn(0),
+            Clear(ClearType::UntilNewLine),
+            Print("> "),
+            Print(prompt.visible.clone()),
+            MoveToColumn(prompt.cursor_col)
+        )?;
+    }
+    ui.prompt_visible = true;
+    stdout.flush()?;
+    Ok(())
 }
 
-fn draw_completion_popup(frame: &mut Frame, area: Rect, app: &App) {
-    let lines: Vec<Line<'static>> = app
+fn print_message_and_restore_prompt(
+    stdout: &mut Stdout,
+    app: &App,
+    ui: &mut TerminalUi,
+    lines: Vec<TranscriptLine>,
+) -> Result<()> {
+    clear_prompt_line(stdout, ui)?;
+    queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+    for line in &lines {
+        print_transcript_line(stdout, line)?;
+    }
+    ui.prompt_visible = false;
+    redraw_prompt_line(stdout, app, ui)
+}
+
+fn enter_tui() -> Result<()> {
+    enable_raw_mode()?;
+    Ok(())
+}
+
+fn leave_tui() -> Result<()> {
+    disable_raw_mode()?;
+    Ok(())
+}
+
+fn print_transcript_line(stdout: &mut Stdout, line: &TranscriptLine) -> Result<()> {
+    match line.kind {
+        TranscriptKind::Info => {
+            queue!(stdout, MoveToColumn(0), Print(&line.text))?;
+            crlf(stdout)?;
+        }
+        TranscriptKind::Error => {
+            queue!(
+                stdout,
+                MoveToColumn(0),
+                PrintStyledContent(
+                    style(&line.text)
+                        .with(Color::Red)
+                        .attribute(Attribute::Bold)
+                ),
+            )?;
+            crlf(stdout)?;
+        }
+        TranscriptKind::Transition => {
+            queue!(
+                stdout,
+                MoveToColumn(0),
+                PrintStyledContent(
+                    style(&line.text)
+                        .with(Color::Rgb {
+                            r: 210,
+                            g: 100,
+                            b: 10,
+                        })
+                        .attribute(Attribute::Bold)
+                ),
+            )?;
+            crlf(stdout)?;
+        }
+    }
+    stdout.flush()?;
+    Ok(())
+}
+
+fn print_logo_line(stdout: &mut Stdout, line: &str, width: usize) -> Result<()> {
+    let line = truncate_to_width(line, width.max(1));
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len().max(1);
+    for (idx, ch) in chars.into_iter().enumerate() {
+        queue!(
+            stdout,
+            PrintStyledContent(
+                style(ch.to_string())
+                    .with(logo_gradient_color(idx, len))
+                    .attribute(Attribute::Bold)
+            )
+        )?;
+    }
+    Ok(())
+}
+
+fn print_meta_line(stdout: &mut Stdout, line: &TranscriptLine, width: usize) -> Result<()> {
+    let content = truncate_to_width(&line.text, width.max(1));
+    let label_end = content.find(' ').unwrap_or(content.len());
+    let (label, rest) = content.split_at(label_end.min(content.len()));
+
+    queue!(
+        stdout,
+        PrintStyledContent(style(label).with(Color::DarkGrey))
+    )?;
+
+    if let Some(agent) = rest.strip_prefix(" claude-code ") {
+        queue!(
+            stdout,
+            PrintStyledContent(style(" claude-code").with(Color::Rgb {
+                r: 210,
+                g: 100,
+                b: 10,
+            })),
+            Print(" "),
+            PrintStyledContent(style(agent).with(Color::Grey)),
+        )?;
+    } else if let Some(agent) = rest.strip_prefix(" codex ") {
+        queue!(
+            stdout,
+            PrintStyledContent(style(" codex").with(Color::Rgb {
+                r: 210,
+                g: 100,
+                b: 10,
+            })),
+            Print(" "),
+            PrintStyledContent(style(agent).with(Color::Grey)),
+        )?;
+    } else if label == "version:" {
+        queue!(
+            stdout,
+            PrintStyledContent(style(rest).with(Color::Rgb {
+                r: 198,
+                g: 190,
+                b: 176,
+            }))
+        )?;
+    } else {
+        queue!(stdout, PrintStyledContent(style(rest).with(Color::White)))?;
+    }
+
+    Ok(())
+}
+
+fn print_tip_line(stdout: &mut Stdout, tip: &str, width: usize) -> Result<()> {
+    let mut remaining = width.max(1);
+    let mut first = true;
+
+    for part in tip.split(' ') {
+        let sep = usize::from(!first);
+        if remaining <= sep {
+            break;
+        }
+        let part = truncate_to_width(part, remaining - sep);
+        if part.is_empty() {
+            break;
+        }
+        let part_len = part.chars().count();
+        if !first {
+            queue!(stdout, Print(" "))?;
+            remaining = remaining.saturating_sub(1);
+        }
+        first = false;
+        if part.starts_with('/') {
+            queue!(
+                stdout,
+                PrintStyledContent(style(part).with(Color::Rgb {
+                    r: 210,
+                    g: 100,
+                    b: 10,
+                }))
+            )?;
+        } else if part == "Tip:" {
+            queue!(
+                stdout,
+                PrintStyledContent(style(part).with(Color::DarkGrey))
+            )?;
+        } else {
+            queue!(stdout, PrintStyledContent(style(part).with(Color::Grey)))?;
+        }
+        remaining = remaining.saturating_sub(part_len);
+    }
+
+    crlf(stdout)?;
+    Ok(())
+}
+
+fn crlf(stdout: &mut Stdout) -> Result<()> {
+    queue!(stdout, Print("\r\n"))?;
+    Ok(())
+}
+
+fn ferrus_logo_lines() -> &'static [&'static str] {
+    &[
+        "███████ ███████ ██████  ██████  ██   ██ ███████",
+        "██      ██      ██  ██  ██  ██  ██   ██ ██",
+        "█████   █████   ██████  ██████  ██   ██ ███████",
+        "██      ██      ██  ██  ██  ██  ██   ██      ██",
+        "██      ███████ ██  ██  ██  ██   █████  ███████",
+    ]
+}
+
+fn metadata_inner_width(lines: &[TranscriptLine], width: usize) -> usize {
+    let max_visible = width.saturating_sub(4).max(1);
+    lines
+        .iter()
+        .map(|line| truncate_to_width(&line.text, max_visible).chars().count())
+        .max()
+        .unwrap_or(1)
+}
+
+fn logo_gradient_color(idx: usize, len: usize) -> Color {
+    let start = (148u8, 36u8, 20u8);
+    let end = (226u8, 128u8, 18u8);
+    let t = if len <= 1 {
+        0.0
+    } else {
+        idx as f32 / (len.saturating_sub(1)) as f32
+    };
+    let mix = |a: u8, b: u8| -> u8 { (a as f32 + (b as f32 - a as f32) * t).round() as u8 };
+    Color::Rgb {
+        r: mix(start.0, end.0),
+        g: mix(start.1, end.1),
+        b: mix(start.2, end.2),
+    }
+}
+
+fn startup_metadata_lines(startup: &StartupHeader) -> Vec<TranscriptLine> {
+    vec![
+        TranscriptLine {
+            text: format!("version: {}", startup.version),
+            kind: TranscriptKind::Info,
+        },
+        TranscriptLine {
+            text: format!("directory: {}", startup.directory),
+            kind: TranscriptKind::Info,
+        },
+        TranscriptLine {
+            text: startup_agent_line(
+                "supervisor:",
+                &startup.supervisor_type,
+                &startup.supervisor_version,
+            ),
+            kind: TranscriptKind::Info,
+        },
+        TranscriptLine {
+            text: startup_agent_line(
+                "executor:",
+                &startup.executor_type,
+                &startup.executor_version,
+            ),
+            kind: TranscriptKind::Info,
+        },
+    ]
+}
+
+fn startup_agent_line(label: &str, agent_type: &str, version: &str) -> String {
+    if version.is_empty() {
+        format!("{label} {agent_type}")
+    } else {
+        format!("{label} {agent_type} {version}")
+    }
+}
+
+struct PromptLine {
+    visible: String,
+    cursor_col: u16,
+}
+
+fn render_prompt_line(app: &App, width: usize) -> PromptLine {
+    let available = width.saturating_sub(2).max(1);
+    let chars: Vec<char> = app.input.chars().collect();
+    let total = chars.len();
+    let start = if total <= available {
+        0
+    } else {
+        app.cursor_pos.saturating_sub(available)
+    };
+    let end = (start + available).min(total);
+    let visible: String = chars[start..end].iter().collect();
+    let cursor_col = 2 + app.cursor_pos.saturating_sub(start) as u16;
+    PromptLine {
+        visible,
+        cursor_col,
+    }
+}
+
+fn completion_transcript_lines(app: &App) -> Option<Vec<TranscriptLine>> {
+    if app.confirmation.is_some()
+        || !app.has_command_context()
+        || app.completion_candidates.len() <= 1
+    {
+        return None;
+    }
+
+    let lines = app
         .completion_candidates
         .iter()
         .enumerate()
         .map(|(idx, (cmd, desc))| {
-            let style = if app.completion_active && idx == app.completion_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(210, 100, 10))
-                    .add_modifier(Modifier::BOLD)
-            } else if !app.completion_active && idx == 0 {
-                Style::default().fg(Color::Rgb(210, 100, 10))
+            let marker = if app.completion_active && idx == app.completion_selected {
+                ">"
             } else {
-                Style::default()
+                " "
             };
-            Line::styled(format!("  {cmd:<12}  {desc}"), style)
+            TranscriptLine {
+                text: format!("{marker} {cmd:<12} {desc}"),
+                kind: TranscriptKind::Info,
+            }
         })
         .collect();
-
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Commands "),
-        ),
-        area,
-    );
+    Some(lines)
 }
 
-fn draw_confirmation_popup(frame: &mut Frame, app: &App) {
-    let Some(confirm) = app.confirmation.as_ref() else {
-        return;
+fn compact_status_text(status: &StatusSnapshot) -> String {
+    let state = if status.task_state.is_empty() {
+        "Idle"
+    } else {
+        &status.task_state
     };
-
-    let area = centered_rect(50, 5, frame.area());
-    let lines = vec![
-        Line::from(confirm.prompt.as_str()),
-        Line::from("[y] confirm    [n / Esc] cancel"),
-    ];
-    let dialog = Paragraph::new(lines)
-        .alignment(Alignment::Left)
-        .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(Clear, area);
-    frame.render_widget(dialog, area);
-}
-
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let [vertical] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [horizontal] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(vertical);
-    horizontal.inner(Margin {
-        vertical: 0,
-        horizontal: 0,
-    })
-}
-
-/// Height of the inline TUI block (header + tip + scrollback + input + command context + state).
-/// Fixed so the block never grows to fill the whole terminal with empty space.
-const TUI_HEIGHT: u16 = 22;
-
-fn enter_tui() -> Result<Terminal<CrosstermBackend<Stdout>>> {
-    enable_raw_mode()?;
-    let backend = CrosstermBackend::new(io::stdout());
-    Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Inline(TUI_HEIGHT),
-        },
+    let claimed_by = status.claimed_by.as_deref().unwrap_or("—");
+    format!(
+        "status: {state} · claimed_by: {claimed_by} · retries: {} · cycles: {}",
+        status.retries, status.cycles
     )
-    .map_err(Into::into)
 }
 
-fn reenter_tui(_terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-    enable_raw_mode()?;
-    Ok(())
+fn split_transcript(text: &str, kind: TranscriptKind) -> Vec<TranscriptLine> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        lines.push(TranscriptLine {
+            text: line.to_string(),
+            kind,
+        });
+    }
+    if lines.is_empty() {
+        lines.push(TranscriptLine {
+            text: String::new(),
+            kind,
+        });
+    }
+    lines
 }
 
-fn leave_tui(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
-    let _ = disable_raw_mode();
-    let _ = terminal.show_cursor();
+fn terminal_width() -> u16 {
+    size().map(|(w, _)| w).unwrap_or(80)
+}
+
+fn truncate_to_width(text: &str, width: usize) -> String {
+    text.chars().take(width).collect()
 }
 
 fn history_path() -> PathBuf {
@@ -841,54 +1098,6 @@ fn current_dir_label() -> String {
         .ok()
         .map(|path| abbreviate_home(&path))
         .unwrap_or_else(|| ".".to_string())
-}
-
-fn task_state_style(task_state: &str) -> Style {
-    Style::default().fg(match task_state {
-        "Idle" => Color::DarkGray,
-        "Executing" | "Addressing" | "Checking" => Color::Yellow,
-        "Reviewing" => Color::Cyan,
-        "Complete" => Color::Green,
-        "Failed" => Color::Red,
-        "AwaitingHuman" => Color::Magenta,
-        _ => Color::White,
-    })
-}
-
-fn completion_popup_height(app: &App, terminal_height: u16) -> u16 {
-    if !app.has_command_context() {
-        return 0;
-    }
-    let max_height = terminal_height.saturating_sub(12).min(8);
-    (app.completion_candidates.len() as u16 + 2)
-        .min(max_height)
-        .max(3)
-}
-
-fn scrollback_height(app: &App, terminal_height: u16, popup_height: u16) -> u16 {
-    if app.messages.is_empty() {
-        return 0;
-    }
-    terminal_height.saturating_sub(11 + popup_height)
-}
-
-fn header_line(
-    label: &'static str,
-    value: String,
-    value_style: Style,
-    suffix: Option<String>,
-) -> Line<'static> {
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled(label, Style::default().fg(Color::DarkGray)),
-        Span::raw(" "),
-        Span::styled(value, value_style),
-    ];
-    if let Some(suffix) = suffix {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(suffix, Style::default().fg(Color::DarkGray)));
-    }
-    Line::from(spans)
 }
 
 fn longest_common_prefix(candidates: &[(&'static str, &'static str)]) -> &'static str {
@@ -930,25 +1139,13 @@ fn byte_index_for_char(s: &str, char_idx: usize) -> usize {
         .unwrap_or_else(|| s.len())
 }
 
-fn error_line(text: impl Into<String>) -> Line<'static> {
-    Line::styled(
-        text.into(),
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-    )
-}
-
 #[cfg(test)]
 mod tui_tests {
     use super::*;
 
     #[test]
     fn first_tab_on_multiple_matches_selects_first_candidate() {
-        let mut app = App::new(
-            "claude-code".into(),
-            "codex".into(),
-            String::new(),
-            String::new(),
-        );
+        let mut app = App::new();
         app.input = "/".into();
         app.cursor_pos = app.input.len();
 
@@ -961,12 +1158,7 @@ mod tui_tests {
 
     #[test]
     fn tab_extends_to_shared_prefix_before_cycling() {
-        let mut app = App::new(
-            "claude-code".into(),
-            "codex".into(),
-            String::new(),
-            String::new(),
-        );
+        let mut app = App::new();
         app.input = "/r".into();
         app.cursor_pos = app.input.len();
 
@@ -991,12 +1183,7 @@ mod tui_tests {
 
     #[test]
     fn typing_slash_command_updates_context_without_tab() {
-        let mut app = App::new(
-            "claude-code".into(),
-            "codex".into(),
-            String::new(),
-            String::new(),
-        );
+        let mut app = App::new();
 
         app.insert_char('/');
         app.insert_char('s');

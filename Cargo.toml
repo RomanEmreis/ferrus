@@ -1,6 +1,6 @@
 [package]
 name = "ferrus"
-version = "0.2.0-alpha.20"
+version = "0.2.0-alpha.36"
 edition = "2021"
 license = "Apache-2.0"
 description = "AI agent orchestrator - drives a Supervisor–Executor workflow for autonomous software development"
@@ -27,7 +27,7 @@ portable-pty = "0.9.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 ratatui = { version = "0.30", features = ["crossterm"] }
 tui-big-text = "0.8.1"
-dirs = "5"
+dirs = "5.0.1"
 futures = "0.3"
 
 [target.'cfg(unix)'.dependencies]
