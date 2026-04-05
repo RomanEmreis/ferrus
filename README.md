@@ -67,6 +67,8 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 > - Ctrl+] Ctrl+] → send a literal Ctrl+] to the agent (escape hatch).
 > - Ctrl+] is ASCII 0x1D (GS) — not intercepted by tmux, readline, or Claude Code.
 
+> **TUI features:** Type `/` to see autocomplete suggestions; press **Tab** / **Shift+Tab** to navigate and **Enter** to accept. A status line at the bottom of the terminal shows the current task state and retry/cycle counters in real time.
+
 ### How the loop works
 
 ```
