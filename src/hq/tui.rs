@@ -294,6 +294,11 @@ impl App {
         self.clear_completion();
     }
 
+    fn accept_completion_and_submit(&mut self, cmd_tx: &mpsc::UnboundedSender<String>) {
+        self.accept_completion();
+        self.submit_input(cmd_tx);
+    }
+
     fn next_completion(&mut self) {
         self.refresh_completions();
         if self.completion_candidates.is_empty() {
@@ -523,7 +528,7 @@ fn handle_event(
                     (KeyCode::BackTab, _) => app.previous_completion(),
                     (KeyCode::Enter, _) => {
                         if app.completion_popup_visible() {
-                            app.accept_completion();
+                            app.accept_completion_and_submit(cmd_tx);
                         } else {
                             app.submit_input(cmd_tx);
                         }
