@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Result;
 use crossterm::{
-    cursor::MoveToColumn,
+    cursor::{MoveDown, MoveToColumn, MoveUp},
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     queue,
     style::{style, Attribute, Color, Print, PrintStyledContent, Stylize},
@@ -54,6 +54,7 @@ pub enum UiMessage {
 #[derive(Clone, Default)]
 pub struct StatusSnapshot {
     pub task_state: String,
+    #[allow(dead_code)]
     pub claimed_by: Option<String>,
     pub retries: u32,
     pub cycles: u32,
@@ -358,6 +359,7 @@ struct StartupHeader {
 
 struct TerminalUi {
     prompt_visible: bool,
+    status_visible: bool,
 }
 
 pub async fn run_tui(
@@ -388,8 +390,9 @@ pub async fn run_tui(
 
     let mut ui = TerminalUi {
         prompt_visible: false,
+        status_visible: false,
     };
-    redraw_prompt_line(&mut stdout, &app, &mut ui)?;
+    redraw_live_area(&mut stdout, &app, &mut ui)?;
 
     let mut event_stream = EventStream::new();
     loop {
@@ -422,27 +425,13 @@ pub async fn run_tui(
                     if let Some(state) = state_rx.borrow_and_update().clone() {
                         let supervisor_status = app.status.supervisor_status.clone();
                         let executor_status = app.status.executor_status.clone();
-                        let previous = compact_status_text(&app.status);
                         let mut next = StatusSnapshot::from_state_data(&state);
                         next.supervisor_status = supervisor_status;
                         next.executor_status = executor_status;
-                        let current = compact_status_text(&next);
                         app.status = next;
                         if !app.suspended {
-                            if previous != current {
-                                print_message_and_restore_prompt(
-                                    &mut stdout,
-                                    &app,
-                                    &mut ui,
-                                    vec![TranscriptLine {
-                                        text: current,
-                                        kind: TranscriptKind::Info,
-                                    }],
-                                )?;
-                            } else {
-                                clear_prompt_line(&mut stdout, &ui)?;
-                                redraw_prompt_line(&mut stdout, &app, &mut ui)?;
-                            }
+                            clear_live_area(&mut stdout, &ui)?;
+                            redraw_live_area(&mut stdout, &app, &mut ui)?;
                         }
                     }
                 }
@@ -454,7 +443,7 @@ pub async fn run_tui(
         }
     }
 
-    clear_prompt_line(&mut stdout, &ui)?;
+    clear_live_area(&mut stdout, &ui)?;
     queue!(stdout, MoveToColumn(0))?;
     crlf(&mut stdout)?;
     stdout.flush()?;
@@ -476,8 +465,8 @@ fn handle_event(
 
     match event {
         Event::Resize(_, _) => {
-            clear_prompt_line(stdout, ui)?;
-            redraw_prompt_line(stdout, app, ui)?;
+            clear_live_area(stdout, ui)?;
+            redraw_live_area(stdout, app, ui)?;
         }
         Event::Key(key) => {
             if key.kind != KeyEventKind::Press {
@@ -539,8 +528,8 @@ fn handle_event(
                 if let Some(lines) = transcript {
                     print_message_and_restore_prompt(stdout, app, ui, lines)?;
                 } else {
-                    clear_prompt_line(stdout, ui)?;
-                    redraw_prompt_line(stdout, app, ui)?;
+                    clear_live_area(stdout, ui)?;
+                    redraw_live_area(stdout, app, ui)?;
                 }
             }
         }
@@ -590,26 +579,14 @@ fn handle_message(
             print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
         }
         UiMessage::StatusUpdate(status) => {
-            let previous = compact_status_text(&app.status);
-            let current = compact_status_text(&status);
             app.status = status;
-            if !app.suspended && previous != current {
-                print_message_and_restore_prompt(
-                    stdout,
-                    app,
-                    ui,
-                    vec![TranscriptLine {
-                        text: current,
-                        kind: TranscriptKind::Info,
-                    }],
-                )?;
-            } else if !app.suspended {
-                clear_prompt_line(stdout, ui)?;
-                redraw_prompt_line(stdout, app, ui)?;
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
             }
         }
         UiMessage::Suspend { ack } => {
-            clear_prompt_line(stdout, ui)?;
+            clear_live_area(stdout, ui)?;
             queue!(stdout, MoveToColumn(0))?;
             stdout.flush()?;
             leave_tui()?;
@@ -620,13 +597,14 @@ fn handle_message(
             enter_tui()?;
             app.suspended = false;
             ui.prompt_visible = false;
-            redraw_prompt_line(stdout, app, ui)?;
+            ui.status_visible = false;
+            redraw_live_area(stdout, app, ui)?;
         }
         UiMessage::ConfirmationRequest { prompt, reply } => {
             app.confirmation = Some(ConfirmationState { prompt, reply });
             if !app.suspended {
-                clear_prompt_line(stdout, ui)?;
-                redraw_prompt_line(stdout, app, ui)?;
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
             }
         }
     }
@@ -696,26 +674,37 @@ fn print_metadata_box(stdout: &mut Stdout, lines: &[TranscriptLine], width: usiz
     Ok(())
 }
 
-fn clear_prompt_line(stdout: &mut Stdout, ui: &TerminalUi) -> Result<()> {
-    if !ui.prompt_visible {
+fn clear_live_area(stdout: &mut Stdout, ui: &TerminalUi) -> Result<()> {
+    if !ui.prompt_visible && !ui.status_visible {
         return Ok(());
     }
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+    if ui.status_visible {
+        queue!(
+            stdout,
+            MoveDown(1),
+            MoveToColumn(0),
+            Clear(ClearType::UntilNewLine),
+            MoveUp(1),
+            MoveToColumn(0)
+        )?;
+    }
     stdout.flush()?;
     Ok(())
 }
 
-fn redraw_prompt_line(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Result<()> {
+fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Result<()> {
     let width = terminal_width() as usize;
-    if let Some(confirm) = app.confirmation.as_ref() {
+    let prompt_cursor_col = if let Some(confirm) = app.confirmation.as_ref() {
         let prompt_text = truncate_to_width(&confirm.prompt, width.max(1));
         queue!(
             stdout,
             MoveToColumn(0),
             Clear(ClearType::UntilNewLine),
-            Print(prompt_text),
+            Print(prompt_text.clone()),
             Print(" [y/N]")
         )?;
+        prompt_text.chars().count() as u16 + 6
     } else {
         let prompt = render_prompt_line(app, width);
         queue!(
@@ -723,11 +712,17 @@ fn redraw_prompt_line(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Re
             MoveToColumn(0),
             Clear(ClearType::UntilNewLine),
             Print("> "),
-            Print(prompt.visible.clone()),
-            MoveToColumn(prompt.cursor_col)
+            Print(prompt.visible.clone())
         )?;
-    }
+        prompt.cursor_col
+    };
+
+    crlf(stdout)?;
+    queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+    print_status_line(stdout, &app.status, width)?;
+    queue!(stdout, MoveUp(1), MoveToColumn(prompt_cursor_col))?;
     ui.prompt_visible = true;
+    ui.status_visible = true;
     stdout.flush()?;
     Ok(())
 }
@@ -738,13 +733,14 @@ fn print_message_and_restore_prompt(
     ui: &mut TerminalUi,
     lines: Vec<TranscriptLine>,
 ) -> Result<()> {
-    clear_prompt_line(stdout, ui)?;
+    clear_live_area(stdout, ui)?;
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
     for line in &lines {
         print_transcript_line(stdout, line)?;
     }
     ui.prompt_visible = false;
-    redraw_prompt_line(stdout, app, ui)
+    ui.status_visible = false;
+    redraw_live_area(stdout, app, ui)
 }
 
 fn enter_tui() -> Result<()> {
@@ -1032,17 +1028,59 @@ fn completion_transcript_lines(app: &App) -> Option<Vec<TranscriptLine>> {
     Some(lines)
 }
 
-fn compact_status_text(status: &StatusSnapshot) -> String {
+fn print_status_line(stdout: &mut Stdout, status: &StatusSnapshot, width: usize) -> Result<()> {
+    let max_width = width.max(1);
     let state = if status.task_state.is_empty() {
         "Idle"
     } else {
         &status.task_state
     };
-    let claimed_by = status.claimed_by.as_deref().unwrap_or("—");
-    format!(
-        "status: {state} · claimed_by: {claimed_by} · retries: {} · cycles: {}",
-        status.retries, status.cycles
-    )
+    let retries = status.retries.to_string();
+    let cycles = status.cycles.to_string();
+    let mut remaining = max_width;
+
+    let state_text = truncate_to_width(state, remaining);
+    queue!(
+        stdout,
+        PrintStyledContent(style(state_text.clone()).with(task_state_color(state)))
+    )?;
+    remaining = remaining.saturating_sub(state_text.chars().count());
+
+    for segment in [
+        (" | ", Color::DarkGrey),
+        ("retries: ", Color::DarkGrey),
+        (&retries, Color::Grey),
+        (" | ", Color::DarkGrey),
+        ("cycles: ", Color::DarkGrey),
+        (&cycles, Color::Grey),
+    ] {
+        if remaining == 0 {
+            break;
+        }
+        let text = truncate_to_width(segment.0, remaining);
+        if text.is_empty() {
+            break;
+        }
+        queue!(
+            stdout,
+            PrintStyledContent(style(text.clone()).with(segment.1))
+        )?;
+        remaining = remaining.saturating_sub(text.chars().count());
+    }
+
+    Ok(())
+}
+
+fn task_state_color(task_state: &str) -> Color {
+    match task_state {
+        "Idle" => Color::DarkGrey,
+        "Executing" | "Addressing" | "Checking" => Color::Yellow,
+        "Reviewing" => Color::Cyan,
+        "Complete" => Color::Green,
+        "Failed" => Color::Red,
+        "AwaitingHuman" => Color::Magenta,
+        _ => Color::White,
+    }
 }
 
 fn split_transcript(text: &str, kind: TranscriptKind) -> Vec<TranscriptLine> {
