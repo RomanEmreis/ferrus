@@ -43,11 +43,14 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 
 | Command | Description |
 |---|---|
-| `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
-| `/execute` | Manually start or resume the executor (escape hatch if automatic spawning failed) |
+| `/plan` | Free-form planning session with the supervisor (no task created, no state requirement) |
+| `/task` | Define a task with the supervisor, then run the executor→review loop automatically |
+| `/supervisor` | Open an interactive supervisor session (no initial prompt, no state requirement) |
+| `/executor` | Open an interactive executor session (no initial prompt, no state requirement) |
+| `/resume` | Manually resume the executor headlessly (escape hatch if automatic spawning failed) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and session log paths |
-| `/attach <name>` | Attach terminal to a PTY session (supervisor only; executor runs headlessly) |
+| `/attach <name>` | Show log path for a running headless agent (both supervisor and executor run headlessly) |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
@@ -55,7 +58,6 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
-**Detach from attached session:** press **Ctrl+]** (prefix, swallowed silently) then **d**. Ctrl+] Ctrl+] sends a literal Ctrl+] to the agent.
 **Quit HQ:** Press **Ctrl+C** twice within 2 seconds to exit. The first press shows a confirmation prompt in the status line; the second confirms and exits.
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) to control log verbosity.
@@ -165,7 +167,7 @@ Idle
 
 Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human`. The executor immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
-- `/plan` from `Complete` → silently resets to Idle and starts the next task.
+- `/task` from `Complete` → silently resets to Idle and starts the next task.
 - `/reset`: works from any state; prompts for confirmation if Executing or Reviewing.
 
 ## Runtime Files (`.ferrus/`)
@@ -194,14 +196,13 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
-  pty.rs                     # BackgroundSession, spawn_background, Ctrl+] d FSM, attach()
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, sends on watch channel
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (PTY for supervisor; headless for executor); HeadlessHandle; agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (headless for both executor and reviewer); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
     heartbeat.rs             # /heartbeat — lease renewal
@@ -216,10 +217,21 @@ src/
 
 This repository is orchestrated by Ferrus HQ.
 
-The Supervisor runs in one of two modes — check your initial prompt:
+Your initial prompt tells you which mode you are in. Match it exactly.
 
-**Plan mode** ("You are in planning mode"): Collaborate with the user to define the task, then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds — you do not need to exit. Do NOT call `/wait_for_review`.
+**Task-definition mode** ("You are a Ferrus Supervisor in TASK DEFINITION mode"): Interview the user, then call `/create_task` with a complete task description. The HQ terminates this session once `/create_task` succeeds.
 
-**Review mode** ("You are in review mode"): Call `/wait_for_review`, then `/review_pending` to read TASK.md + SUBMISSION.md, then `/approve` or `/reject`. After deciding, **exit**.
+MUST NOT in task-definition mode:
+- MUST NOT write, edit, or create any files
+- MUST NOT run commands or implement code
+- MUST NOT explore the codebase to design a solution yourself
 
-See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.
+**Review mode** ("You are a Ferrus Supervisor in REVIEW mode"): Call `/wait_for_review`, then `/review_pending` to read TASK.md + SUBMISSION.md, then `/approve` or `/reject`. After deciding, **exit**.
+
+MUST NOT in review mode:
+- MUST NOT implement fixes or changes yourself
+- MUST NOT ask the Executor to re-verify
+
+**Free-form plan mode** ("You are a Ferrus Supervisor in free-form planning mode"): No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
+
+See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.

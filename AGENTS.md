@@ -33,14 +33,13 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
-  pty.rs                     # BackgroundSession (+ force_detach: Arc<Notify>), spawn_background, Ctrl+] d FSM, attach(); DetachReason enum (UserDetach / ProcessExit / AutoDetach); strip_ansi(); RelayCancel + libc::poll-based stdin relay
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs; double-Ctrl+C-to-quit (2-second window)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (PTY for supervisor; headless for executor); HeadlessHandle; agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (headless for executor and reviewer); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool (one module = one tool)
   server/resources.rs        # MCP resource handler (ferrus://{file})
@@ -65,7 +64,7 @@ When spawned by `ferrus` HQ, your initial prompt will tell you what to do.
 
 If started manually: call MCP tool `/wait_for_task` as your first action.
 
-**IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`, `npm test`). Always use the `/check` MCP tool — it records results, updates state, and handles retry counting. Running checks outside of `/check` wastes a round-trip and may mislead you about whether the task is actually passing.
+**HARD RULE — no exceptions: NEVER run check commands manually** (`cargo test`, `cargo clippy`, `cargo build`, `npm test`, `make`, `pytest`, or any build/test/lint command). Always use the `/check` MCP tool — it records results, updates state, and handles retry counting. Running checks manually bypasses the state machine entirely: retry counters won't increment, FEEDBACK.md won't be updated, and state transitions won't fire.
 
 Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
 
@@ -73,10 +72,21 @@ Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
 
 This repository is orchestrated by Ferrus HQ.
 
-The Supervisor runs in one of two modes — check your initial prompt:
+Your initial prompt tells you which mode you are in. Match it exactly.
 
-**Plan mode** ("You are in planning mode"): Collaborate with the user to define the task, then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds — you do not need to exit. Do NOT call `/wait_for_review`.
+**Task-definition mode** ("You are a Ferrus Supervisor in TASK DEFINITION mode"): Interview the user, then call `/create_task` with a complete task description. HQ terminates this session once `/create_task` succeeds.
 
-**Review mode** ("You are in review mode"): Call `/wait_for_review`, then `/review_pending` to read TASK.md + SUBMISSION.md, then `/approve` or `/reject`. After deciding, **exit**.
+MUST NOT in task-definition mode:
+- MUST NOT write, edit, or create any files
+- MUST NOT run commands or implement code
+- MUST NOT explore the codebase to design a solution yourself
 
-See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.
+**Review mode** ("You are a Ferrus Supervisor in REVIEW mode"): Call `/wait_for_review`, then `/review_pending`, then `/approve` or `/reject`. After deciding, **exit**.
+
+MUST NOT in review mode:
+- MUST NOT implement fixes or changes yourself
+- MUST NOT ask the Executor to re-verify
+
+**Free-form plan mode** ("You are a Ferrus Supervisor in free-form planning mode"): No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
+
+See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.
