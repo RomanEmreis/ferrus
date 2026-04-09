@@ -43,6 +43,24 @@ ferrus register --supervisor <a> --executor <a> # write MCP config for agents
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
+## HQ (run `ferrus` with no arguments)
+
+| Command | Description |
+|---|---|
+| `/plan` | Free-form planning session with the supervisor (no task created) |
+| `/task` | Define a task with the supervisor, then run executor→review loop |
+| `/supervisor` | Open an interactive supervisor session (no initial prompt) |
+| `/executor` | Open an interactive executor session (no initial prompt) |
+| `/review` | Manually spawn supervisor in review mode (escape hatch) |
+| `/resume` | Resume the executor headlessly (escape hatch) |
+| `/status` | Show task state, agent list, and session log paths |
+| `/attach <name>` | Show log path for a running headless agent |
+| `/stop` | Stop all running agent sessions |
+| `/reset` | Reset state to Idle (clears task files) |
+| `/init` | Initialize ferrus in the current directory |
+| `/register` | Register agent configs |
+| `/quit` | Exit HQ |
+
 ## MCP tools
 
 ### Supervisor
