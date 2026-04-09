@@ -1,6 +1,6 @@
 [package]
 name = "ferrus"
-version = "0.2.1-alpha.4"
+version = "0.2.1-alpha.6"
 edition = "2021"
 license = "Apache-2.0"
 description = "AI agent orchestrator - drives a Supervisor–Executor workflow for autonomous software development"

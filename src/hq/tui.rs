@@ -2,6 +2,7 @@ use std::{
     env, fs,
     io::{self, Stdout, Write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::Result;
@@ -21,7 +22,10 @@ const MAX_HISTORY: usize = 100;
 const MAX_COMPLETIONS: usize = 8;
 const COMMANDS: &[(&str, &str)] = &[
     ("/plan", "spawn supervisor, plan a task"),
-    ("/execute", "start executor manually"),
+    ("/task", "define a task and run executor then review"),
+    ("/supervisor", "open an interactive supervisor session"),
+    ("/executor", "open an interactive executor session"),
+    ("/resume", "resume the executor headlessly"),
     ("/review", "spawn supervisor in review mode"),
     ("/status", "show task state and agents"),
     (
@@ -59,6 +63,8 @@ pub struct StatusSnapshot {
     pub task_state: String,
     #[allow(dead_code)]
     pub claimed_by: Option<String>,
+    pub directory: String,
+    pub branch: Option<String>,
     pub retries: u32,
     pub cycles: u32,
     pub supervisor_status: String,
@@ -70,6 +76,8 @@ impl StatusSnapshot {
         StatusSnapshot {
             task_state: format!("{:?}", state.state),
             claimed_by: state.claimed_by.clone(),
+            directory: String::new(),
+            branch: None,
             retries: state.check_retries,
             cycles: state.review_cycles,
             supervisor_status: "none".to_string(),
@@ -380,7 +388,6 @@ impl App {
 
 struct StartupHeader {
     version: String,
-    directory: String,
     supervisor_type: String,
     supervisor_version: String,
     executor_type: String,
@@ -401,17 +408,23 @@ pub async fn run_tui(
     supervisor_version: String,
     executor_version: String,
 ) -> Result<()> {
+    let directory = current_dir_label();
+    let branch = current_git_branch();
     let startup = StartupHeader {
         version: format!("v{}", env!("CARGO_PKG_VERSION")),
-        directory: current_dir_label(),
         supervisor_type,
         supervisor_version,
         executor_type,
         executor_version,
     };
     let mut app = App::new();
+    app.status.directory = directory.clone();
+    app.status.branch = branch.clone();
     if let Some(state) = state_rx.borrow().clone() {
-        app.status = StatusSnapshot::from_state_data(&state);
+        let mut status = StatusSnapshot::from_state_data(&state);
+        status.directory = directory.clone();
+        status.branch = branch.clone();
+        app.status = status;
     }
 
     let mut stdout = io::stdout();
@@ -470,9 +483,13 @@ pub async fn run_tui(
                     if let Some(state) = state_rx.borrow_and_update().clone() {
                         let supervisor_status = app.status.supervisor_status.clone();
                         let executor_status = app.status.executor_status.clone();
+                        let directory = app.status.directory.clone();
+                        let branch = app.status.branch.clone();
                         let mut next = StatusSnapshot::from_state_data(&state);
                         next.supervisor_status = supervisor_status;
                         next.executor_status = executor_status;
+                        next.directory = directory;
+                        next.branch = branch;
                         app.status = next;
                         if !app.suspended {
                             clear_live_area(&mut stdout, &ui)?;
@@ -620,7 +637,14 @@ fn handle_message(
             print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
         }
         UiMessage::StatusUpdate(status) => {
-            app.status = status;
+            let mut next = status;
+            if next.directory.is_empty() {
+                next.directory = app.status.directory.clone();
+            }
+            if next.branch.is_none() {
+                next.branch = app.status.branch.clone();
+            }
+            app.status = next;
             if !app.suspended {
                 clear_live_area(stdout, ui)?;
                 redraw_live_area(stdout, app, ui)?;
@@ -1001,10 +1025,6 @@ fn startup_metadata_lines(startup: &StartupHeader) -> Vec<TranscriptLine> {
             kind: TranscriptKind::Info,
         },
         TranscriptLine {
-            text: format!("directory: {}", startup.directory),
-            kind: TranscriptKind::Info,
-        },
-        TranscriptLine {
             text: startup_agent_line(
                 "supervisor:",
                 &startup.supervisor_type,
@@ -1075,16 +1095,42 @@ fn print_status_line(
     } else {
         &status.task_state
     };
-    let retries = status.retries.to_string();
-    let cycles = status.cycles.to_string();
-    let mut remaining = max_width;
+    let mut segments = vec![(state.to_string(), task_state_color(state))];
 
-    let state_text = truncate_to_width(state, remaining);
-    queue!(
-        stdout,
-        PrintStyledContent(style(state_text.clone()).with(task_state_color(state)))
-    )?;
-    remaining = remaining.saturating_sub(state_text.chars().count());
+    if !status.directory.is_empty() {
+        segments.push((" | ".to_string(), Color::DarkGrey));
+        segments.push(("directory: ".to_string(), Color::DarkGrey));
+        segments.push((status.directory.clone(), Color::Grey));
+    }
+
+    if let Some(branch) = status.branch.as_deref() {
+        segments.push((" | ".to_string(), Color::DarkGrey));
+        segments.push(("branch: ".to_string(), Color::DarkGrey));
+        segments.push((branch.to_string(), Color::Grey));
+    }
+
+    segments.push((" | ".to_string(), Color::DarkGrey));
+    segments.push(("retries: ".to_string(), Color::DarkGrey));
+    segments.push((status.retries.to_string(), Color::Grey));
+    segments.push((" | ".to_string(), Color::DarkGrey));
+    segments.push(("cycles: ".to_string(), Color::DarkGrey));
+    segments.push((status.cycles.to_string(), Color::Grey));
+
+    let mut remaining = max_width;
+    for (text, color) in segments {
+        if remaining == 0 {
+            break;
+        }
+        let visible = truncate_to_width(&text, remaining);
+        if visible.is_empty() {
+            break;
+        }
+        queue!(
+            stdout,
+            PrintStyledContent(style(visible.clone()).with(color))
+        )?;
+        remaining = remaining.saturating_sub(visible.chars().count());
+    }
 
     // When the executor is waiting for a human answer, show a prominent hint.
     if state == "AwaitingHuman" {
@@ -1099,30 +1145,7 @@ fn print_status_line(
                         .attribute(Attribute::Bold)
                 )
             )?;
-            remaining = remaining.saturating_sub(hint_text.chars().count());
         }
-    }
-
-    for segment in [
-        (" | ", Color::DarkGrey),
-        ("retries: ", Color::DarkGrey),
-        (&retries, Color::Grey),
-        (" | ", Color::DarkGrey),
-        ("cycles: ", Color::DarkGrey),
-        (&cycles, Color::Grey),
-    ] {
-        if remaining == 0 {
-            break;
-        }
-        let text = truncate_to_width(segment.0, remaining);
-        if text.is_empty() {
-            break;
-        }
-        queue!(
-            stdout,
-            PrintStyledContent(style(text.clone()).with(segment.1))
-        )?;
-        remaining = remaining.saturating_sub(text.chars().count());
     }
 
     Ok(())
@@ -1312,6 +1335,23 @@ fn current_dir_label() -> String {
         .unwrap_or_else(|| ".".to_string())
 }
 
+fn current_git_branch() -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if branch.is_empty() || branch == "HEAD" {
+        None
+    } else {
+        Some(branch)
+    }
+}
+
 fn longest_common_prefix(candidates: &[(&'static str, &'static str)]) -> &'static str {
     let Some((first, _)) = candidates.first() else {
         return "";
@@ -1383,7 +1423,7 @@ mod tui_tests {
                 .iter()
                 .map(|(cmd, _)| *cmd)
                 .collect::<Vec<_>>(),
-            vec!["/review", "/reset", "/register"]
+            vec!["/resume", "/review", "/reset", "/register"]
         );
     }
 
@@ -1406,8 +1446,19 @@ mod tui_tests {
                 .iter()
                 .map(|(cmd, _)| *cmd)
                 .collect::<Vec<_>>(),
-            vec!["/status", "/stop"]
+            vec!["/supervisor", "/status", "/stop"]
         );
         assert!(!app.completion_active);
+    }
+
+    #[test]
+    fn autocomplete_includes_new_hq_commands_and_omits_execute() {
+        let commands: Vec<&str> = COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
+
+        assert!(commands.contains(&"/task"));
+        assert!(commands.contains(&"/resume"));
+        assert!(commands.contains(&"/supervisor"));
+        assert!(commands.contains(&"/executor"));
+        assert!(!commands.contains(&"/execute"));
     }
 }

@@ -193,9 +193,9 @@ pub fn supervisor_task_prompt() -> &'static str {
 }
 
 /// CLI args that run the agent non-interactively with `prompt` as the initial message.
-/// - Codex:       `codex exec "<prompt>"`
-/// - Claude Code: `claude -p "<prompt>"`   (non-interactive / headless mode)
-/// - Other:       `<prompt>` as a positional arg (fallback; may not work for all agents)
+/// - Codex: `codex exec "<prompt>"`
+/// - Claude Code: `claude -p "<prompt>"` (non-interactive / headless mode)
+/// - Other: `<prompt>` as a positional arg (fallback; may not work for all agents)
 pub fn headless_args(agent_type: &str, prompt: &str) -> Vec<String> {
     match agent_type {
         "codex" => vec!["exec".to_string(), prompt.to_string()],
