@@ -156,7 +156,11 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             if !ctx.headless.is_empty() {
                 ctx.display.info("Headless agents:");
                 for (name, handle) in &ctx.headless {
-                    let status = if handle.is_alive() { "running" } else { "exited" };
+                    let status = if handle.is_alive() {
+                        "running"
+                    } else {
+                        "exited"
+                    };
                     ctx.display.info(format!(
                         "  {name} ({status}) — tail logs: {}",
                         handle.log_path.display()
@@ -634,8 +638,10 @@ impl HqContext {
         })?;
 
         self.supervisor_type = Some(hq.supervisor.clone());
-        self.display
-            .info(format!("Spawning supervisor ({}) for free-form planning…", hq.supervisor));
+        self.display.info(format!(
+            "Spawning supervisor ({}) for free-form planning…",
+            hq.supervisor
+        ));
 
         self.spawn_interactive_agent(
             &hq.supervisor,
@@ -772,8 +778,10 @@ impl HqContext {
         })?;
 
         self.supervisor_type = Some(hq.supervisor.clone());
-        self.display
-            .info(format!("Spawning supervisor ({}) interactively…", hq.supervisor));
+        self.display.info(format!(
+            "Spawning supervisor ({}) interactively…",
+            hq.supervisor
+        ));
 
         self.spawn_interactive_agent(&hq.supervisor, "supervisor", "supervisor-1", None)
             .await
@@ -790,8 +798,10 @@ impl HqContext {
         })?;
 
         self.executor_type = Some(hq.executor.clone());
-        self.display
-            .info(format!("Spawning executor ({}) interactively…", hq.executor));
+        self.display.info(format!(
+            "Spawning executor ({}) interactively…",
+            hq.executor
+        ));
 
         self.spawn_interactive_agent(&hq.executor, "executor", "executor-1", None)
             .await

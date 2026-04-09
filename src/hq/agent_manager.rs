@@ -5,8 +5,7 @@ use tokio::process::Command;
 
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
-const SUPERVISOR_TASK_PROMPT: &str =
-    "You are a Ferrus Supervisor in TASK DEFINITION mode.\n\
+const SUPERVISOR_TASK_PROMPT: &str = "You are a Ferrus Supervisor in TASK DEFINITION mode.\n\
      \n\
      YOUR ONLY JOB: Interview the user about what needs to be done, then call /create_task \
      with a complete task description. The HQ terminates this session automatically once \
@@ -22,8 +21,7 @@ const SUPERVISOR_TASK_PROMPT: &str =
      After /create_task succeeds you are done. The HQ handles everything else.\n\
      See .agents/skills/ferrus-supervisor/SKILL.md for the full workflow.";
 
-const SUPERVISOR_PLAN_PROMPT: &str =
-    "You are a Ferrus Supervisor in free-form planning mode.\n\
+const SUPERVISOR_PLAN_PROMPT: &str = "You are a Ferrus Supervisor in free-form planning mode.\n\
      \n\
      Explore the codebase, discuss ideas, and help the user plan. You are NOT required to \
      call /create_task — this is a freeform planning conversation. Use ferrus MCP tools \

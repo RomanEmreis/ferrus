@@ -112,7 +112,10 @@ mod tests {
     }
     #[test]
     fn parse_task() {
-        assert!(matches!(parse_command("/task").unwrap(), ShellCommand::Task));
+        assert!(matches!(
+            parse_command("/task").unwrap(),
+            ShellCommand::Task
+        ));
     }
     #[test]
     fn parse_supervisor_cmd() {
