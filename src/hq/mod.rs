@@ -142,7 +142,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         if state.state == TaskState::AwaitingHuman {
             return ctx.answer(line.to_string()).await;
         }
-        anyhow::bail!("Commands must start with '/' — try /status, /plan, /quit");
+        anyhow::bail!("Commands must start with '/' — try /status, /task, /quit");
     }
 
     match parse_command(line)? {
@@ -188,15 +188,9 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Reset => ctx.reset().await?,
         ShellCommand::Stop => ctx.stop().await?,
         ShellCommand::Plan => ctx.plan().await?,
-        ShellCommand::Task => {
-            ctx.display.error("Not yet implemented — coming soon.");
-        }
-        ShellCommand::Supervisor => {
-            ctx.display.error("Not yet implemented — coming soon.");
-        }
-        ShellCommand::Executor => {
-            ctx.display.error("Not yet implemented — coming soon.");
-        }
+        ShellCommand::Task => ctx.task().await?,
+        ShellCommand::Supervisor => ctx.supervisor_interactive().await?,
+        ShellCommand::Executor => ctx.executor_interactive().await?,
         ShellCommand::Resume => ctx.resume().await?,
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
@@ -239,6 +233,33 @@ fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
         "claude-code" => Some(Agent::ClaudeCode),
         "codex" => Some(Agent::Codex),
         _ => None,
+    }
+}
+
+struct ResumeGuard {
+    display: Display,
+    active: bool,
+}
+
+impl ResumeGuard {
+    fn new(display: Display) -> Self {
+        Self {
+            display,
+            active: true,
+        }
+    }
+
+    fn resume_now(&mut self) {
+        if self.active {
+            self.display.resume();
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ResumeGuard {
+    fn drop(&mut self) {
+        self.resume_now();
     }
 }
 
@@ -545,37 +566,90 @@ impl HqContext {
         Ok(())
     }
 
-    async fn plan(&mut self) -> Result<()> {
-        use crate::config::Config;
+    /// Spawn `agent_type` interactively (suspend TUI, inherit stdio, wait for exit, resume TUI).
+    async fn spawn_interactive_agent(
+        &mut self,
+        agent_type: &str,
+        role: &str,
+        name: &str,
+        prompt: Option<&str>,
+    ) -> Result<()> {
+        use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
         use std::process::Stdio;
         use tokio::process::Command;
 
-        struct ResumeGuard {
-            display: Display,
-            active: bool,
+        let binary = agent_manager::agent_binary(agent_type);
+        let mut cmd = Command::new(binary);
+        if let Some(p) = prompt {
+            cmd.arg(p);
         }
 
-        impl ResumeGuard {
-            fn new(display: Display) -> Self {
-                Self {
-                    display,
-                    active: true,
-                }
-            }
+        let ack_rx = self.display.suspend();
+        let _ = ack_rx.await;
+        let mut guard = ResumeGuard::new(self.display.clone());
 
-            fn resume_now(&mut self) {
-                if self.active {
-                    self.display.resume();
-                    self.active = false;
-                }
-            }
+        let mut child = cmd
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("Failed to spawn {binary}"))?;
+
+        {
+            let mut reg = read_agents().await?;
+            reg.upsert(AgentEntry {
+                role: role.to_string(),
+                agent_type: agent_type.to_string(),
+                name: name.to_string(),
+                pid: child.id(),
+                status: AgentStatus::Running,
+                started_at: Some(chrono::Utc::now()),
+            });
+            write_agents(&reg).await?;
         }
 
-        impl Drop for ResumeGuard {
-            fn drop(&mut self) {
-                self.resume_now();
+        let _ = child.wait().await;
+        guard.resume_now();
+
+        {
+            let mut reg = read_agents().await?;
+            if let Some(e) = reg.by_role_mut(role) {
+                e.pid = None;
+                e.status = AgentStatus::Suspended;
             }
+            write_agents(&reg).await?;
         }
+
+        Ok(())
+    }
+
+    async fn plan(&mut self) -> Result<()> {
+        use crate::config::Config;
+
+        let config = Config::load().await?;
+        let hq = config.hq.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+            )
+        })?;
+
+        self.supervisor_type = Some(hq.supervisor.clone());
+        self.display
+            .info(format!("Spawning supervisor ({}) for free-form planning…", hq.supervisor));
+
+        self.spawn_interactive_agent(
+            &hq.supervisor,
+            "supervisor",
+            "supervisor-1",
+            Some(agent_manager::supervisor_plan_prompt()),
+        )
+        .await
+    }
+
+    async fn task(&mut self) -> Result<()> {
+        use crate::config::Config;
+        use std::process::Stdio;
+        use tokio::process::Command;
 
         let config = Config::load().await?;
         let hq = config.hq.ok_or_else(|| {
@@ -594,7 +668,7 @@ impl HqContext {
             }
             other => {
                 anyhow::bail!(
-                    "State is {other:?} — /plan requires Idle or Complete. Use /reset first if needed."
+                    "State is {other:?} — /task requires Idle or Complete. Use /reset first if needed."
                 );
             }
         }
@@ -608,13 +682,9 @@ impl HqContext {
             .info("Collaborate with the supervisor to define the task.");
 
         let binary = agent_manager::agent_binary(&hq.supervisor);
-        let prompt = agent_manager::supervisor_plan_prompt();
-        let plan_args = agent_manager::plan_mode_args(&hq.supervisor);
+        let prompt = agent_manager::supervisor_task_prompt();
 
         let mut cmd = Command::new(binary);
-        for arg in plan_args {
-            cmd.arg(arg);
-        }
         cmd.arg(prompt);
 
         let ack_rx = self.display.suspend();
@@ -684,11 +754,47 @@ impl HqContext {
                 .info("Executor running headlessly. State changes print automatically.");
         } else {
             self.display.info(format!(
-                "No task created (state is {:?}). Re-run /plan when ready.",
+                "No task created (state is {:?}). Re-run /task when ready.",
                 new_state.state
             ));
         }
         Ok(())
+    }
+
+    async fn supervisor_interactive(&mut self) -> Result<()> {
+        use crate::config::Config;
+
+        let config = Config::load().await?;
+        let hq = config.hq.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+            )
+        })?;
+
+        self.supervisor_type = Some(hq.supervisor.clone());
+        self.display
+            .info(format!("Spawning supervisor ({}) interactively…", hq.supervisor));
+
+        self.spawn_interactive_agent(&hq.supervisor, "supervisor", "supervisor-1", None)
+            .await
+    }
+
+    async fn executor_interactive(&mut self) -> Result<()> {
+        use crate::config::Config;
+
+        let config = Config::load().await?;
+        let hq = config.hq.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+            )
+        })?;
+
+        self.executor_type = Some(hq.executor.clone());
+        self.display
+            .info(format!("Spawning executor ({}) interactively…", hq.executor));
+
+        self.spawn_interactive_agent(&hq.executor, "executor", "executor-1", None)
+            .await
     }
 
     /// Handle a raw-text answer from the user when state is AwaitingHuman.

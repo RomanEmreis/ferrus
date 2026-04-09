@@ -5,7 +5,6 @@ use tokio::process::Command;
 
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
-#[allow(dead_code)] // used by supervisor_task_prompt(); call site added in Task 3 (mod.rs)
 const SUPERVISOR_TASK_PROMPT: &str =
     "You are a Ferrus Supervisor in TASK DEFINITION mode.\n\
      \n\
@@ -78,6 +77,7 @@ pub fn agent_binary(agent_type: &str) -> &str {
 
 /// Extra CLI args to activate the agent's native plan mode.
 /// Returns an empty slice for agents that have no such mode (graceful fallback).
+#[allow(dead_code)]
 pub fn plan_mode_args(agent_type: &str) -> &'static [&'static str] {
     match agent_type {
         "claude-code" => &["--permission-mode", "plan"],
@@ -190,7 +190,6 @@ pub fn reviewer_prompt() -> &'static str {
 pub fn supervisor_plan_prompt() -> &'static str {
     SUPERVISOR_PLAN_PROMPT
 }
-#[allow(dead_code)] // call site added in Task 3 (mod.rs)
 pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
 }
