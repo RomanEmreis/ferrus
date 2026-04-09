@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use tokio::process::Command;
 
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
@@ -273,65 +271,6 @@ pub async fn spawn_headless(
         pid,
         exit_rx,
     })
-}
-
-#[allow(dead_code)]
-/// Spawn an agent in a background PTY session. Returns the `BackgroundSession`
-/// handle. Agents.json is updated to `Running`.
-pub async fn spawn_background_pty(
-    agent_type: &str,
-    role: &str,
-    name: &str,
-    prompt: Option<&str>,
-) -> Result<crate::pty::BackgroundSession> {
-    let binary = agent_binary(agent_type);
-
-    let log_dir = std::path::Path::new(".ferrus/logs");
-    tokio::fs::create_dir_all(log_dir)
-        .await
-        .context("Failed to create .ferrus/logs")?;
-    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S");
-    let log_path = log_dir.join(format!("{role}_{ts}.log"));
-
-    let args: Vec<&str> = match prompt {
-        Some(p) => vec![p],
-        None => vec![],
-    };
-
-    let session = crate::pty::spawn_background(binary, &args, name, &log_path)
-        .with_context(|| format!("Failed to spawn {binary} as {role} in PTY"))?;
-
-    // Codex requires an Enter keypress before it begins processing its initial prompt.
-    // Send one automatically after a short startup delay so it wakes without user intervention.
-    if agent_type == "codex" {
-        let writer = Arc::clone(&session.stdin_writer);
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            if let Ok(mut w) = writer.lock() {
-                let _ = w.write_all(b"\n");
-                let _ = w.flush();
-            }
-        });
-    }
-
-    // Update agents.json.
-    let mut reg = read_agents().await?;
-    reg.upsert(AgentEntry {
-        role: role.to_string(),
-        agent_type: agent_type.to_string(),
-        name: name.to_string(),
-        pid: None, // PTY child PID not directly accessible via portable-pty trait
-        status: AgentStatus::Running,
-        started_at: Some(chrono::Utc::now()),
-    });
-    write_agents(&reg).await?;
-
-    // NOTE: `agents.json` is now a *logical* registry, not OS-level truth.
-    // With PTY sessions, `pid` is None — `agents.json` tracks role lifecycle
-    // (Running/Suspended) for display and reconciliation, not for OS-level kill.
-    // The PTY session handle (`BackgroundSession`) is the authoritative control object.
-
-    Ok(session)
 }
 
 #[cfg(test)]
