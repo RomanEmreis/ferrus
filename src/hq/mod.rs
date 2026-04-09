@@ -154,30 +154,12 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             let reg = agents::read_agents().await?;
             ctx.display.status(&state, &reg);
             if !ctx.headless.is_empty() {
-                ctx.display.info("Headless executors:");
+                ctx.display.info("Headless agents:");
                 for (name, handle) in &ctx.headless {
-                    let status = if handle.is_alive() {
-                        "running"
-                    } else {
-                        "exited"
-                    };
+                    let status = if handle.is_alive() { "running" } else { "exited" };
                     ctx.display.info(format!(
-                        "  {name} ({status}) — logs: {}",
+                        "  {name} ({status}) — tail logs: {}",
                         handle.log_path.display()
-                    ));
-                }
-            }
-            if !ctx.sessions.is_empty() {
-                ctx.display.info("PTY sessions:");
-                for (name, session) in &ctx.sessions {
-                    let status = if session.is_alive() {
-                        "running"
-                    } else {
-                        "exited"
-                    };
-                    ctx.display.info(format!(
-                        "  {name} ({status}) — /attach {name} — logs: {}",
-                        session.log_path.display()
                     ));
                 }
             }
@@ -185,87 +167,48 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Help => {
             ctx.display.info(concat!(
                 "ferrus HQ commands:\n",
-                "  /plan              Spawn supervisor, plan a task, then run executor→review loop\n",
-                "  /execute           Start or resume the executor for the current task\n",
+                "  /plan              Free-form planning session with the supervisor\n",
+                "  /task              Define a task with the supervisor, then run executor→review loop\n",
+                "  /supervisor        Open an interactive supervisor session\n",
+                "  /executor          Open an interactive executor session\n",
+                "  /resume            Resume the executor headlessly (escape hatch)\n",
                 "  /review            Manually spawn supervisor in review mode\n",
                 "  /status            Show task state, agent list, and session log paths\n",
-                "  /attach <name>     Attach to a PTY session (supervisor only; executor runs headlessly)\n",
+                "  /attach <name>     Show log path for a running headless agent\n",
                 "  /stop              Stop all running agent sessions\n",
                 "  /reset             Reset state to Idle (clears task files)\n",
                 "  /init              Initialize ferrus in the current directory\n",
                 "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
                 "  /quit              Exit HQ\n",
                 "\n",
-                "When the executor asks a question (state = AwaitingHuman):\n",
+                "When an agent asks a question (state = AwaitingHuman):\n",
                 "  Type your answer and press Enter (no slash prefix needed).",
             ));
         }
         ShellCommand::Reset => ctx.reset().await?,
         ShellCommand::Stop => ctx.stop().await?,
         ShellCommand::Plan => ctx.plan().await?,
-        ShellCommand::Execute => ctx.execute().await?,
+        ShellCommand::Task => {
+            ctx.display.error("Not yet implemented — coming soon.");
+        }
+        ShellCommand::Supervisor => {
+            ctx.display.error("Not yet implemented — coming soon.");
+        }
+        ShellCommand::Executor => {
+            ctx.display.error("Not yet implemented — coming soon.");
+        }
+        ShellCommand::Resume => ctx.resume().await?,
         ShellCommand::Review => ctx.review().await?,
         ShellCommand::Attach { name } => {
-            // Headless executors have no PTY; /attach is meaningless for them.
             if let Some(handle) = ctx.headless.get(&name) {
                 let log = handle.log_path.display().to_string();
                 ctx.display.info(format!(
                     "{name} runs headlessly — no terminal to attach.\n\
                      Tail its log to observe: tail -f {log}"
                 ));
-            } else if let Some(session) = ctx.sessions.get(&name) {
-                let force_detach = std::sync::Arc::clone(&session.force_detach);
-                let mut state_rx_clone = ctx.state_rx.clone();
-                let is_executor = name.starts_with("executor");
-                let watcher = tokio::spawn(async move {
-                    use crate::state::machine::TaskState;
-
-                    loop {
-                        if state_rx_clone.changed().await.is_err() {
-                            break;
-                        }
-                        let done = state_rx_clone.borrow().as_ref().is_some_and(|sd| {
-                            if is_executor {
-                                !matches!(
-                                    sd.state,
-                                    TaskState::Executing
-                                        | TaskState::Addressing
-                                        | TaskState::Checking
-                                )
-                            } else {
-                                sd.state != TaskState::Reviewing
-                            }
-                        });
-                        if done {
-                            force_detach.notify_one();
-                            break;
-                        }
-                    }
-                });
-
-                ctx.display
-                    .info(format!("Attaching to {name}. Ctrl+] d to detach."));
-                let ack_rx = ctx.display.suspend();
-                let _ = ack_rx.await;
-                let result = session.attach().await;
-                ctx.display.resume();
-                match result {
-                    Ok(crate::pty::DetachReason::UserDetach) => ctx
-                        .display
-                        .info(format!("Detached from {name}. Use /attach {name} to reconnect.")),
-                    Ok(crate::pty::DetachReason::ProcessExit) => {
-                        ctx.display.info(format!("{name} process exited."));
-                        ctx.sessions.remove(&name);
-                    }
-                    Ok(crate::pty::DetachReason::AutoDetach) => ctx.display.info(format!(
-                        "{name} task is done — returning to HQ. Agent may still be running; use /attach {name} to reconnect."
-                    )),
-                    Err(err) => ctx.display.error(format!("Attach error: {err}")),
-                }
-                watcher.abort();
             } else {
                 ctx.display.error(format!(
-                    "No session named '{name}'. Run /status to see active sessions."
+                    "No agent named '{name}'. Run /status to see active agents."
                 ));
             }
         }
@@ -302,9 +245,7 @@ fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
 pub(crate) struct HqContext {
     pub(crate) supervisor_type: Option<String>,
     pub(crate) executor_type: Option<String>,
-    /// PTY sessions — used for the supervisor (plan + review modes).
-    pub(crate) sessions: std::collections::HashMap<String, crate::pty::BackgroundSession>,
-    /// Headless executor handles — no PTY, no /attach.
+    /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
     state_rx: watch::Receiver<Option<StateData>>,
@@ -316,7 +257,6 @@ impl HqContext {
         Self {
             supervisor_type: None,
             executor_type: None,
-            sessions: std::collections::HashMap::new(),
             headless: std::collections::HashMap::new(),
             last_task_state: None,
             state_rx,
@@ -343,7 +283,7 @@ impl HqContext {
         match action {
             TransitionAction::SpawnExecutor => {
                 if let Err(err) = self
-                    .spawn_headless_executor(
+                    .spawn_headless_agent(
                         &exe_type,
                         "executor",
                         "executor-1",
@@ -356,14 +296,14 @@ impl HqContext {
                 }
             }
             TransitionAction::SpawnReviewer => {
-                // Executor is now headless — just drop its handle (process may still run).
+                // Executor is done — drop its handle (process may still be winding down).
                 self.headless.remove("executor-1");
                 if let Err(err) = self
-                    .spawn_background_session(
+                    .spawn_headless_agent(
                         &sup_type,
                         "supervisor",
                         "supervisor-1",
-                        Some(agent_manager::reviewer_prompt()),
+                        agent_manager::reviewer_prompt(),
                     )
                     .await
                 {
@@ -372,9 +312,9 @@ impl HqContext {
                 }
             }
             TransitionAction::KillReviewerSpawnExecutor => {
-                self.sessions.remove("supervisor-1");
+                self.headless.remove("supervisor-1");
                 if let Err(err) = self
-                    .spawn_headless_executor(
+                    .spawn_headless_agent(
                         &exe_type,
                         "executor",
                         "executor-1",
@@ -388,13 +328,13 @@ impl HqContext {
             }
             TransitionAction::TaskComplete => {
                 self.headless.remove("executor-1");
-                self.sessions.remove("supervisor-1");
+                self.headless.remove("supervisor-1");
                 self.display
                     .info("Task complete! Use /plan to start a new task.");
             }
             TransitionAction::TaskFailed => {
                 self.headless.remove("executor-1");
-                self.sessions.remove("supervisor-1");
+                self.headless.remove("supervisor-1");
                 self.display
                     .info("Task failed. Use /status for details, /reset to try again.");
             }
@@ -416,8 +356,8 @@ impl HqContext {
         }
     }
 
-    /// Spawn the executor headlessly (no PTY). Replaces the old PTY-based spawn for executors.
-    pub(crate) async fn spawn_headless_executor(
+    /// Spawn an agent headlessly (no PTY). Used for both executor and reviewer.
+    pub(crate) async fn spawn_headless_agent(
         &mut self,
         agent_type: &str,
         role: &str,
@@ -444,33 +384,7 @@ impl HqContext {
         Ok(())
     }
 
-    pub(crate) async fn spawn_background_session(
-        &mut self,
-        agent_type: &str,
-        role: &str,
-        name: &str,
-        prompt: Option<&str>,
-    ) -> Result<()> {
-        if let Some(existing) = self.sessions.get(name) {
-            if existing.is_alive() {
-                self.display.info(format!("{name} already running."));
-                return Ok(());
-            }
-            self.sessions.remove(name);
-        }
-
-        self.display
-            .info(format!("Spawning {name} ({agent_type}) in background…"));
-        let session = agent_manager::spawn_background_pty(agent_type, role, name, prompt).await?;
-        self.display.info(format!(
-            "{name} started. Use /attach {name} to observe. Logs: {}",
-            session.log_path.display()
-        ));
-        self.sessions.insert(name.to_string(), session);
-        Ok(())
-    }
-
-    async fn execute(&mut self) -> Result<()> {
+    async fn resume(&mut self) -> Result<()> {
         use crate::config::Config;
 
         if self
@@ -521,7 +435,7 @@ impl HqContext {
             agent_manager::executor_prompt()
         };
 
-        self.spawn_headless_executor(&exe_type, "executor", "executor-1", prompt)
+        self.spawn_headless_agent(&exe_type, "executor", "executor-1", prompt)
             .await
     }
 
@@ -550,11 +464,11 @@ impl HqContext {
             hq.supervisor
         };
 
-        self.spawn_background_session(
+        self.spawn_headless_agent(
             &sup_type,
             "supervisor",
             "supervisor-1",
-            Some(agent_manager::reviewer_prompt()),
+            agent_manager::reviewer_prompt(),
         )
         .await
     }
@@ -580,8 +494,6 @@ impl HqContext {
         for (_, handle) in self.headless.drain() {
             handle.kill();
         }
-        self.sessions.remove("executor-1");
-        self.sessions.remove("supervisor-1");
 
         let mut reg = agents::read_agents().await?;
         for role in ["executor", "supervisor"] {
@@ -619,8 +531,6 @@ impl HqContext {
         for (_, handle) in self.headless.drain() {
             handle.kill();
         }
-        self.sessions.remove("executor-1");
-        self.sessions.remove("supervisor-1");
 
         let mut reg = agents::read_agents().await?;
         for role in ["executor", "supervisor"] {
@@ -763,7 +673,7 @@ impl HqContext {
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
-            self.spawn_headless_executor(
+            self.spawn_headless_agent(
                 &hq.executor,
                 "executor",
                 "executor-1",
@@ -794,29 +704,38 @@ impl HqContext {
             );
         }
 
-        // Write ANSWER.md. If the executor is alive and blocking on /wait_for_answer,
+        // Write ANSWER.md. If the agent is alive and blocking on /wait_for_answer,
         // the tool will detect this, restore state, and return the answer automatically.
         store::write_answer(&response).await?;
         self.display
-            .info("Answer recorded. Waiting for executor to resume…");
+            .info("Answer recorded. Waiting for agent to resume…");
 
-        // Fallback: if the executor has exited, /wait_for_answer will never poll again.
-        // Restore state directly so /execute can relaunch it.
-        let executor_dead = self
+        // Fallback: if the agent has exited, /wait_for_answer will never poll again.
+        // Restore state directly so the user can relaunch the agent manually.
+        let agent_alive = self
             .headless
             .get("executor-1")
-            .map(|h| !h.is_alive())
-            .unwrap_or(true); // not in map = definitely not running
+            .map(|h| h.is_alive())
+            .unwrap_or(false)
+            || self
+                .headless
+                .get("supervisor-1")
+                .map(|h| h.is_alive())
+                .unwrap_or(false);
 
-        if executor_dead {
+        if !agent_alive {
             let mut st = store::read_state().await?;
             if st.state == TaskState::AwaitingHuman {
                 let resumed = st.answer()?;
                 store::write_state(&st).await?;
                 store::clear_question().await?;
+                let relaunch_hint = if resumed == TaskState::Reviewing {
+                    "Use /review to relaunch the reviewer."
+                } else {
+                    "Use /resume to relaunch — it will read ANSWER.md and continue."
+                };
                 self.display.info(format!(
-                    "Executor is not running. State restored to {resumed:?}. \
-                     Use /execute to relaunch — it will read ANSWER.md and continue."
+                    "Agent is not running. State restored to {resumed:?}. {relaunch_hint}"
                 ));
             }
         }

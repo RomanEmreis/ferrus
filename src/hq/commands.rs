@@ -22,10 +22,16 @@ pub enum ShellCommand {
     Stop,
     /// Exit HQ.
     Quit,
-    /// Spawn the supervisor and plan a task.
+    /// Free-form planning session with the supervisor (no task created, no state requirement).
     Plan,
-    /// Start or resume the executor.
-    Execute,
+    /// Define a task with the supervisor, then run the executor→review loop automatically.
+    Task,
+    /// Open an interactive supervisor session (no initial prompt, no state requirement).
+    Supervisor,
+    /// Open an interactive executor session (no initial prompt, no state requirement).
+    Executor,
+    /// Resume the executor headlessly for the current task (escape hatch).
+    Resume,
     /// Attach terminal to a running background session. Ctrl+] d to detach.
     Attach { name: String },
     /// Manually spawn supervisor in review mode (for the current Reviewing submission).
@@ -50,7 +56,7 @@ pub enum ShellCommand {
 pub fn parse_command(input: &str) -> Result<ShellCommand> {
     let input = input.trim();
     if !input.starts_with('/') {
-        bail!("Commands must start with '/' — try /status, /plan, /quit");
+        bail!("Commands must start with '/' — try /status, /task, /quit");
     }
     let tokens = shlex::split(&input[1..])
         .ok_or_else(|| anyhow::anyhow!("Failed to tokenize command (unterminated quote?)"))?;
@@ -105,11 +111,33 @@ mod tests {
         ));
     }
     #[test]
-    fn parse_execute() {
+    fn parse_task() {
+        assert!(matches!(parse_command("/task").unwrap(), ShellCommand::Task));
+    }
+    #[test]
+    fn parse_supervisor_cmd() {
         assert!(matches!(
-            parse_command("/execute").unwrap(),
-            ShellCommand::Execute
+            parse_command("/supervisor").unwrap(),
+            ShellCommand::Supervisor
         ));
+    }
+    #[test]
+    fn parse_executor_cmd() {
+        assert!(matches!(
+            parse_command("/executor").unwrap(),
+            ShellCommand::Executor
+        ));
+    }
+    #[test]
+    fn parse_resume() {
+        assert!(matches!(
+            parse_command("/resume").unwrap(),
+            ShellCommand::Resume
+        ));
+    }
+    #[test]
+    fn execute_command_removed() {
+        assert!(parse_command("/execute").is_err());
     }
     #[test]
     fn parse_attach_with_name() {
