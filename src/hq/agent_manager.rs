@@ -5,27 +5,68 @@ use tokio::process::Command;
 
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
-const EXECUTOR_PROMPT: &str =
-    "You are in executor mode. Call the /wait_for_task MCP tool and complete the assigned task. \
-     See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
-
-const EXECUTOR_RESUME_PROMPT: &str =
-    "You are a Ferrus executor being relaunched after a human answered your question. \
-     The answer is in `.ferrus/ANSWER.md`. Read it to get context, then continue your work. \
-     Call /wait_for_task and resume the assigned task from where you left off. \
-     See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
-
-const REVIEWER_PROMPT: &str =
-    "You are in review mode. Call /wait_for_review, then /review_pending to read the submission. \
-     Approve with /approve or reject with /reject and specific feedback. \
+#[allow(dead_code)] // used by supervisor_task_prompt(); call site added in Task 3 (mod.rs)
+const SUPERVISOR_TASK_PROMPT: &str =
+    "You are a Ferrus Supervisor in TASK DEFINITION mode.\n\
+     \n\
+     YOUR ONLY JOB: Interview the user about what needs to be done, then call /create_task \
+     with a complete task description. The HQ terminates this session automatically once \
+     /create_task succeeds and hands off to the Executor.\n\
+     \n\
+     HARD RULES — no exceptions:\n\
+       - DO NOT write, edit, or create any files\n\
+       - DO NOT run any commands or implement any code\n\
+       - DO NOT explore the codebase to design a solution yourself\n\
+       - DO NOT ask the Executor to verify anything — it does not exist yet\n\
+       - Call /create_task as soon as you have enough information; never implement first\n\
+     \n\
+     After /create_task succeeds you are done. The HQ handles everything else.\n\
      See .agents/skills/ferrus-supervisor/SKILL.md for the full workflow.";
 
 const SUPERVISOR_PLAN_PROMPT: &str =
-    "You are in planning mode. Collaborate with the user to define the task, \
-     then call /create_task. The HQ will automatically terminate this session \
-     and start the executor once /create_task succeeds. \
-     Do NOT call /wait_for_review. \
-     See .agents/skills/ferrus-supervisor/SKILL.md for the two-mode workflow.";
+    "You are a Ferrus Supervisor in free-form planning mode.\n\
+     \n\
+     Explore the codebase, discuss ideas, and help the user plan. You are NOT required to \
+     call /create_task — this is a freeform planning conversation. Use ferrus MCP tools \
+     (e.g. /status) as needed. There are no hard constraints on what you may do.\n\
+     \n\
+     See .agents/skills/ferrus-supervisor/SKILL.md for context on the ferrus workflow.";
+
+const REVIEWER_PROMPT: &str =
+    "You are a Ferrus Supervisor in REVIEW mode.\n\
+     \n\
+     Call /wait_for_review, then /review_pending to read the submission. Make one decision: \
+     /approve or /reject with specific feedback. Then exit — the HQ handles the next cycle.\n\
+     \n\
+     HARD RULES — no exceptions:\n\
+       - DO NOT implement any fixes or changes yourself\n\
+       - DO NOT ask the Executor to re-verify — the submission is already in; your job is to judge it\n\
+       - Make exactly one decision: /approve or /reject\n\
+     \n\
+     See .agents/skills/ferrus-supervisor/SKILL.md for the full workflow.";
+
+const EXECUTOR_PROMPT: &str =
+    "You are a Ferrus Executor. Call /wait_for_task, implement the assigned task, then submit.\n\
+     \n\
+     HARD RULES — no exceptions:\n\
+       - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
+       - ALWAYS use /check for all verification — it records results, updates state, and \
+         handles retry counting; running checks manually bypasses the state machine entirely\n\
+       - Do not call /submit until /check returns a passing result\n\
+     \n\
+     See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
+
+const EXECUTOR_RESUME_PROMPT: &str =
+    "You are a Ferrus Executor being relaunched after a human answered your question. \
+     The answer is in .ferrus/ANSWER.md — read it, then continue your work. \
+     Call /wait_for_task and resume the assigned task from where you left off.\n\
+     \n\
+     HARD RULES — no exceptions:\n\
+       - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
+       - ALWAYS use /check for all verification\n\
+       - Do not call /submit until /check returns a passing result\n\
+     \n\
+     See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
 
 pub fn agent_binary(agent_type: &str) -> &str {
     match agent_type {
@@ -148,6 +189,10 @@ pub fn reviewer_prompt() -> &'static str {
 }
 pub fn supervisor_plan_prompt() -> &'static str {
     SUPERVISOR_PLAN_PROMPT
+}
+#[allow(dead_code)] // call site added in Task 3 (mod.rs)
+pub fn supervisor_task_prompt() -> &'static str {
+    SUPERVISOR_TASK_PROMPT
 }
 
 /// CLI args that run the agent non-interactively with `prompt` as the initial message.
@@ -319,5 +364,29 @@ mod tests {
         let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
         let log_path = format!(".ferrus/logs/{}_{}.log", role, ts);
         assert!(log_path.contains(role));
+    }
+    #[test]
+    fn supervisor_task_prompt_names_mode() {
+        assert!(supervisor_task_prompt().contains("TASK DEFINITION"));
+    }
+    #[test]
+    fn supervisor_task_prompt_has_hard_rules() {
+        assert!(supervisor_task_prompt().contains("HARD RULES"));
+    }
+    #[test]
+    fn supervisor_plan_prompt_is_freeform() {
+        assert!(supervisor_plan_prompt().contains("free-form planning"));
+    }
+    #[test]
+    fn reviewer_prompt_has_hard_rules() {
+        assert!(reviewer_prompt().contains("HARD RULES"));
+    }
+    #[test]
+    fn executor_prompt_forbids_manual_checks() {
+        assert!(executor_prompt().contains("NEVER"));
+    }
+    #[test]
+    fn executor_resume_prompt_forbids_manual_checks() {
+        assert!(executor_resume_prompt().contains("NEVER"));
     }
 }
