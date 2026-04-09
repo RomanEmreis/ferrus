@@ -15,11 +15,12 @@ use crate::state::{
 };
 use commands::{parse_command, ShellCommand};
 use display::Display;
+use state_watcher::WatchedState;
 
 pub async fn run() -> Result<()> {
     reconcile_agent_pids().await;
 
-    let (state_tx, state_rx) = watch::channel::<Option<StateData>>(None);
+    let (state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
     tokio::spawn(state_watcher::watch(state_tx));
 
     let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<tui::UiMessage>();
@@ -49,15 +50,15 @@ pub async fn run() -> Result<()> {
             changed = ctx.state_rx.changed() => {
                 if changed.is_ok() {
                     let snap = ctx.state_rx.borrow_and_update().clone();
-                    if let Some(new_state) = snap {
+                    if let Some(watched) = snap {
                         let prev = ctx.last_task_state.clone();
-                        if prev.as_ref() != Some(&new_state.state) {
-                            if let Some(ref previous) = prev {
-                                ctx.display.transition(previous, &new_state.state);
+                        if prev.as_ref() != Some(&watched.state.state) {
+                            if let Some(ref transition) = watched.transition {
+                                ctx.display.transition(transition);
                             }
-                            ctx.on_state_change(&new_state).await;
+                            ctx.on_state_change(&watched.state).await;
                         }
-                        ctx.last_task_state = Some(new_state.state.clone());
+                        ctx.last_task_state = Some(watched.state.state.clone());
                     }
                 } else {
                     break;
@@ -150,9 +151,18 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             ctx.display.info("Bye.");
         }
         ShellCommand::Status => {
-            let state = store::read_state().await?;
             let reg = agents::read_agents().await?;
-            ctx.display.status(&state, &reg);
+            let watched = if let Some(watched) = ctx.state_rx.borrow().clone() {
+                watched
+            } else {
+                let state = store::read_state().await?;
+                WatchedState {
+                    state,
+                    state_elapsed: std::time::Duration::default(),
+                    transition: None,
+                }
+            };
+            ctx.display.status(&watched, &reg);
             if !ctx.headless.is_empty() {
                 ctx.display.info("Headless agents:");
                 for (name, handle) in &ctx.headless {
@@ -273,12 +283,12 @@ pub(crate) struct HqContext {
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
-    state_rx: watch::Receiver<Option<StateData>>,
+    state_rx: watch::Receiver<Option<WatchedState>>,
     pub(crate) display: Display,
 }
 
 impl HqContext {
-    fn new(state_rx: watch::Receiver<Option<StateData>>, display: Display) -> Self {
+    fn new(state_rx: watch::Receiver<Option<WatchedState>>, display: Display) -> Self {
         Self {
             supervisor_type: None,
             executor_type: None,

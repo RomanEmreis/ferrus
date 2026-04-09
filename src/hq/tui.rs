@@ -16,7 +16,7 @@ use crossterm::{
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::state::machine::StateData;
+use super::state_watcher::{format_elapsed, WatchedState};
 
 const MAX_HISTORY: usize = 100;
 const MAX_COMPLETIONS: usize = 8;
@@ -44,7 +44,7 @@ pub enum UiMessage {
     Info(String),
     Error(String),
     Transition {
-        from: String,
+        from: Option<String>,
         to: String,
     },
     StatusUpdate(StatusSnapshot),
@@ -61,6 +61,7 @@ pub enum UiMessage {
 #[derive(Clone, Default)]
 pub struct StatusSnapshot {
     pub task_state: String,
+    pub task_state_detail: String,
     #[allow(dead_code)]
     pub claimed_by: Option<String>,
     pub directory: String,
@@ -72,9 +73,15 @@ pub struct StatusSnapshot {
 }
 
 impl StatusSnapshot {
-    pub fn from_state_data(state: &StateData) -> StatusSnapshot {
+    pub fn from_watched_state(watched: &WatchedState) -> StatusSnapshot {
+        let state = &watched.state;
         StatusSnapshot {
             task_state: format!("{:?}", state.state),
+            task_state_detail: format!(
+                "{:?} ({})",
+                state.state,
+                format_elapsed(watched.state_elapsed)
+            ),
             claimed_by: state.claimed_by.clone(),
             directory: String::new(),
             branch: None,
@@ -402,7 +409,7 @@ struct TerminalUi {
 pub async fn run_tui(
     mut msg_rx: mpsc::UnboundedReceiver<UiMessage>,
     cmd_tx: mpsc::UnboundedSender<String>,
-    mut state_rx: watch::Receiver<Option<StateData>>,
+    mut state_rx: watch::Receiver<Option<WatchedState>>,
     supervisor_type: String,
     executor_type: String,
     supervisor_version: String,
@@ -420,8 +427,8 @@ pub async fn run_tui(
     let mut app = App::new();
     app.status.directory = directory.clone();
     app.status.branch = branch.clone();
-    if let Some(state) = state_rx.borrow().clone() {
-        let mut status = StatusSnapshot::from_state_data(&state);
+    if let Some(watched) = state_rx.borrow().clone() {
+        let mut status = StatusSnapshot::from_watched_state(&watched);
         status.directory = directory.clone();
         status.branch = branch.clone();
         app.status = status;
@@ -480,12 +487,12 @@ pub async fn run_tui(
             }
             changed = state_rx.changed() => {
                 if changed.is_ok() {
-                    if let Some(state) = state_rx.borrow_and_update().clone() {
+                    if let Some(watched) = state_rx.borrow_and_update().clone() {
                         let supervisor_status = app.status.supervisor_status.clone();
                         let executor_status = app.status.executor_status.clone();
                         let directory = app.status.directory.clone();
                         let branch = app.status.branch.clone();
-                        let mut next = StatusSnapshot::from_state_data(&state);
+                        let mut next = StatusSnapshot::from_watched_state(&watched);
                         next.supervisor_status = supervisor_status;
                         next.executor_status = executor_status;
                         next.directory = directory;
@@ -630,7 +637,10 @@ fn handle_message(
         }
         UiMessage::Transition { from, to } => {
             let line = TranscriptLine {
-                text: format!("── {from} → {to} ──"),
+                text: match from {
+                    Some(from) => format!("── {from} → {to} ──"),
+                    None => format!("── {to} ──"),
+                },
                 kind: TranscriptKind::Transition,
             };
             app.messages.push(line.clone());
@@ -1091,11 +1101,11 @@ fn print_status_line(
     }
 
     let state = if status.task_state.is_empty() {
-        "Idle"
+        "Idle".to_string()
     } else {
-        &status.task_state
+        status.task_state_detail.clone()
     };
-    let mut segments = vec![(state.to_string(), task_state_color(state))];
+    let mut segments = vec![(state, task_state_color(&status.task_state))];
 
     if !status.directory.is_empty() {
         segments.push((" | ".to_string(), Color::DarkGrey));
@@ -1133,7 +1143,7 @@ fn print_status_line(
     }
 
     // When the executor is waiting for a human answer, show a prominent hint.
-    if state == "AwaitingHuman" {
+    if status.task_state == "AwaitingHuman" {
         let hint = "  ← type your answer and press Enter";
         let hint_text = truncate_to_width(hint, remaining);
         if !hint_text.is_empty() {

@@ -1,11 +1,11 @@
 use tokio::sync::{mpsc, oneshot};
 
-use crate::state::{
-    agents::{AgentStatus, AgentsRegistry},
-    machine::{StateData, TaskState},
-};
+use crate::state::agents::{AgentStatus, AgentsRegistry};
 
-use super::tui::{StatusSnapshot, UiMessage};
+use super::{
+    state_watcher::{format_elapsed, TransitionSnapshot, WatchedState},
+    tui::{StatusSnapshot, UiMessage},
+};
 
 #[derive(Clone)]
 pub struct Display(pub mpsc::UnboundedSender<UiMessage>);
@@ -19,19 +19,36 @@ impl Display {
         let _ = self.0.send(UiMessage::Error(msg.into()));
     }
 
-    pub fn transition(&self, from: &TaskState, to: &TaskState) {
+    pub fn transition(&self, transition: &TransitionSnapshot) {
         let _ = self.0.send(UiMessage::Transition {
-            from: format!("{from:?}"),
-            to: format!("{to:?}"),
+            from: if transition.used_total {
+                None
+            } else {
+                Some(format!(
+                    "{:?} ({})",
+                    transition.from,
+                    format_elapsed(transition.elapsed)
+                ))
+            },
+            to: if transition.used_total {
+                format!(
+                    "{:?} ({})",
+                    transition.to,
+                    format_elapsed(transition.elapsed)
+                )
+            } else {
+                format!("{:?}", transition.to)
+            },
         });
     }
 
-    pub fn status(&self, state: &StateData, agents: &AgentsRegistry) {
-        let mut snapshot = StatusSnapshot::from_state_data(state);
+    pub fn status(&self, watched: &WatchedState, agents: &AgentsRegistry) {
+        let mut snapshot = StatusSnapshot::from_watched_state(watched);
         snapshot.supervisor_status = agent_status_label(agents, "supervisor").to_string();
         snapshot.executor_status = agent_status_label(agents, "executor").to_string();
         let _ = self.0.send(UiMessage::StatusUpdate(snapshot));
 
+        let state = &watched.state;
         self.info(format!("state      : {:?}", state.state));
         if let Some(by) = &state.claimed_by {
             self.info(format!("claimed_by : {by}"));

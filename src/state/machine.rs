@@ -142,10 +142,15 @@ impl StateData {
     }
 
     /// `Executing | Addressing → Checking`. Called when `/check` passes.
+    ///
+    /// Clears consecutive check-failure metadata because the current code now
+    /// satisfies the configured checks.
     pub fn check_passed(&mut self) -> Result<(), TransitionError> {
         match self.state {
             TaskState::Executing | TaskState::Addressing => {
                 self.state = TaskState::Checking;
+                self.check_retries = 0;
+                self.failure_reason = None;
                 Ok(())
             }
             _ => Err(TransitionError::InvalidTransition {
@@ -363,6 +368,19 @@ mod tests {
         s.reject(3).unwrap();
         assert_eq!(s.check_retries, 0);
         assert_eq!(s.state, TaskState::Addressing);
+    }
+
+    #[test]
+    fn check_pass_clears_failure_reason_and_retries() {
+        let mut s = idle();
+        s.create_task().unwrap();
+        s.check_failed("bad".into(), 5).unwrap();
+
+        s.check_passed().unwrap();
+
+        assert_eq!(s.state, TaskState::Checking);
+        assert_eq!(s.check_retries, 0);
+        assert!(s.failure_reason.is_none());
     }
 
     #[test]
