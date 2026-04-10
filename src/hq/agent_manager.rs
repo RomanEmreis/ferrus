@@ -49,6 +49,9 @@ const EXECUTOR_PROMPT: &str =
        - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
        - ALWAYS use /check for all verification — it records results, updates state, and \
          handles retry counting; running checks manually bypasses the state machine entirely\n\
+       - If you are stuck, blocked, or need human input, you MUST use /ask_human\n\
+       - Do NOT ask questions in the terminal — you are running headlessly and no one will see them\n\
+       - The /ask_human flow is the only supported channel for human communication\n\
        - Do not call /submit until /check returns a passing result\n\
      \n\
      See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
@@ -61,6 +64,9 @@ const EXECUTOR_RESUME_PROMPT: &str =
      HARD RULES — no exceptions:\n\
        - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
        - ALWAYS use /check for all verification\n\
+       - If you are stuck, blocked, or need human input, you MUST use /ask_human\n\
+       - Do NOT ask questions in the terminal — you are running headlessly and no one will see them\n\
+       - The /ask_human flow is the only supported channel for human communication\n\
        - Do not call /submit until /check returns a passing result\n\
      \n\
      See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";

@@ -75,13 +75,24 @@ pub struct StatusSnapshot {
 impl StatusSnapshot {
     pub fn from_watched_state(watched: &WatchedState) -> StatusSnapshot {
         let state = &watched.state;
-        StatusSnapshot {
-            task_state: format!("{:?}", state.state),
-            task_state_detail: format!(
+        let task_state_detail = if matches!(
+            state.state,
+            crate::state::machine::TaskState::Executing
+                | crate::state::machine::TaskState::Checking
+                | crate::state::machine::TaskState::Addressing
+                | crate::state::machine::TaskState::Reviewing
+        ) {
+            format!(
                 "{:?} ({})",
                 state.state,
                 format_elapsed(watched.state_elapsed)
-            ),
+            )
+        } else {
+            format!("{:?}", state.state)
+        };
+        StatusSnapshot {
+            task_state: format!("{:?}", state.state),
+            task_state_detail,
             claimed_by: state.claimed_by.clone(),
             directory: String::new(),
             branch: None,
