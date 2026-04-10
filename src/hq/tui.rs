@@ -3,12 +3,13 @@ use std::{
     io::{self, Stdout, Write},
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
 use crossterm::{
     cursor::{MoveDown, MoveToColumn, MoveUp},
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     queue,
     style::{style, Attribute, Color, Print, PrintStyledContent, Stylize},
     terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType},
@@ -867,6 +868,32 @@ fn flush_stdin_input_buffer() {
     unsafe {
         let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
     }
+
+    // Some agents restore the terminal by writing ANSI sequences as they exit.
+    // Those bytes can already be decoded into crossterm events, or arrive just
+    // after raw mode is re-enabled. Drain until the terminal stays quiet briefly.
+    const QUIET_WINDOW: Duration = Duration::from_millis(20);
+    const MAX_DRAIN_TIME: Duration = Duration::from_millis(150);
+
+    let deadline = Instant::now() + MAX_DRAIN_TIME;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        let timeout = deadline.saturating_duration_since(now).min(QUIET_WINDOW);
+        match event::poll(timeout) {
+            Ok(true) => {
+                while matches!(event::poll(Duration::ZERO), Ok(true)) {
+                    if event::read().is_err() {
+                        break;
+                    }
+                }
+            }
+            Ok(false) | Err(_) => break,
+        }
+    }
 }
 
 fn print_transcript_line(stdout: &mut Stdout, line: &TranscriptLine) -> Result<()> {
@@ -1132,9 +1159,17 @@ fn print_status_line(
     let state = if status.task_state.is_empty() {
         "Idle".to_string()
     } else {
-        status.task_state_detail.clone()
+        status.task_state.clone()
     };
     let mut segments = vec![(state, task_state_color(&status.task_state))];
+
+    if let Some(elapsed) = status
+        .task_state_detail
+        .strip_prefix(&format!("{} (", status.task_state))
+        .and_then(|detail| detail.strip_suffix(')'))
+    {
+        segments.push((format!(" ({elapsed})"), Color::DarkGrey));
+    }
 
     if !status.directory.is_empty() {
         segments.push((" | ".to_string(), Color::DarkGrey));
