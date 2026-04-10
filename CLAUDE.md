@@ -120,16 +120,17 @@ executor = "codex"          # agent for executor role: claude-code | codex
 | `/next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `/check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
 | `/submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
-| `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman | Write question to QUESTION.md; executor must immediately call `/wait_for_answer` |
 | `/wait_for_answer` | AwaitingHuman | (previous state) | Block until the human answers; restores paused state and returns the answer |
 
 ### Shared tools
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
+| `/ask_human` | Executing, Addressing, Checking, Reviewing | AwaitingHuman | Write question to QUESTION.md; agent must immediately call `/wait_for_answer` (executor) or wait for HQ to answer |
+| `/answer` | AwaitingHuman | (previous state) | Provide answer to a pending question; restores previous state |
 | `/heartbeat` | any claimed | — | Renew lease; call every ~30s while working |
 | `/status` | any | — | Print current state + retry counters |
-| `/reset` | any | Idle | Human escape hatch; clears feedback, review, and submission files; prompts if agent is actively working |
+| `/reset` | Failed | Idle | MCP escape hatch; clears feedback, review, and submission files. HQ `/reset` command works from any state. |
 
 ## MCP Resources
 
@@ -168,7 +169,7 @@ Idle
 Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human`. The executor immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
 - `/task` from `Complete` → silently resets to Idle and starts the next task.
-- `/reset`: works from any state; prompts for confirmation if Executing or Reviewing.
+- HQ `/reset` command: works from any state; prompts for confirmation if an agent is actively working. The MCP `/reset` tool is only valid from `Failed`.
 
 ## Runtime Files (`.ferrus/`)
 
@@ -180,7 +181,7 @@ Any active state (Executing, Addressing, Checking, Reviewing) can pause to `Awai
 | `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
-| `QUESTION.md` | Question written by `/ask_human` when elicitation is unavailable |
+| `QUESTION.md` | Question written by `/ask_human` |
 | `ANSWER.md` | Answer written by `/answer` |
 | `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
 

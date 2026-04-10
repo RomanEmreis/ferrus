@@ -47,6 +47,6 @@ No hard constraints. Explore, discuss, write plans. `/create_task` is available 
 ## Notes
 
 - Call `/status` at any time to inspect current state and counters
-- Call `/ask_human` if you need clarification from a human
+- Call `/ask_human` if you need clarification from a human; the question is written to QUESTION.md and state pauses to AwaitingHuman
 - Use the `supervisor-review` MCP prompt for bundled review context
 - Read runtime files as MCP resources: `ferrus://task`, `ferrus://submission`, `ferrus://state`

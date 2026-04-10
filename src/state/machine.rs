@@ -11,7 +11,7 @@ pub enum TaskState {
     Addressing,
     Complete,
     Failed,
-    /// Waiting for a human to answer a question (elicitation fallback path).
+    /// Waiting for a human to answer a question written to QUESTION.md.
     /// The previous state is saved in `StateData::paused_state` and restored by `/answer`.
     AwaitingHuman,
 }

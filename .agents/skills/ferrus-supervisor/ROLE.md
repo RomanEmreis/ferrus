@@ -27,4 +27,4 @@ You make one decision — `/approve` or `/reject` — then exit.
 
 ## Asking the human
 
-Call `/ask_human` when you need clarification. MCP elicitation is used where supported.
+Call `/ask_human` when you need clarification. The question is written to QUESTION.md and state pauses to AwaitingHuman until the human responds in HQ.

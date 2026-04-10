@@ -59,6 +59,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `/reset` | Reset state to Idle (clears task files) |
 | `/init` | Initialize ferrus in the current directory |
 | `/register` | Register agent configs |
+| `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
 ## MCP tools
@@ -79,11 +80,12 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `next_task` | Executing, Addressing | Read task + feedback + review notes |
 | `check` | Executing, Addressing | Run all configured checks |
 | `submit` | Checking | Write submission notes; moves to Reviewing |
+| `wait_for_answer` | AwaitingHuman | Block until human responds; restores previous state |
 
 ### Shared
 | Tool | From state | Description |
 |---|---|---|
-| `ask_human` | any active | Ask human a question (elicitation or AwaitingHuman fallback) |
+| `ask_human` | any active | Write question to QUESTION.md; transitions to AwaitingHuman |
 | `answer` | AwaitingHuman | Provide answer; restores previous state |
 | `status` | any | Print current state and counters |
 | `reset` | Failed | Return to Idle |

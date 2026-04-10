@@ -99,7 +99,7 @@ Idle
 
 Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human`. The executor immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
-- `/plan` from `Complete` → silently resets to Idle and starts the next task (no extra step needed).
+- `/task` from `Complete` → silently resets to Idle and starts the next task (no extra step needed).
 - `/reset` → Idle from any state; prompts for confirmation if an agent is actively working.
 
 ---
@@ -124,8 +124,8 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `wait_for_answer`, `status`, `reset` |
-| `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `ask_human`, `wait_for_answer`, `status`, `reset` |
+| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
 ### `ferrus register --supervisor <agent> --executor <agent>`
@@ -178,7 +178,7 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 | `FEEDBACK.md` | Short check-failure summary (failed commands + last N lines each + log path) |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor submission notes |
-| `QUESTION.md` | Pending human question (when agent used ask_human without elicitation) |
+| `QUESTION.md` | Pending human question (written by `/ask_human`) |
 | `ANSWER.md` | Human answer |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 

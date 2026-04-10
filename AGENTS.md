@@ -21,7 +21,7 @@ cargo fmt --check                  # check formatting without writing
 cargo check                        # fast type-check
 ```
 
-All four checks must pass before submitting: `clippy -D warnings`, `fmt --check`, `test`.
+All three checks must pass before submitting: `clippy -D warnings`, `fmt --check`, `test`.
 
 ## Source Layout
 
