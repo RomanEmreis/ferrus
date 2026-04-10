@@ -20,26 +20,8 @@ impl Display {
     }
 
     pub fn transition(&self, transition: &TransitionSnapshot) {
-        let _ = self.0.send(UiMessage::Transition {
-            from: if transition.used_total {
-                None
-            } else {
-                Some(format!(
-                    "{:?} ({})",
-                    transition.from,
-                    format_elapsed(transition.elapsed)
-                ))
-            },
-            to: if transition.used_total {
-                format!(
-                    "{:?} ({})",
-                    transition.to,
-                    format_elapsed(transition.elapsed)
-                )
-            } else {
-                format!("{:?}", transition.to)
-            },
-        });
+        let (from, to) = format_transition_parts(transition);
+        let _ = self.0.send(UiMessage::Transition { from, to });
     }
 
     pub fn status(&self, watched: &WatchedState, agents: &AgentsRegistry) {
@@ -103,5 +85,88 @@ fn agent_status_label<'a>(agents: &'a AgentsRegistry, role: &str) -> &'a str {
         Some(AgentStatus::Running) => "running",
         Some(AgentStatus::Suspended) => "suspended",
         None => "none",
+    }
+}
+
+fn format_transition_parts(transition: &TransitionSnapshot) -> (Option<String>, String) {
+    let hide_elapsed = transition.from == crate::state::machine::TaskState::Idle
+        || transition.to == crate::state::machine::TaskState::Complete;
+
+    let from = if transition.used_total {
+        None
+    } else if hide_elapsed {
+        Some(format!("{:?}", transition.from))
+    } else {
+        Some(format!(
+            "{:?} ({})",
+            transition.from,
+            format_elapsed(transition.elapsed)
+        ))
+    };
+
+    let to = if transition.used_total && !hide_elapsed {
+        format!(
+            "{:?} ({})",
+            transition.to,
+            format_elapsed(transition.elapsed)
+        )
+    } else {
+        format!("{:?}", transition.to)
+    };
+
+    (from, to)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crate::state::machine::TaskState;
+
+    use super::{format_transition_parts, TransitionSnapshot};
+
+    #[test]
+    fn hides_elapsed_when_transition_starts_from_idle() {
+        let transition = TransitionSnapshot {
+            from: TaskState::Idle,
+            to: TaskState::Executing,
+            elapsed: Duration::from_secs(84),
+            used_total: false,
+        };
+
+        let (from, to) = format_transition_parts(&transition);
+
+        assert_eq!(from, Some("Idle".to_string()));
+        assert_eq!(to, "Executing");
+    }
+
+    #[test]
+    fn hides_elapsed_when_transition_ends_at_complete() {
+        let transition = TransitionSnapshot {
+            from: TaskState::Reviewing,
+            to: TaskState::Complete,
+            elapsed: Duration::from_secs(84),
+            used_total: true,
+        };
+
+        let (from, to) = format_transition_parts(&transition);
+
+        assert_eq!(from, None);
+        assert_eq!(to, "Complete");
+    }
+
+    #[test]
+    fn keeps_elapsed_for_other_transitions() {
+        let transition = TransitionSnapshot {
+            from: TaskState::Executing,
+            to: TaskState::Checking,
+            elapsed: Duration::from_secs(84),
+            used_total: false,
+        };
+
+        let (from, to) = format_transition_parts(&transition);
+
+        assert_eq!(from, Some("Executing (1m 24s)".to_string()));
+        assert_eq!(to, "Checking");
     }
 }
