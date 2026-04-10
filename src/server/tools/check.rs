@@ -31,6 +31,9 @@ async fn run() -> Result<String> {
 
     match state.state {
         TaskState::Executing | TaskState::Addressing => {}
+        TaskState::Checking => anyhow::bail!(
+            "Checks already passed (state: Checking). Call /submit to submit your work for review."
+        ),
         ref other => anyhow::bail!(
             "Cannot run checks from state {other:?}. \
              Checks are only valid in Executing or Addressing state."

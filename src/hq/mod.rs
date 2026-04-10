@@ -331,8 +331,14 @@ impl HqContext {
                 }
             }
             TransitionAction::SpawnReviewer => {
-                // Executor is done — drop its handle (process may still be winding down).
-                self.headless.remove("executor-1");
+                // Executor submitted — terminate it so it doesn't compete with the next cycle.
+                // Without the kill, the executor process stays alive in its wait_for_task loop.
+                // If the supervisor later rejects, a new executor is spawned with the same
+                // agent_id, and both race to claim the Addressing task via the idempotent
+                // claim path — causing two executors to work concurrently.
+                if let Some(handle) = self.headless.remove("executor-1") {
+                    handle.kill();
+                }
                 if let Err(err) = self
                     .spawn_headless_agent(
                         &sup_type,
@@ -347,7 +353,9 @@ impl HqContext {
                 }
             }
             TransitionAction::KillReviewerSpawnExecutor => {
-                self.headless.remove("supervisor-1");
+                if let Some(handle) = self.headless.remove("supervisor-1") {
+                    handle.kill();
+                }
                 if let Err(err) = self
                     .spawn_headless_agent(
                         &exe_type,
@@ -362,14 +370,20 @@ impl HqContext {
                 }
             }
             TransitionAction::TaskComplete => {
-                self.headless.remove("executor-1");
-                self.headless.remove("supervisor-1");
+                for name in ["executor-1", "supervisor-1"] {
+                    if let Some(handle) = self.headless.remove(name) {
+                        handle.kill();
+                    }
+                }
                 self.display
                     .info("Task complete! Use /plan to start a new task.");
             }
             TransitionAction::TaskFailed => {
-                self.headless.remove("executor-1");
-                self.headless.remove("supervisor-1");
+                for name in ["executor-1", "supervisor-1"] {
+                    if let Some(handle) = self.headless.remove(name) {
+                        handle.kill();
+                    }
+                }
                 self.display
                     .info("Task failed. Use /status for details, /reset to try again.");
             }
