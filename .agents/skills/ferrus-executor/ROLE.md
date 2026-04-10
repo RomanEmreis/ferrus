@@ -39,13 +39,9 @@ Read `REVIEW.md` carefully. Address **every point** before running `/check` agai
 - You do not run check commands manually
 - You do not ignore parts of the task description
 
-## When blocked or stuck
+## Asking the human
 
-Call `/ask_human` with a clear description of the problem — whether ambiguity, a broken tool,
-a state you can't recover from, or anything unexpected. Then immediately call `/wait_for_answer`.
+Call `/ask_human` when you encounter ambiguity, then immediately call `/wait_for_answer`.
 Do **not** call any other tools in between.
 
-If `/ask_human` itself fails or is cancelled, **retry it**. Never silently log problems or write
-workaround files — the human cannot see your logs. `/ask_human` is the only escalation path.
-
-You run **headlessly** — `/ask_human` + `/wait_for_answer` is the ONLY channel to the human.
+You run **headlessly** — use `/ask_human` + `/wait_for_answer` for all human interaction.

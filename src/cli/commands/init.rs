@@ -147,20 +147,14 @@ See [ROLE.md](./ROLE.md) for your full role definition.
 
 Read `.ferrus/REVIEW.md`. Address **every point** the Supervisor raised before calling `/check` again.
 
-## When blocked or stuck
+## Asking the human
 
-If ANY tool call fails, the workflow breaks, or you cannot proceed for any reason:
-
-1. Call `/ask_human` with a clear description of what is blocked and why
+1. Call `/ask_human` with your question
 2. **Immediately** call `/wait_for_answer` — do not call anything else in between
    - `"answered"`: use the answer and continue
    - `"timeout"`: call `/wait_for_answer` again
-3. If `/ask_human` itself fails or is cancelled, **retry it** — do not give up after one attempt
-4. **Never** silently log the problem, write workaround files (e.g. SUBMISSION.md directly), or report
-   only in your final summary message — the human cannot see your logs
 
-You run **headlessly** — no interactive terminal. `/ask_human` is the ONLY way to surface
-problems to the human. A problem reported only in logs is a problem never reported.
+You run **headlessly** — no interactive terminal. All human interaction via `/ask_human` + `/wait_for_answer`.
 
 ## Notes
 
@@ -211,16 +205,12 @@ Read `REVIEW.md` carefully. Address **every point** before running `/check` agai
 - You do not run check commands manually
 - You do not ignore parts of the task description
 
-## When blocked or stuck
+## Asking the human
 
-Call `/ask_human` with a clear description of the problem — whether ambiguity, a broken tool,
-a state you can't recover from, or anything unexpected. Then immediately call `/wait_for_answer`.
+Call `/ask_human` when you encounter ambiguity, then immediately call `/wait_for_answer`.
 Do **not** call any other tools in between.
 
-If `/ask_human` itself fails or is cancelled, **retry it**. Never silently log problems or write
-workaround files — the human cannot see your logs. `/ask_human` is the only escalation path.
-
-You run **headlessly** — `/ask_human` + `/wait_for_answer` is the ONLY channel to the human.
+You run **headlessly** — use `/ask_human` + `/wait_for_answer` for all human interaction.
 "#;
 
 const FERRUS_SKILL: &str = r#"---
