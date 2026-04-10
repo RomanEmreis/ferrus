@@ -133,7 +133,6 @@ See [ROLE.md](./ROLE.md) for your full role definition.
 - The workflow breaks
 
 **ALWAYS use `/check`** — it is the only correct verification path.
-Do not call `/submit` until `/check` returns a passing result.
 
 ## Autonomous loop
 
@@ -148,14 +147,20 @@ Do not call `/submit` until `/check` returns a passing result.
 
 Read `.ferrus/REVIEW.md`. Address **every point** the Supervisor raised before calling `/check` again.
 
-## Asking the human
+## When blocked or stuck
 
-1. Call `/ask_human` with your question
+If ANY tool call fails, the workflow breaks, or you cannot proceed for any reason:
+
+1. Call `/ask_human` with a clear description of what is blocked and why
 2. **Immediately** call `/wait_for_answer` — do not call anything else in between
    - `"answered"`: use the answer and continue
    - `"timeout"`: call `/wait_for_answer` again
+3. If `/ask_human` itself fails or is cancelled, **retry it** — do not give up after one attempt
+4. **Never** silently log the problem, write workaround files (e.g. SUBMISSION.md directly), or report
+   only in your final summary message — the human cannot see your logs
 
-You run **headlessly** — no interactive terminal. All human interaction via `/ask_human` + `/wait_for_answer`.
+You run **headlessly** — no interactive terminal. `/ask_human` is the ONLY way to surface
+problems to the human. A problem reported only in logs is a problem never reported.
 
 ## Notes
 
@@ -180,8 +185,6 @@ description: "Executor role definition — implement tasks, use /check exclusive
 Running checks manually breaks the state machine: results are not recorded, counters
 are not updated, `FEEDBACK.md` is not written. The workflow depends on `/check` being
 the sole verification path.
-
-**Do not call `/submit` until `/check` returns a passing result.**
 
 ## Responsibilities
 
@@ -208,12 +211,16 @@ Read `REVIEW.md` carefully. Address **every point** before running `/check` agai
 - You do not run check commands manually
 - You do not ignore parts of the task description
 
-## Asking the human
+## When blocked or stuck
 
-Call `/ask_human` when you encounter ambiguity, then immediately call `/wait_for_answer`.
+Call `/ask_human` with a clear description of the problem — whether ambiguity, a broken tool,
+a state you can't recover from, or anything unexpected. Then immediately call `/wait_for_answer`.
 Do **not** call any other tools in between.
 
-You run **headlessly** — use `/ask_human` + `/wait_for_answer` for all human interaction.
+If `/ask_human` itself fails or is cancelled, **retry it**. Never silently log problems or write
+workaround files — the human cannot see your logs. `/ask_human` is the only escalation path.
+
+You run **headlessly** — `/ask_human` + `/wait_for_answer` is the ONLY channel to the human.
 "#;
 
 const FERRUS_SKILL: &str = r#"---

@@ -478,7 +478,13 @@ pub async fn run_tui(
             }
             maybe_msg = msg_rx.recv() => {
                 match maybe_msg {
-                    Some(msg) => handle_message(msg, &mut app, &mut stdout, &mut ui)?,
+                    Some(msg) => {
+                        let refreshed_events =
+                            handle_message(msg, &mut app, &mut stdout, &mut ui)?;
+                        if refreshed_events {
+                            event_stream = EventStream::new();
+                        }
+                    }
                     None => app.should_quit = true,
                 }
             }
@@ -634,7 +640,7 @@ fn handle_message(
     app: &mut App,
     stdout: &mut Stdout,
     ui: &mut TerminalUi,
-) -> Result<()> {
+) -> Result<bool> {
     match msg {
         UiMessage::Info(text) => {
             let lines = split_transcript(&text, TranscriptKind::Info);
@@ -678,13 +684,16 @@ fn handle_message(
             leave_tui()?;
             app.suspended = true;
             let _ = ack.send(());
+            return Ok(false);
         }
         UiMessage::Resume => {
             enter_tui()?;
+            flush_stdin_input_buffer();
             app.suspended = false;
             ui.prompt_visible = false;
             ui.lower_lines = 0;
             redraw_live_area(stdout, app, ui)?;
+            return Ok(true);
         }
         UiMessage::ConfirmationRequest { prompt, reply } => {
             app.confirmation = Some(ConfirmationState { prompt, reply });
@@ -694,7 +703,7 @@ fn handle_message(
             }
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 // The transcript is real terminal output; only the prompt area is ephemeral.
@@ -849,6 +858,15 @@ fn enter_tui() -> Result<()> {
 fn leave_tui() -> Result<()> {
     disable_raw_mode()?;
     Ok(())
+}
+
+fn flush_stdin_input_buffer() {
+    #[cfg(unix)]
+    // SAFETY: tcflush is a libc call that discards bytes queued on stdin. We ignore
+    // errors because some environments do not expose a flushable TTY.
+    unsafe {
+        let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
 }
 
 fn print_transcript_line(stdout: &mut Stdout, line: &TranscriptLine) -> Result<()> {
