@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::watch;
 
+use crate::agents::{ExecutorAgent, SupervisorAgent};
+use crate::config::{Config, HqConfig};
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
@@ -26,14 +28,22 @@ pub async fn run() -> Result<()> {
     let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<tui::UiMessage>();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    let (supervisor_type, executor_type) = load_agent_types_from_config().await;
-    let (supervisor_version, executor_version) =
-        load_agent_versions(&supervisor_type, &executor_type).await;
+    let hq_config = load_hq_config_from_config().await;
+    let supervisor_type = hq_config
+        .as_ref()
+        .map(|hq| hq.supervisor_name().to_string())
+        .unwrap_or_default();
+    let executor_type = hq_config
+        .as_ref()
+        .map(|hq| hq.executor_name().to_string())
+        .unwrap_or_default();
+    let (supervisor_version, executor_version) = load_agent_versions(hq_config.as_ref()).await;
 
     let display = Display(msg_tx);
     let mut ctx = HqContext::new(state_rx.clone(), display.clone());
-    ctx.supervisor_type = (!supervisor_type.is_empty()).then_some(supervisor_type.clone());
-    ctx.executor_type = (!executor_type.is_empty()).then_some(executor_type.clone());
+    if let Some(hq) = hq_config {
+        ctx.set_hq_config(&hq);
+    }
 
     let mut tui_task = tokio::spawn(tui::run_tui(
         msg_rx,
@@ -98,30 +108,22 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn load_agent_types_from_config() -> (String, String) {
-    use crate::config::Config;
-
-    if let Ok(cfg) = Config::load().await {
-        if let Some(hq) = cfg.hq {
-            return (hq.supervisor, hq.executor);
-        }
-    }
-    (String::new(), String::new())
+async fn load_hq_config_from_config() -> Option<HqConfig> {
+    Config::load().await.ok().and_then(|cfg| cfg.hq)
 }
 
-async fn load_agent_versions(supervisor_type: &str, executor_type: &str) -> (String, String) {
-    let supervisor = load_agent_version(supervisor_type).await;
-    let executor = load_agent_version(executor_type).await;
+async fn load_agent_versions(hq: Option<&HqConfig>) -> (String, String) {
+    let Some(hq) = hq else {
+        return (String::new(), String::new());
+    };
+    let supervisor = load_agent_version_from_command(hq.supervisor.spawn(None)).await;
+    let executor = load_agent_version_from_command(hq.executor.spawn(None)).await;
     (supervisor, executor)
 }
 
-async fn load_agent_version(agent_type: &str) -> String {
-    if agent_type.is_empty() {
-        return String::new();
-    }
-
-    let binary = agent_manager::agent_binary(agent_type);
-    let Ok(output) = Command::new(binary).arg("--version").output().await else {
+async fn load_agent_version_from_command(command: std::process::Command) -> String {
+    let program = command.get_program().to_owned();
+    let Ok(output) = Command::new(program).arg("--version").output().await else {
         return String::new();
     };
     if !output.status.success() {
@@ -278,8 +280,8 @@ impl Drop for ResumeGuard {
 }
 
 pub(crate) struct HqContext {
-    pub(crate) supervisor_type: Option<String>,
-    pub(crate) executor_type: Option<String>,
+    pub(crate) supervisor: Option<std::sync::Arc<dyn SupervisorAgent>>,
+    pub(crate) executor: Option<std::sync::Arc<dyn ExecutorAgent>>,
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
@@ -290,13 +292,33 @@ pub(crate) struct HqContext {
 impl HqContext {
     fn new(state_rx: watch::Receiver<Option<WatchedState>>, display: Display) -> Self {
         Self {
-            supervisor_type: None,
-            executor_type: None,
+            supervisor: None,
+            executor: None,
             headless: std::collections::HashMap::new(),
             last_task_state: None,
             state_rx,
             display,
         }
+    }
+
+    fn set_hq_config(&mut self, hq: &HqConfig) {
+        self.supervisor = Some(std::sync::Arc::clone(&hq.supervisor));
+        self.executor = Some(std::sync::Arc::clone(&hq.executor));
+    }
+
+    async fn ensure_hq_config(&mut self) -> Result<()> {
+        if self.supervisor.is_some() && self.executor.is_some() {
+            return Ok(());
+        }
+
+        let config = Config::load().await?;
+        let hq = config.hq.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+            )
+        })?;
+        self.set_hq_config(&hq);
+        Ok(())
     }
 
     pub(crate) async fn on_state_change(&mut self, state: &StateData) {
@@ -309,17 +331,16 @@ impl HqContext {
         };
 
         let action = transition_action(prev, &state.state);
-        let exe_type = self.executor_type.clone().unwrap_or_else(|| "codex".into());
-        let sup_type = self
-            .supervisor_type
-            .clone()
-            .unwrap_or_else(|| "claude-code".into());
 
         match action {
             TransitionAction::SpawnExecutor => {
+                if let Err(err) = self.ensure_hq_config().await {
+                    self.display
+                        .error(format!("Failed to load executor config: {err}"));
+                    return;
+                }
                 if let Err(err) = self
-                    .spawn_headless_agent(
-                        &exe_type,
+                    .spawn_headless_executor(
                         "executor",
                         "executor-1",
                         agent_manager::executor_prompt(),
@@ -339,9 +360,13 @@ impl HqContext {
                 if let Some(handle) = self.headless.remove("executor-1") {
                     handle.kill();
                 }
+                if let Err(err) = self.ensure_hq_config().await {
+                    self.display
+                        .error(format!("Failed to load supervisor config: {err}"));
+                    return;
+                }
                 if let Err(err) = self
-                    .spawn_headless_agent(
-                        &sup_type,
+                    .spawn_headless_supervisor(
                         "supervisor",
                         "supervisor-1",
                         agent_manager::reviewer_prompt(),
@@ -356,9 +381,13 @@ impl HqContext {
                 if let Some(handle) = self.headless.remove("supervisor-1") {
                     handle.kill();
                 }
+                if let Err(err) = self.ensure_hq_config().await {
+                    self.display
+                        .error(format!("Failed to load executor config: {err}"));
+                    return;
+                }
                 if let Err(err) = self
-                    .spawn_headless_agent(
-                        &exe_type,
+                    .spawn_headless_executor(
                         "executor",
                         "executor-1",
                         agent_manager::executor_prompt(),
@@ -405,10 +434,8 @@ impl HqContext {
         }
     }
 
-    /// Spawn an agent headlessly (no PTY). Used for both executor and reviewer.
-    pub(crate) async fn spawn_headless_agent(
+    async fn spawn_headless_supervisor(
         &mut self,
-        agent_type: &str,
         role: &str,
         name: &str,
         prompt: &str,
@@ -422,9 +449,47 @@ impl HqContext {
             self.headless.remove(name);
         }
 
+        let agent = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
         self.display
-            .info(format!("Spawning {name} ({agent_type}) headlessly…"));
-        let handle = agent_manager::spawn_headless(agent_type, role, name, prompt).await?;
+            .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
+        let handle =
+            agent_manager::spawn_headless_supervisor(agent.as_ref(), role, name, prompt).await?;
+        self.display.info(format!(
+            "{name} started in background. Logs: {}",
+            handle.log_path.display()
+        ));
+        self.headless.insert(name.to_string(), handle);
+        Ok(())
+    }
+
+    async fn spawn_headless_executor(
+        &mut self,
+        role: &str,
+        name: &str,
+        prompt: &str,
+    ) -> Result<()> {
+        if let Some(existing) = self.headless.get(name) {
+            if existing.is_alive() {
+                self.display
+                    .info(format!("{name} already running headlessly."));
+                return Ok(());
+            }
+            self.headless.remove(name);
+        }
+
+        let agent = std::sync::Arc::clone(
+            self.executor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
+        );
+        self.display
+            .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
+        let handle =
+            agent_manager::spawn_headless_executor(agent.as_ref(), role, name, prompt).await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -434,8 +499,6 @@ impl HqContext {
     }
 
     async fn resume(&mut self) -> Result<()> {
-        use crate::config::Config;
-
         if self
             .headless
             .iter()
@@ -463,19 +526,7 @@ impl HqContext {
             _ => {}
         }
 
-        let exe_type = if let Some(ref t) = self.executor_type {
-            t.clone()
-        } else {
-            let config = Config::load().await?;
-            let hq = config.hq.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
-                )
-            })?;
-            self.supervisor_type = Some(hq.supervisor.clone());
-            self.executor_type = Some(hq.executor.clone());
-            hq.executor
-        };
+        self.ensure_hq_config().await?;
 
         // Use resume prompt if state is AwaitingHuman (executor was relaunched after answer).
         let prompt = if state.state == TaskState::AwaitingHuman {
@@ -484,13 +535,11 @@ impl HqContext {
             agent_manager::executor_prompt()
         };
 
-        self.spawn_headless_agent(&exe_type, "executor", "executor-1", prompt)
+        self.spawn_headless_executor("executor", "executor-1", prompt)
             .await
     }
 
     async fn review(&mut self) -> Result<()> {
-        use crate::config::Config;
-
         let state = store::read_state().await?;
         if state.state != TaskState::Reviewing {
             anyhow::bail!(
@@ -499,22 +548,8 @@ impl HqContext {
             );
         }
 
-        let sup_type = if let Some(ref t) = self.supervisor_type {
-            t.clone()
-        } else {
-            let config = Config::load().await?;
-            let hq = config.hq.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
-                )
-            })?;
-            self.supervisor_type = Some(hq.supervisor.clone());
-            self.executor_type = Some(hq.executor.clone());
-            hq.supervisor
-        };
-
-        self.spawn_headless_agent(
-            &sup_type,
+        self.ensure_hq_config().await?;
+        self.spawn_headless_supervisor(
             "supervisor",
             "supervisor-1",
             agent_manager::reviewer_prompt(),
@@ -594,10 +629,8 @@ impl HqContext {
         Ok(())
     }
 
-    /// Spawn `agent_type` interactively (suspend TUI, inherit stdio, wait for exit, resume TUI).
-    async fn spawn_interactive_agent(
+    async fn spawn_interactive_supervisor(
         &mut self,
-        agent_type: &str,
         role: &str,
         name: &str,
         prompt: Option<&str>,
@@ -606,28 +639,87 @@ impl HqContext {
         use std::process::Stdio;
         use tokio::process::Command;
 
-        let binary = agent_manager::agent_binary(agent_type);
-        let mut cmd = Command::new(binary);
-        if let Some(p) = prompt {
-            cmd.arg(p);
-        }
+        let agent = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
+        let mut cmd = Command::from(agent.spawn(prompt));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
         let mut guard = ResumeGuard::new(self.display.clone());
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
 
         let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
-            .with_context(|| format!("Failed to spawn {binary}"))?;
+            .with_context(|| format!("Failed to spawn {program}"))?;
 
         {
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
                 role: role.to_string(),
-                agent_type: agent_type.to_string(),
+                agent_type: agent.name().to_string(),
+                name: name.to_string(),
+                pid: child.id(),
+                status: AgentStatus::Running,
+                started_at: Some(chrono::Utc::now()),
+            });
+            write_agents(&reg).await?;
+        }
+
+        let _ = child.wait().await;
+        guard.resume_now();
+
+        {
+            let mut reg = read_agents().await?;
+            if let Some(e) = reg.by_role_mut(role) {
+                e.pid = None;
+                e.status = AgentStatus::Suspended;
+            }
+            write_agents(&reg).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn spawn_interactive_executor(
+        &mut self,
+        role: &str,
+        name: &str,
+        prompt: Option<&str>,
+    ) -> Result<()> {
+        use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        let agent = std::sync::Arc::clone(
+            self.executor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
+        );
+        let mut cmd = Command::from(agent.spawn(prompt));
+
+        let ack_rx = self.display.suspend();
+        let _ = ack_rx.await;
+        let mut guard = ResumeGuard::new(self.display.clone());
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+
+        let mut child = cmd
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("Failed to spawn {program}"))?;
+
+        {
+            let mut reg = read_agents().await?;
+            reg.upsert(AgentEntry {
+                role: role.to_string(),
+                agent_type: agent.name().to_string(),
                 name: name.to_string(),
                 pid: child.id(),
                 status: AgentStatus::Running,
@@ -652,23 +744,19 @@ impl HqContext {
     }
 
     async fn plan(&mut self) -> Result<()> {
-        use crate::config::Config;
+        self.ensure_hq_config().await?;
+        let agent = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
 
-        let config = Config::load().await?;
-        let hq = config.hq.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
-            )
-        })?;
-
-        self.supervisor_type = Some(hq.supervisor.clone());
         self.display.info(format!(
             "Spawning supervisor ({}) for free-form planning…",
-            hq.supervisor
+            agent.name()
         ));
 
-        self.spawn_interactive_agent(
-            &hq.supervisor,
+        self.spawn_interactive_supervisor(
             "supervisor",
             "supervisor-1",
             Some(agent_manager::supervisor_plan_prompt()),
@@ -677,16 +765,10 @@ impl HqContext {
     }
 
     async fn task(&mut self) -> Result<()> {
-        use crate::config::Config;
         use std::process::Stdio;
         use tokio::process::Command;
 
-        let config = Config::load().await?;
-        let hq = config.hq.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
-            )
-        })?;
+        self.ensure_hq_config().await?;
 
         let state = store::read_state().await?;
         match state.state {
@@ -703,29 +785,30 @@ impl HqContext {
             }
         }
 
-        self.supervisor_type = Some(hq.supervisor.clone());
-        self.executor_type = Some(hq.executor.clone());
+        let supervisor = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
 
         self.display
-            .info(format!("Spawning supervisor ({})…", hq.supervisor));
+            .info(format!("Spawning supervisor ({})…", supervisor.name()));
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let binary = agent_manager::agent_binary(&hq.supervisor);
-        let prompt = agent_manager::supervisor_task_prompt();
-
-        let mut cmd = Command::new(binary);
-        cmd.arg(prompt);
+        let mut cmd =
+            Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
         let mut resume_guard = ResumeGuard::new(self.display.clone());
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
         let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
-            .with_context(|| format!("Failed to spawn {binary}"))?;
+            .with_context(|| format!("Failed to spawn {program}"))?;
 
         {
             use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
@@ -733,7 +816,7 @@ impl HqContext {
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
                 role: "supervisor".into(),
-                agent_type: hq.supervisor.clone(),
+                agent_type: supervisor.name().to_string(),
                 name: "supervisor-1".into(),
                 pid: child.id(),
                 status: AgentStatus::Running,
@@ -773,8 +856,7 @@ impl HqContext {
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
-            self.spawn_headless_agent(
-                &hq.executor,
+            self.spawn_headless_executor(
                 "executor",
                 "executor-1",
                 agent_manager::executor_prompt(),
@@ -792,42 +874,36 @@ impl HqContext {
     }
 
     async fn supervisor_interactive(&mut self) -> Result<()> {
-        use crate::config::Config;
+        self.ensure_hq_config().await?;
+        let agent = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
 
-        let config = Config::load().await?;
-        let hq = config.hq.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
-            )
-        })?;
-
-        self.supervisor_type = Some(hq.supervisor.clone());
         self.display.info(format!(
             "Spawning supervisor ({}) interactively…",
-            hq.supervisor
+            agent.name()
         ));
 
-        self.spawn_interactive_agent(&hq.supervisor, "supervisor", "supervisor-1", None)
+        self.spawn_interactive_supervisor("supervisor", "supervisor-1", None)
             .await
     }
 
     async fn executor_interactive(&mut self) -> Result<()> {
-        use crate::config::Config;
+        self.ensure_hq_config().await?;
+        let agent = std::sync::Arc::clone(
+            self.executor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
+        );
 
-        let config = Config::load().await?;
-        let hq = config.hq.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
-            )
-        })?;
-
-        self.executor_type = Some(hq.executor.clone());
         self.display.info(format!(
             "Spawning executor ({}) interactively…",
-            hq.executor
+            agent.name()
         ));
 
-        self.spawn_interactive_agent(&hq.executor, "executor", "executor-1", None)
+        self.spawn_interactive_executor("executor", "executor-1", None)
             .await
     }
 

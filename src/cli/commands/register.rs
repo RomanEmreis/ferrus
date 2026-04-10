@@ -1,4 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
+
+use crate::agents::{parse_executor_agent, parse_supervisor_agent, McpConfigEntry};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
@@ -35,15 +37,16 @@ async fn register_role(role: &str, agent: &Agent) -> Result<()> {
     }
 }
 
+fn config_entry(role: &str, agent_name: &str, index: u32) -> Result<McpConfigEntry> {
+    match role {
+        "supervisor" => parse_supervisor_agent(agent_name)?.mcp_config_entry(role, index),
+        "executor" => parse_executor_agent(agent_name)?.mcp_config_entry(role, index),
+        other => anyhow::bail!("Unsupported role '{other}'"),
+    }
+}
+
 async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
     let path = std::path::Path::new(".mcp.json");
-
-    // Use the absolute path of the running binary so Claude Code can find it
-    // regardless of its PATH environment (which may not include ~/.cargo/bin).
-    let command = std::env::current_exe()
-        .context("Failed to resolve current executable path")?
-        .to_string_lossy()
-        .into_owned();
 
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(path).await?;
@@ -64,12 +67,13 @@ async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
 
     let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
     let key = format!("ferrus-{role}-{index}");
+    let entry = config_entry(role, agent_name, index)?;
 
     servers_obj.insert(
         key.clone(),
         serde_json::json!({
-            "command": command,
-            "args": ["serve", "--role", role, "--agent-name", agent_name, "--agent-index", index.to_string()]
+            "command": entry.command,
+            "args": entry.args,
         }),
     );
     println!("Registered {key} in .mcp.json (agent_id will be \"{role}:{agent_name}:{index}\")");
@@ -122,27 +126,19 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
 
     let index = count_codex_entries(mcp_servers, role, agent_name) + 1;
     let key = format!("ferrus-{role}-{index}");
-
-    // Use the absolute path of the running binary so codex can find it
-    // regardless of whether ~/.cargo/bin is in its PATH.
-    let command = std::env::current_exe()
-        .context("Failed to resolve current executable path")?
-        .to_string_lossy()
-        .into_owned();
+    let config = config_entry(role, agent_name, index)?;
 
     let mut entry = toml::Table::new();
-    entry.insert("command".to_string(), toml::Value::String(command));
+    entry.insert("command".to_string(), toml::Value::String(config.command));
     entry.insert(
         "args".to_string(),
-        toml::Value::Array(vec![
-            toml::Value::String("serve".to_string()),
-            toml::Value::String("--role".to_string()),
-            toml::Value::String(role.to_string()),
-            toml::Value::String("--agent-name".to_string()),
-            toml::Value::String(agent_name.to_string()),
-            toml::Value::String("--agent-index".to_string()),
-            toml::Value::String(index.to_string()),
-        ]),
+        toml::Value::Array(
+            config
+                .args
+                .into_iter()
+                .map(toml::Value::String)
+                .collect::<Vec<_>>(),
+        ),
     );
     mcp_servers.insert(key.clone(), toml::Value::Table(entry));
     println!(

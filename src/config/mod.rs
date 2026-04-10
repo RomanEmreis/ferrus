@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::sync::Arc;
 
-#[derive(Debug, Deserialize)]
+use crate::agents::{parse_executor_agent, parse_supervisor_agent, ExecutorAgent, SupervisorAgent};
+
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct Config {
     pub checks: ChecksConfig,
     pub limits: LimitsConfig,
-    #[serde(default)]
     pub lease: LeaseConfig,
-    #[serde(default)]
     pub hq: Option<HqConfig>,
 }
 
@@ -43,13 +44,69 @@ pub struct LeaseConfig {
     pub heartbeat_interval_secs: u64,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct HqConfig {
-    /// "claude-code" or "codex"
-    pub supervisor: String,
-    /// "claude-code" or "codex"
-    pub executor: String,
+    pub supervisor: Arc<dyn SupervisorAgent>,
+    pub executor: Arc<dyn ExecutorAgent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawConfig {
+    checks: ChecksConfig,
+    limits: LimitsConfig,
+    #[serde(default)]
+    lease: LeaseConfig,
+    #[serde(default)]
+    hq: Option<RawHqConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHqConfig {
+    supervisor: String,
+    executor: String,
+}
+
+impl std::fmt::Debug for HqConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HqConfig")
+            .field("supervisor", &self.supervisor.name())
+            .field("executor", &self.executor.name())
+            .finish()
+    }
+}
+
+impl HqConfig {
+    pub fn supervisor_name(&self) -> &'static str {
+        self.supervisor.name()
+    }
+
+    pub fn executor_name(&self) -> &'static str {
+        self.executor.name()
+    }
+}
+
+impl TryFrom<RawConfig> for Config {
+    type Error = anyhow::Error;
+
+    fn try_from(raw: RawConfig) -> Result<Self> {
+        let hq = raw.hq.map(HqConfig::try_from).transpose()?;
+        Ok(Self {
+            checks: raw.checks,
+            limits: raw.limits,
+            lease: raw.lease,
+            hq,
+        })
+    }
+}
+
+impl TryFrom<RawHqConfig> for HqConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(raw: RawHqConfig) -> Result<Self> {
+        Ok(Self {
+            supervisor: parse_supervisor_agent(&raw.supervisor)?,
+            executor: parse_executor_agent(&raw.executor)?,
+        })
+    }
 }
 
 impl Default for LeaseConfig {
@@ -85,7 +142,12 @@ impl Config {
         let contents = tokio::fs::read_to_string("ferrus.toml")
             .await
             .context("ferrus.toml not found — run `ferrus init` first")?;
-        toml::from_str(&contents).context("Failed to parse ferrus.toml")
+        Self::from_toml(&contents)
+    }
+
+    fn from_toml(contents: &str) -> Result<Self> {
+        let raw: RawConfig = toml::from_str(contents).context("Failed to parse ferrus.toml")?;
+        raw.try_into()
     }
 }
 
@@ -101,7 +163,7 @@ commands = ["cargo test"]
 
 [limits]
 "#;
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = Config::from_toml(toml).unwrap();
         assert_eq!(config.lease.ttl_secs, 90);
         assert_eq!(config.lease.heartbeat_interval_secs, 30);
     }
@@ -114,7 +176,7 @@ commands = ["cargo test"]
 
 [limits]
 "#;
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = Config::from_toml(toml).unwrap();
 
         assert_eq!(config.limits.max_check_retries, 5);
         assert_eq!(config.limits.max_review_cycles, 3);
@@ -138,7 +200,7 @@ wait_timeout_secs = 900
 ttl_secs = 120
 heartbeat_interval_secs = 45
 "#;
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = Config::from_toml(toml).unwrap();
 
         assert_eq!(
             config.checks.commands,
@@ -158,16 +220,23 @@ heartbeat_interval_secs = 45
     #[test]
     fn hq_config_absent_gives_none() {
         let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n";
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = Config::from_toml(toml).unwrap();
         assert!(config.hq.is_none());
     }
 
     #[test]
     fn hq_config_parses_when_present() {
         let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\"\n";
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = Config::from_toml(toml).unwrap();
         let hq = config.hq.unwrap();
-        assert_eq!(hq.supervisor, "claude-code");
-        assert_eq!(hq.executor, "codex");
+        assert_eq!(hq.supervisor_name(), "claude-code");
+        assert_eq!(hq.executor_name(), "codex");
+    }
+
+    #[test]
+    fn invalid_hq_agent_is_rejected_at_load_time() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"unknown\"\nexecutor = \"codex\"\n";
+        let err = Config::from_toml(toml).unwrap_err().to_string();
+        assert!(err.contains("Unknown supervisor agent 'unknown'"));
     }
 }

@@ -1,3 +1,4 @@
+mod agents;
 mod checks;
 mod cli;
 mod config;

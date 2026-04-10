@@ -139,7 +139,7 @@ pub struct App {
     suspended: bool,
     should_quit: bool,
     ctrl_c_pending: bool,
-    ctrl_c_at: Option<std::time::Instant>,
+    ctrl_c_at: Option<Instant>,
 }
 
 impl App {
