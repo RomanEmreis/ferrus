@@ -13,13 +13,13 @@ Licensed under Apache 2.0.
    │
    └─► ferrus HQ
          │
-         ├─► Supervisor (Claude Code)   — plans tasks, reviews submissions
+         ├─► Supervisor (Claude Code or Codex)   — plans tasks, reviews submissions
          │         │ exits after task created; runs headlessly
          │
-         ├─► Executor (Codex / any)     — implements, checks, submits
+         ├─► Executor (Claude Code or Codex)     — implements, checks, submits
          │         │ runs headlessly
          │
-         └─► Reviewer (Claude Code)     — spawned automatically on submission
+         └─► Reviewer (Claude Code or Codex)     — spawned automatically on submission
                    │ exits after approve/reject; runs headlessly
 ```
 
