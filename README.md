@@ -14,16 +14,16 @@ Licensed under Apache 2.0.
    └─► ferrus HQ
          │
          ├─► Supervisor (Claude Code)   — plans tasks, reviews submissions
-         │         │ exits after task created
+         │         │ exits after task created; runs headlessly
          │
          ├─► Executor (Codex / any)     — implements, checks, submits
-         │         │ runs in background PTY
+         │         │ runs headlessly
          │
          └─► Reviewer (Claude Code)     — spawned automatically on submission
-                   │ exits after approve/reject
+                   │ exits after approve/reject; runs headlessly
 ```
 
-The supervisor runs in a background PTY session - you can attach to it with `/attach <name>` to observe or interact. The executor runs headlessly; HQ captures its output in a log file. HQ watches state transitions and spawns the right agent at the right time.
+All agents run headlessly — HQ captures their output in log files accessible via `/attach <name>`. HQ watches state transitions and spawns the right agent at the right time.
 
 State is shared through `.ferrus/` on disk — plain text files agents read and write via their tools. If an agent crashes and restarts, it picks up exactly where it left off.
 
@@ -39,7 +39,7 @@ ferrus register --supervisor claude-code --executor codex  # write agent configs
 ferrus                                                   # enter HQ
 ```
 
-Then type `/plan` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
+Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
 
 ---
 
@@ -49,11 +49,14 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 
 | Command | Description |
 |---|---|
-| `/plan` | Spawn supervisor to plan a task, then drive executor→review loop automatically |
-| `/execute` | Manually start or resume the executor (escape hatch if automatic spawning failed) |
-| `/review` | Manually spawn supervisor in review mode (if automatic spawning failed or HQ restarted) |
+| `/plan` | Free-form planning session with the supervisor (no task created) |
+| `/task` | Define a task with the supervisor, then run the executor→review loop automatically |
+| `/supervisor` | Open an interactive supervisor session (no initial prompt) |
+| `/executor` | Open an interactive executor session (no initial prompt) |
+| `/resume` | Manually resume the executor headlessly (escape hatch if automatic spawning failed) |
+| `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and session log paths |
-| `/attach <name>` | Attach terminal to a PTY session (supervisor only; executor runs headlessly) |
+| `/attach <name>` | Show log path for a running headless agent |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
@@ -61,11 +64,6 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 | `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
-> **Detach key:** While attached to a session, press **Ctrl+]** then **d** to detach without killing the agent.
-> - Ctrl+] is the prefix — pressing it alone does nothing visible (it's held until the next key).
-> - Ctrl+] d → detach and return to HQ.
-> - Ctrl+] Ctrl+] → send a literal Ctrl+] to the agent (escape hatch).
-> - Ctrl+] is ASCII 0x1D (GS) — not intercepted by tmux, readline, or Claude Code.
 > **Quit HQ:** Press **Ctrl+C** twice within 2 seconds to exit. The first press shows a yellow "Press Ctrl+C again to exit" prompt in the status line; the second confirms and exits. The prompt clears automatically after 2 seconds if you change your mind.
 
 > **TUI features:** Type `/` to see autocomplete suggestions; press **Tab** / **Shift+Tab** to navigate and **Enter** to accept. A status line at the bottom of the terminal shows the current task state and retry/cycle counters in real time.
@@ -73,10 +71,10 @@ Then type `/plan` — a supervisor spawns, you describe what you want, and the f
 ### How the loop works
 
 ```
-ferrus> /plan
-  └─ supervisor spawns (background PTY) → you describe the task → supervisor calls create_task
+ferrus> /task
+  └─ supervisor spawns (headless) → you describe the task → supervisor calls create_task
        └─ executor spawns (headless) → implements → check → submit
-            └─ reviewer spawns (background PTY) → reads submission → approve or reject
+            └─ reviewer spawns (headless) → reads submission → approve or reject
                  ├─ approved → Complete
                  └─ rejected → executor re-spawns with feedback
 ```
@@ -120,9 +118,9 @@ Scaffolds ferrus in the current project (default `--agents-path .agents`):
   - `<agents-path>/skills/ferrus-executor/SKILL.md` + `ROLE.md`
 - Adds `.ferrus/` to `.gitignore`
 
-### `ferrus serve [--role supervisor|executor]`
+### `ferrus serve [--role supervisor|executor] [--agent-name <name>] [--agent-index <n>]`
 
-Starts the agent coordination server on stdio. Agents load this as an MCP server. Pass `--role` to expose only the tools for that role:
+Starts the agent coordination server on stdio. Agents load this as an MCP server. `--agent-name` and `--agent-index` are embedded in the `claimed_by` field (e.g. `"executor:codex:1"`). Pass `--role` to expose only the tools for that role:
 
 | `--role` | Tools exposed |
 |---|---|

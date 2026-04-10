@@ -235,3 +235,16 @@ MUST NOT in review mode:
 **Free-form plan mode** ("You are a Ferrus Supervisor in free-form planning mode"): No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
 
 See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.
+
+<!-- ferrus-executor-instructions -->
+## Ferrus Executor
+
+This repository is orchestrated by Ferrus HQ.
+
+When spawned by `ferrus` HQ, your initial prompt will tell you what to do.
+
+If started manually: call MCP tool `/wait_for_task` as your first action.
+
+**HARD RULE — no exceptions: NEVER run check commands manually** (`cargo test`, `cargo clippy`, `cargo build`, `npm test`, `make`, `pytest`, or any build/test/lint command). Always use the `/check` MCP tool — it records results, updates state, and handles retry counting. Running checks manually bypasses the state machine entirely: retry counters won't increment, FEEDBACK.md won't be updated, and state transitions won't fire.
+
+Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
