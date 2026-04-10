@@ -23,7 +23,7 @@ Licensed under Apache 2.0.
                    │ exits after approve/reject; runs headlessly
 ```
 
-All agents run headlessly — HQ captures their output in log files accessible via `/attach <name>`. HQ watches state transitions and spawns the right agent at the right time.
+HQ watches state transitions and spawns the right agent at the right time.
 
 State is shared through `.ferrus/` on disk — plain text files agents read and write via their tools. If an agent crashes and restarts, it picks up exactly where it left off.
 
@@ -72,7 +72,7 @@ Then type `/task` — a supervisor spawns, you describe what you want, and the f
 
 ```
 ferrus> /task
-  └─ supervisor spawns (headless) → you describe the task → supervisor calls create_task
+  └─ supervisor spawns → you describe the task → supervisor calls create_task
        └─ executor spawns (headless) → implements → check → submit
             └─ reviewer spawns (headless) → reads submission → approve or reject
                  ├─ approved → Complete
