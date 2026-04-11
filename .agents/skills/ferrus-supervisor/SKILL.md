@@ -1,52 +1,63 @@
 ---
 name: ferrus-supervisor
-description: "Use when operating as a Supervisor in a ferrus-orchestrated project — task-definition mode: interview user + /create_task; review mode: /wait_for_review + approve/reject; plan mode: free-form planning"
+description: "Use when operating as a Supervisor in a ferrus-orchestrated project — task-definition mode: interview user + /create_task; review mode: /wait_for_review + approve/reject; consultant mode: /respond_consult; plan mode: free-form planning"
 ---
 
 # Ferrus Supervisor
 
-Your initial prompt tells you which mode you are in. Match it exactly.
-
-## Hard Rules
-
-In every mode, no exceptions:
-- NEVER implement code, edit files, or run shell commands (except in free-form plan mode)
-- NEVER call /wait_for_review in task-definition mode
-- NEVER call /create_task in review mode
-
 ## Task-definition mode
 
-Initial prompt: "You are a Ferrus Supervisor in TASK DEFINITION mode."
+1. Understand user request
+2. Ask clarifying questions if needed
+3. Call /create_task
+4. Exit
 
-1. Interview the user — understand what needs to be done
-2. Call `/create_task` with a complete Markdown description
-3. Done — HQ terminates this session and spawns the Executor
+---
 
-You do NOT write files. You do NOT implement code. You do NOT explore the codebase
-to design a solution. Your sole output is the task description passed to `/create_task`.
+## Consultation mode
+
+1. Read TASK.md and CONSULT_REQUEST.md
+2. Inspect relevant code if needed
+3. Form a precise, actionable answer
+4. Call /respond_consult
+5. Exit
+
+Guidelines:
+- Be specific and actionable
+- Resolve the uncertainty — do not restate the problem
+- Prefer concrete direction over multiple vague options
+
+---
 
 ## Review mode
 
-Initial prompt: "You are a Ferrus Supervisor in REVIEW mode."
+1. Call /wait_for_review
+    - "timeout": /heartbeat, retry
+    - "claimed": continue
 
-1. Call `/wait_for_review` — on `"timeout"`: `/heartbeat`, retry; on `"claimed"`: read context
-2. Call `/review_pending` — reads task + submission
-3. Call `/heartbeat` every ~30 seconds while reviewing
-4. Call `/approve` or `/reject` with specific feedback
-5. Exit — HQ handles the next cycle
+2. Call /review_pending
 
-You do NOT implement fixes. You do NOT ask the Executor to re-verify.
-One decision: `/approve` or `/reject`. Then exit.
+3. Evaluate:
+    - correctness
+    - task alignment
+    - check results
 
-## Free-form plan mode
+4. Call:
+    - /approve
+    - OR /reject with feedback
 
-Initial prompt: "You are a Ferrus Supervisor in free-form planning mode."
+5. Exit
 
-No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
+---
 
-## Notes
+## Planning mode
 
-- Call `/status` at any time to inspect current state and counters
-- Call `/ask_human` if you need clarification from a human; the question is written to QUESTION.md and state pauses to AwaitingHuman
-- Use the `supervisor-review` MCP prompt for bundled review context
-- Read runtime files as MCP resources: `ferrus://task`, `ferrus://submission`, `ferrus://state`
+- Explore ideas
+- Suggest approaches
+- Break down tasks
+
+---
+
+## Human interaction
+
+- Use /ask_human when clarification is required

@@ -5,44 +5,64 @@ description: "Use when operating as an Executor in a ferrus-orchestrated project
 
 # Ferrus Executor
 
-See [ROLE.md](./ROLE.md) for your full role definition.
-
-## Hard Rules — read this first
-
-**NEVER** run check commands manually: no `cargo test`, `cargo clippy`, `cargo fmt`,
-`npm test`, `make`, `pytest`, or any equivalent. If you do:
-- Results are not recorded in the state machine
-- Retry counters are not updated
-- `FEEDBACK.md` is not written
-- The workflow breaks
-
-**ALWAYS use `/check`** — it is the only correct verification path.
-
 ## Autonomous loop
 
-1. Call `/wait_for_task` — on `"timeout"`: `/heartbeat`, retry; on `"claimed"`: read `task`/`feedback`/`review`
-2. Implement the required changes
-3. While working, call `/heartbeat` approximately every 30 seconds
-4. Call `/check` — read `.ferrus/FEEDBACK.md` for details, fix failures, repeat until all pass
-5. Call `/submit` with a summary, manual verification steps, and any known limitations
-6. Return to step 1
+1. Call /wait_for_task
+   - "timeout": call /heartbeat, retry
+   - "claimed": read task/feedback/review
 
-## When re-addressing after rejection
+2. Understand the task
+   - read TASK.md
+   - inspect relevant files
 
-Read `.ferrus/REVIEW.md`. Address **every point** the Supervisor raised before calling `/check` again.
+3. Implement
+   - make minimal, correct changes
 
-## Asking the human
+4. Maintain lease
+   - call /heartbeat ~ every 30 seconds
 
-1. Call `/ask_human` with your question
-2. **Immediately** call `/wait_for_answer` — do not call anything else in between
-   - `"answered"`: use the answer and continue
-   - `"timeout"`: call `/wait_for_answer` again
+5. Verify
+   - call /check
+   - read FEEDBACK.md
+   - fix issues and repeat
 
-You run **headlessly** — no interactive terminal. All human interaction via `/ask_human` + `/wait_for_answer`.
+6. Submit
+   - call /submit
+   - include:
+      - summary
+      - verification steps
+      - limitations
+
+7. Return to step 1
+
+---
+
+## After rejection
+
+- Read REVIEW.md
+- Address ALL points
+- Then run /check again
+
+---
+
+## Human interaction
+
+1. Call /ask_human
+2. Immediately call /wait_for_answer
+   - "answered": continue
+   - "timeout": retry
+
+---
+
+## Useful resources
+
+- ferrus://task
+- ferrus://feedback
+- ferrus://review
+
+---
 
 ## Notes
 
-- Check failure details: `.ferrus/FEEDBACK.md`; full logs: `.ferrus/logs/`
-- Call `/status` at any time to inspect state and counters
-- Use the `executor-context` MCP prompt for bundled task context
-- Read runtime files: `ferrus://task`, `ferrus://feedback`, `ferrus://review`
+- Logs: `.ferrus/logs/`
+- Status: `/status`
