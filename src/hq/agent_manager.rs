@@ -4,6 +4,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{ExecutorAgent, SupervisorAgent};
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
@@ -76,11 +77,10 @@ const EXECUTOR_RESUME_PROMPT: &str =
 /// Returns the exit code.
 pub async fn spawn_and_wait_executor(
     agent: &dyn ExecutorAgent,
-    role: &str,
     name: &str,
     prompt: Option<&str>,
 ) -> Result<i32> {
-    spawn_and_wait(agent.name(), agent.spawn(prompt), role, name).await
+    spawn_and_wait(agent.name(), agent.spawn(prompt), ROLE_EXECUTOR, name).await
 }
 
 #[allow(dead_code)]
@@ -88,11 +88,10 @@ pub async fn spawn_and_wait_executor(
 /// Returns the exit code.
 pub async fn spawn_and_wait_supervisor(
     agent: &dyn SupervisorAgent,
-    role: &str,
     name: &str,
     prompt: Option<&str>,
 ) -> Result<i32> {
-    spawn_and_wait(agent.name(), agent.spawn(prompt), role, name).await
+    spawn_and_wait(agent.name(), agent.spawn(prompt), ROLE_SUPERVISOR, name).await
 }
 
 async fn spawn_and_wait(
@@ -235,20 +234,18 @@ impl Drop for HeadlessHandle {
 
 pub async fn spawn_headless_executor(
     agent: &dyn ExecutorAgent,
-    role: &str,
     name: &str,
     prompt: &str,
 ) -> Result<HeadlessHandle> {
-    spawn_headless(agent.name(), agent.spawn_headlessly(prompt), role, name).await
+    spawn_headless(agent.name(), agent.spawn_headlessly(prompt), ROLE_EXECUTOR, name).await
 }
 
 pub async fn spawn_headless_supervisor(
     agent: &dyn SupervisorAgent,
-    role: &str,
     name: &str,
     prompt: &str,
 ) -> Result<HeadlessHandle> {
-    spawn_headless(agent.name(), agent.spawn_headlessly(prompt), role, name).await
+    spawn_headless(agent.name(), agent.spawn_headlessly(prompt), ROLE_SUPERVISOR, name).await
 }
 
 async fn spawn_headless(
@@ -272,6 +269,27 @@ async fn spawn_headless(
     let log_stderr = log_file
         .try_clone()
         .context("Failed to clone log file handle")?;
+
+    // On Linux: ask the kernel to send SIGTERM to this child whenever ferrus exits,
+    // even if ferrus is killed with SIGKILL and cannot run its own cleanup.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: prctl(PR_SET_PDEATHSIG) is async-signal-safe and operates only on
+        // the calling process. It is safe to call between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(
+                    libc::PR_SET_PDEATHSIG,
+                    libc::SIGTERM as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                );
+                Ok(())
+            });
+        }
+    }
 
     let mut child = command
         .stdin(Stdio::null())

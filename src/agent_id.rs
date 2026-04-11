@@ -1,3 +1,5 @@
+pub const ROLE_SUPERVISOR: &str = "supervisor";
+pub const ROLE_EXECUTOR: &str = "executor";
 pub const DEFAULT_AGENT_INDEX: u32 = 1;
 
 pub fn agent_id(role: &str, vendor: &str, index: u32) -> String {

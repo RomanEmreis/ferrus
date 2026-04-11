@@ -26,8 +26,10 @@ impl Display {
 
     pub fn status(&self, watched: &WatchedState, agents: &AgentsRegistry) {
         let mut snapshot = StatusSnapshot::from_watched_state(watched);
-        snapshot.supervisor_status = agent_status_label(agents, "supervisor").to_string();
-        snapshot.executor_status = agent_status_label(agents, "executor").to_string();
+        snapshot.supervisor_status =
+            agent_status_label(agents, crate::agent_id::ROLE_SUPERVISOR).to_string();
+        snapshot.executor_status =
+            agent_status_label(agents, crate::agent_id::ROLE_EXECUTOR).to_string();
         let _ = self.0.send(UiMessage::StatusUpdate(snapshot));
 
         let state = &watched.state;

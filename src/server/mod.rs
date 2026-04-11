@@ -4,7 +4,7 @@ use anyhow::Result;
 use neva::types::ToolSchema;
 use neva::App;
 
-use crate::agent_id::agent_id;
+use crate::agent_id::{agent_id, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 
 mod prompts;
 mod resources;
@@ -18,8 +18,8 @@ pub enum Role {
 
 pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> Result<()> {
     let role_str = match &role {
-        Some(Role::Supervisor) => "supervisor",
-        Some(Role::Executor) => "executor",
+        Some(Role::Supervisor) => ROLE_SUPERVISOR,
+        Some(Role::Executor) => ROLE_EXECUTOR,
         None => "agent",
     };
     let agent_id = Arc::new(agent_id(role_str, &agent_name, agent_index));

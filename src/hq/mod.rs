@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::watch;
 
-use crate::agent_id::{agent_id, DEFAULT_AGENT_INDEX};
+use crate::agent_id::{agent_id, DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{ExecutorAgent, SupervisorAgent};
 use crate::config::{Config, HqConfig};
 use crate::state::{
@@ -322,7 +322,7 @@ impl HqContext {
             .executor
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?;
-        Ok(agent_id("executor", executor.name(), DEFAULT_AGENT_INDEX))
+        Ok(agent_id(ROLE_EXECUTOR, executor.name(), DEFAULT_AGENT_INDEX))
     }
 
     fn supervisor_agent_id(&self) -> Result<String> {
@@ -331,7 +331,7 @@ impl HqContext {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?;
         Ok(agent_id(
-            "supervisor",
+            ROLE_SUPERVISOR,
             supervisor.name(),
             DEFAULT_AGENT_INDEX,
         ))
@@ -378,11 +378,7 @@ impl HqContext {
                     }
                 };
                 if let Err(err) = self
-                    .spawn_headless_executor(
-                        "executor",
-                        &executor_id,
-                        agent_manager::executor_prompt(),
-                    )
+                    .spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
                     .await
                 {
                     self.display
@@ -416,11 +412,7 @@ impl HqContext {
                     }
                 };
                 if let Err(err) = self
-                    .spawn_headless_supervisor(
-                        "supervisor",
-                        &supervisor_id,
-                        agent_manager::reviewer_prompt(),
-                    )
+                    .spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
                     .await
                 {
                     self.display
@@ -449,11 +441,7 @@ impl HqContext {
                     }
                 };
                 if let Err(err) = self
-                    .spawn_headless_executor(
-                        "executor",
-                        &executor_id,
-                        agent_manager::executor_prompt(),
-                    )
+                    .spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
                     .await
                 {
                     self.display
@@ -500,12 +488,7 @@ impl HqContext {
         }
     }
 
-    async fn spawn_headless_supervisor(
-        &mut self,
-        role: &str,
-        name: &str,
-        prompt: &str,
-    ) -> Result<()> {
+    async fn spawn_headless_supervisor(&mut self, name: &str, prompt: &str) -> Result<()> {
         let existing_is_alive = self
             .headless
             .get(name)
@@ -527,7 +510,7 @@ impl HqContext {
         self.display
             .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
         let handle =
-            agent_manager::spawn_headless_supervisor(agent.as_ref(), role, name, prompt).await?;
+            agent_manager::spawn_headless_supervisor(agent.as_ref(), name, prompt).await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -536,12 +519,7 @@ impl HqContext {
         Ok(())
     }
 
-    async fn spawn_headless_executor(
-        &mut self,
-        role: &str,
-        name: &str,
-        prompt: &str,
-    ) -> Result<()> {
+    async fn spawn_headless_executor(&mut self, name: &str, prompt: &str) -> Result<()> {
         let existing_is_alive = self
             .headless
             .get(name)
@@ -563,7 +541,7 @@ impl HqContext {
         self.display
             .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
         let handle =
-            agent_manager::spawn_headless_executor(agent.as_ref(), role, name, prompt).await?;
+            agent_manager::spawn_headless_executor(agent.as_ref(), name, prompt).await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -576,7 +554,7 @@ impl HqContext {
         if self
             .headless
             .iter()
-            .any(|(name, handle)| name.starts_with("executor") && handle.is_alive())
+            .any(|(name, handle)| name.starts_with(ROLE_EXECUTOR) && handle.is_alive())
         {
             self.display.info(
                 "An executor is already running — work is in progress. Plan a new task first with /plan.",
@@ -610,8 +588,7 @@ impl HqContext {
         };
 
         let executor_id = self.executor_agent_id()?;
-        self.spawn_headless_executor("executor", &executor_id, prompt)
-            .await
+        self.spawn_headless_executor(&executor_id, prompt).await
     }
 
     async fn review(&mut self) -> Result<()> {
@@ -625,12 +602,8 @@ impl HqContext {
 
         self.ensure_hq_config().await?;
         let supervisor_id = self.supervisor_agent_id()?;
-        self.spawn_headless_supervisor(
-            "supervisor",
-            &supervisor_id,
-            agent_manager::reviewer_prompt(),
-        )
-        .await
+        self.spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
+            .await
     }
 
     async fn reset(&mut self) -> Result<()> {
@@ -699,7 +672,6 @@ impl HqContext {
 
     async fn spawn_interactive_supervisor(
         &mut self,
-        role: &str,
         name: &str,
         prompt: Option<&str>,
     ) -> Result<()> {
@@ -729,7 +701,7 @@ impl HqContext {
         {
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
-                role: role.to_string(),
+                role: ROLE_SUPERVISOR.to_string(),
                 agent_type: agent.name().to_string(),
                 name: name.to_string(),
                 pid: child.id(),
@@ -756,7 +728,6 @@ impl HqContext {
 
     async fn spawn_interactive_executor(
         &mut self,
-        role: &str,
         name: &str,
         prompt: Option<&str>,
     ) -> Result<()> {
@@ -786,7 +757,7 @@ impl HqContext {
         {
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
-                role: role.to_string(),
+                role: ROLE_EXECUTOR.to_string(),
                 agent_type: agent.name().to_string(),
                 name: name.to_string(),
                 pid: child.id(),
@@ -826,7 +797,6 @@ impl HqContext {
 
         let supervisor_id = self.supervisor_agent_id()?;
         self.spawn_interactive_supervisor(
-            "supervisor",
             &supervisor_id,
             Some(agent_manager::supervisor_plan_prompt()),
         )
@@ -885,7 +855,7 @@ impl HqContext {
 
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
-                role: "supervisor".into(),
+                role: ROLE_SUPERVISOR.to_string(),
                 agent_type: supervisor.name().to_string(),
                 name: supervisor_id.clone(),
                 pid: child.id(),
@@ -927,12 +897,8 @@ impl HqContext {
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
             let executor_id = self.executor_agent_id()?;
-            self.spawn_headless_executor(
-                "executor",
-                &executor_id,
-                agent_manager::executor_prompt(),
-            )
-            .await?;
+            self.spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
+                .await?;
             self.display
                 .info("Executor running headlessly. State changes print automatically.");
         } else {
@@ -958,7 +924,7 @@ impl HqContext {
         ));
 
         let supervisor_id = self.supervisor_agent_id()?;
-        self.spawn_interactive_supervisor("supervisor", &supervisor_id, None)
+        self.spawn_interactive_supervisor(&supervisor_id, None)
             .await
     }
 
@@ -976,8 +942,7 @@ impl HqContext {
         ));
 
         let executor_id = self.executor_agent_id()?;
-        self.spawn_interactive_executor("executor", &executor_id, None)
-            .await
+        self.spawn_interactive_executor(&executor_id, None).await
     }
 
     /// Handle a raw-text answer from the user when state is AwaitingHuman.

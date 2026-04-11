@@ -327,7 +327,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "ferrus"
-version = "0.2.2-alpha.4"
+version = "0.2.2-alpha.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -657,9 +657,9 @@ dependencies = [
 
 [[package]]
 name = "neva"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2195be77bfade2e7219b30e3c0f8ca8cffbe79699c22e6c78fbae170ea1121d3"
+checksum = "9145643878f27210e3e46928b7405dd804fbbb23b793d97c5435fda4da6bcbfe"
 dependencies = [
  "base64",
  "bytes",

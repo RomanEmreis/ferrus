@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::agent_id::agent_id;
+use crate::agent_id::{agent_id, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{parse_executor_agent, parse_supervisor_agent, McpConfigEntry};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -22,10 +22,10 @@ impl Agent {
 
 pub async fn run(supervisor: Option<Agent>, executor: Option<Agent>) -> Result<()> {
     if let Some(agent) = &supervisor {
-        register_role("supervisor", agent).await?;
+        register_role(ROLE_SUPERVISOR, agent).await?;
     }
     if let Some(agent) = &executor {
-        register_role("executor", agent).await?;
+        register_role(ROLE_EXECUTOR, agent).await?;
     }
     Ok(())
 }
@@ -40,8 +40,8 @@ async fn register_role(role: &str, agent: &Agent) -> Result<()> {
 
 fn config_entry(role: &str, agent_name: &str, index: u32) -> Result<McpConfigEntry> {
     match role {
-        "supervisor" => parse_supervisor_agent(agent_name)?.mcp_config_entry(role, index),
-        "executor" => parse_executor_agent(agent_name)?.mcp_config_entry(role, index),
+        ROLE_SUPERVISOR => parse_supervisor_agent(agent_name)?.mcp_config_entry(role, index),
+        ROLE_EXECUTOR => parse_executor_agent(agent_name)?.mcp_config_entry(role, index),
         other => anyhow::bail!("Unsupported role '{other}'"),
     }
 }
@@ -181,7 +181,7 @@ async fn append_to_agents_md(role: &str) -> Result<()> {
 
 fn agents_md_section(role: &str, marker: &str) -> String {
     match role {
-        "executor" => format!(
+        ROLE_EXECUTOR => format!(
             "\n{marker}\n\
              ## Ferrus Executor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
@@ -191,7 +191,7 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
-        "supervisor" => format!(
+        ROLE_SUPERVISOR => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
@@ -236,7 +236,7 @@ async fn append_to_claude_md(role: &str) -> Result<()> {
 
 fn claude_md_section(role: &str, marker: &str) -> String {
     match role {
-        "executor" => format!(
+        ROLE_EXECUTOR => format!(
             "\n{marker}\n\
              ## Ferrus Executor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
@@ -246,7 +246,7 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
-        "supervisor" => format!(
+        ROLE_SUPERVISOR => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
