@@ -50,6 +50,7 @@ pub async fn run(debug: bool) -> Result<()> {
         msg_rx,
         cmd_tx,
         state_rx.clone(),
+        debug,
         supervisor_type,
         executor_type,
         supervisor_version,

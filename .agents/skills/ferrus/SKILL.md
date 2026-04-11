@@ -1,6 +1,6 @@
 ---
 name: ferrus
-description: Use when working on a project that uses ferrus for AI agent orchestration — full tool reference, state machine, resources, prompts, and config
+description: "Use when working on a project that uses ferrus for AI agent orchestration — full tool reference, state machine, resources, prompts, and config"
 ---
 
 # Ferrus
@@ -16,6 +16,12 @@ ferrus is an MCP server that coordinates AI agents in a **Supervisor–Executor*
 
 Two separate `ferrus serve` processes run side-by-side (one per role), coordinating through `.ferrus/` on disk.
 
+Under HQ, agents are usually **one-shot sessions**:
+- Executor starts on `Idle → Executing`, claims work via `wait_for_task`, implements, runs `/check`, then `/submit`
+- HQ then terminates that Executor session and starts the Supervisor in review mode
+- If review is rejected, HQ terminates the reviewer and starts a fresh Executor session for `Addressing`
+- That new Executor begins again with `wait_for_task` and receives the latest feedback/review context
+
 ## State machine
 
 ```
@@ -24,13 +30,18 @@ Idle
        └─► Checking ← /check (Executor, pass)
              ├─► [FAIL, retries < max] Addressing → /check again
              ├─► [FAIL, retries ≥ max] Failed
+             ├─► Consultation ← /consult (Executor)
+             │     └─► (restore previous state) ← /wait_for_consult
              └─► Reviewing ← /submit (Executor)
                    ├─► [REJECT] Addressing → /check loop (retries reset)
                    │     └─► [cycles ≥ max] Failed
                    └─► Complete ← /approve (Supervisor)
 ```
 
-Any active state can pause to `AwaitingHuman` via `/ask_human`. `/answer` restores it.
+Any active Executor work state can pause to `Consultation` via `/consult` (executor then calls `/wait_for_consult`
+to block until the Supervisor responds via `/respond_consult`, which records `CONSULT_RESPONSE.md`).
+Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human` (executor then calls `/wait_for_answer`
+to block until the human responds). The human types their answer in the HQ terminal.
 `/reset` moves `Failed → Idle`.
 
 ## CLI
@@ -52,14 +63,13 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |
-| `/resume` | Resume the executor headlessly (escape hatch) |
+| `/resume` | Resume the executor headlessly; also recovers Consultation by relaunching both consultant and executor |
 | `/status` | Show task state, agent list, and session log paths |
 | `/attach <name>` | Show log path for a running headless agent |
 | `/stop` | Stop all running agent sessions |
 | `/reset` | Reset state to Idle (clears task files) |
 | `/init` | Initialize ferrus in the current directory |
 | `/register` | Register agent configs |
-| `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
 ## MCP tools
@@ -72,20 +82,22 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `review_pending` | Reviewing | Read task + submission context |
 | `approve` | Reviewing | Accept; moves to Complete |
 | `reject` | Reviewing | Reject with notes; moves to Addressing |
+| `respond_consult` | Consultation | Record the consultation response and let the Executor resume via `/wait_for_consult` |
 
 ### Executor
 | Tool | From state | Description |
 |---|---|---|
 | `wait_for_task` | — | Long-poll until Executing or Addressing |
 | `check` | Executing, Addressing | Run all configured checks |
+| `consult` | Executing, Addressing, Checking | Ask the Supervisor for guidance; moves to Consultation |
+| `wait_for_consult` | Consultation | Block until the Supervisor responds; restores previous state |
 | `submit` | Checking | Write submission notes; moves to Reviewing |
-| `wait_for_answer` | AwaitingHuman | Block until human responds; restores previous state |
+| `ask_human` | Executing, Addressing, Checking, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
+| `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 
 ### Shared
 | Tool | From state | Description |
 |---|---|---|
-| `ask_human` | any active | Write question to QUESTION.md; transitions to AwaitingHuman |
-| `answer` | AwaitingHuman | Provide answer; restores previous state |
 | `status` | any | Print current state and counters |
 | `reset` | Failed | Return to Idle |
 | `heartbeat` | any claimed | Renew lease; returns `{"status":"renewed"}` or `{"status":"error","code":"..."}` |
@@ -99,6 +111,9 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://consult_template` | Consultation request template (`CONSULT_TEMPLATE.md`) |
+| `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
+| `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
 
 ## MCP prompts
@@ -137,4 +152,7 @@ heartbeat_interval_secs = 30  # how often to call /heartbeat
 | `SUBMISSION.md` | Submission notes |
 | `QUESTION.md` | Pending human question |
 | `ANSWER.md` | Human answer |
+| `CONSULT_TEMPLATE.md` | Read-only consultation request template |
+| `CONSULT_REQUEST.md` | Pending supervisor consultation request |
+| `CONSULT_RESPONSE.md` | Supervisor consultation response |
 | `logs/check_<n>_<ts>.txt` | Full check output |

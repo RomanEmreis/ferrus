@@ -129,6 +129,7 @@ enum TranscriptKind {
 
 pub struct App {
     status: StatusSnapshot,
+    debug: bool,
     messages: Vec<TranscriptLine>,
     input: String,
     cursor_pos: usize,
@@ -150,6 +151,7 @@ impl App {
     fn new() -> Self {
         Self {
             status: StatusSnapshot::default(),
+            debug: false,
             messages: Vec::new(),
             input: String::new(),
             cursor_pos: 0,
@@ -422,10 +424,12 @@ struct TerminalUi {
     lower_lines: u16,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     mut msg_rx: mpsc::UnboundedReceiver<UiMessage>,
     cmd_tx: mpsc::UnboundedSender<String>,
     mut state_rx: watch::Receiver<Option<WatchedState>>,
+    debug: bool,
     supervisor_type: String,
     executor_type: String,
     supervisor_version: String,
@@ -441,6 +445,7 @@ pub async fn run_tui(
         executor_version,
     };
     let mut app = App::new();
+    app.debug = debug;
     app.status.directory = directory.clone();
     app.status.branch = branch.clone();
     if let Some(watched) = state_rx.borrow().clone() {
@@ -826,7 +831,14 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
     for line in &lower_lines {
         crlf(stdout)?;
         queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-        print_live_area_line(stdout, line, app.ctrl_c_pending, &app.status, width)?;
+        print_live_area_line(
+            stdout,
+            line,
+            app.ctrl_c_pending,
+            &app.status,
+            app.debug,
+            width,
+        )?;
     }
     queue!(
         stdout,
@@ -1148,6 +1160,7 @@ fn print_status_line(
     stdout: &mut Stdout,
     status: &StatusSnapshot,
     ctrl_c_pending: bool,
+    debug: bool,
     width: usize,
 ) -> Result<()> {
     let max_width = width.max(1);
@@ -1195,6 +1208,7 @@ fn print_status_line(
     segments.push((status.cycles.to_string(), Color::Grey));
 
     let mut remaining = max_width;
+    let mut left_width = 0;
     for (text, color) in segments {
         if remaining == 0 {
             break;
@@ -1207,7 +1221,9 @@ fn print_status_line(
             stdout,
             PrintStyledContent(style(visible.clone()).with(color))
         )?;
-        remaining = remaining.saturating_sub(visible.chars().count());
+        let visible_width = display_width(&visible);
+        left_width += visible_width;
+        remaining = remaining.saturating_sub(visible_width);
     }
 
     // When the executor is waiting for a human answer, show a prominent hint.
@@ -1223,6 +1239,9 @@ fn print_status_line(
                         .attribute(Attribute::Bold)
                 )
             )?;
+            let hint_width = display_width(&hint_text);
+            left_width += hint_width;
+            remaining = remaining.saturating_sub(hint_width);
         }
     } else if status.task_state == "Consultation" {
         let hint = "  ← consulting supervisor";
@@ -1232,7 +1251,21 @@ fn print_status_line(
                 stdout,
                 PrintStyledContent(style(hint_text.clone()).with(Color::Cyan))
             )?;
+            let hint_width = display_width(&hint_text);
+            left_width += hint_width;
+            remaining = remaining.saturating_sub(hint_width);
         }
+    }
+
+    if debug && remaining >= 7 {
+        let pad = max_width.saturating_sub(left_width + 5);
+        if pad > 0 {
+            queue!(stdout, Print(" ".repeat(pad)))?;
+        }
+        queue!(
+            stdout,
+            PrintStyledContent(style("debug").with(Color::DarkBlue))
+        )?;
     }
 
     Ok(())
@@ -1296,10 +1329,11 @@ fn print_live_area_line(
     line: &LiveAreaLine,
     ctrl_c_pending: bool,
     status: &StatusSnapshot,
+    debug: bool,
     width: usize,
 ) -> Result<()> {
     match line {
-        LiveAreaLine::Status => print_status_line(stdout, status, ctrl_c_pending, width),
+        LiveAreaLine::Status => print_status_line(stdout, status, ctrl_c_pending, debug, width),
         LiveAreaLine::Completion {
             selected,
             command,
@@ -1386,6 +1420,10 @@ fn terminal_width() -> u16 {
 
 fn truncate_to_width(text: &str, width: usize) -> String {
     text.chars().take(width).collect()
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().count()
 }
 
 fn history_path() -> PathBuf {

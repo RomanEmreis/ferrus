@@ -1,74 +1,58 @@
 ---
 name: ferrus-executor
-description: "Use when operating as an Executor in a ferrus-orchestrated project — autonomous loop: wait_for_task, implement, /check (NEVER manually), submit"
+description: "Use when operating as an Executor in a ferrus-orchestrated project — single-session flow: wait_for_task, implement, /check (NEVER manually), submit"
 ---
 
 # Ferrus Executor
 
-## Autonomous loop
+## Session lifecycle
 
-1. Call /wait_for_task
-   - "timeout": call /heartbeat, retry
-   - "claimed": read task/feedback/review
+Each Executor session is a single worker pass:
+
+1. Call `/wait_for_task` first
+   - `"claimed"`: use the returned task / feedback / review context
+   - `"timeout"`: retry only while the reported state is `Executing` or `Addressing`
 
 2. Understand the task
-   - read TASK.md
-   - inspect relevant files
+   - inspect the relevant repository files
+   - use `TASK.md`, `FEEDBACK.md`, and `REVIEW.md` only as supporting context, not as a substitute for Ferrus tool results
 
 3. Implement
-   - make minimal, correct changes
+   - make the smallest correct change set that satisfies the task
 
-4. Maintain lease
-   - call /heartbeat ~ every 30 seconds
+4. Maintain the lease
+   - call `/heartbeat` roughly every 30 seconds while you hold the task
 
-5. Verify
-   - call /check
-   - if checks fail: read FEEDBACK.md, fix issues, repeat
-   - if checks pass: immediately call /submit
+5. Escalate when blocked
+   - use `/consult`, then immediately `/wait_for_consult`, for technical or architectural uncertainty
+   - use `/ask_human`, then immediately `/wait_for_answer`, only for missing requirements or decisions a human must make
 
-6. Submit
-   - include:
-      - summary
-      - verification steps
-      - limitations
+6. Verify
+   - call `/check`
+   - if checks fail: read `FEEDBACK.md`, fix the issues, and call `/check` again
+   - if checks pass: immediately call `/submit`
 
-7. Return to step 1
+7. Submit and stop
+   - `/submit` must include summary, manual verification steps, and known limitations when relevant
+   - after `/submit`, this Executor session is done
+   - if review is rejected, HQ will start a fresh Executor session, and that new session must begin again with `/wait_for_task`
 
----
+## Hard rules
+
+- `/wait_for_task` is the required first step for a new Executor session
+- `/check` is the only valid verification mechanism; never run tests, builds, or linters manually
+- a green `/check` is not completion; the next action must be `/submit`
+- do not emulate Ferrus tools by editing `.ferrus/` files or manually advancing `STATE.json`
+- if a required Ferrus MCP tool is cancelled or unavailable, retry that tool; do not invent an on-disk fallback for task claiming, checking, or submitting
 
 ## After rejection
 
-- Read REVIEW.md
-- Address ALL points
-- Then run /check again
-
----
-
-## Human interaction
-
-1. Call /ask_human
-2. Immediately call /wait_for_answer
-   - "answered": continue
-   - "timeout": retry
-
----
-
-## Completion invariant
-
-Never stop after a successful /check.
-Your next action must be /submit.
-
----
+- the rejection is delivered to the next Executor session via `/wait_for_task`
+- address every point in `REVIEW.md`
+- rerun `/check`, then `/submit`
 
 ## Useful resources
 
-- ferrus://task
-- ferrus://feedback
-- ferrus://review
-
----
-
-## Notes
-
-- Logs: `.ferrus/logs/`
-- Status: `/status`
+- `ferrus://task`
+- `ferrus://feedback`
+- `ferrus://review`

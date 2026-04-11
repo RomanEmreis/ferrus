@@ -188,20 +188,24 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
              **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
-             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\n\
+             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\
+             Do not emulate Ferrus tools by editing `.ferrus/` files directly.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
         ROLE_SUPERVISOR => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
-             The Supervisor runs in one of two modes — check your initial prompt:\n\n\
-             **Plan mode** (\"You are in planning mode\"): Collaborate with the user to define the task, \
-             then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds. \
-             Do NOT call `/wait_for_review`.\n\n\
-             **Review mode** (\"You are in review mode\"): Call `/wait_for_review`, then `/review_pending`, \
-             then `/approve` or `/reject`. After deciding, you are done — exit.\n\n\
-             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.\n"
+             The Supervisor runs in multiple modes — check your initial prompt:\n\n\
+             **Task-definition mode** (\"You are a Ferrus Supervisor in TASK DEFINITION mode\"): \
+             collaborate with the user, then call `/create_task` and stop.\n\n\
+             **Review mode** (\"You are a Ferrus Supervisor in REVIEW mode\"): Call `/wait_for_review`, \
+             then `/review_pending`, then `/approve` or `/reject`. After deciding, exit.\n\n\
+             **Consultation mode** (\"You are a Ferrus Supervisor in CONSULTATION mode\"): \
+             investigate read-only, answer via `/respond_consult`, then exit.\n\n\
+             **Free-form planning mode** (\"You are a Ferrus Supervisor in free-form planning mode\"): \
+             explore and plan without forcing a state transition.\n\n\
+             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.\n"
         ),
         _ => format!(
             "\n{marker}\n\
@@ -243,20 +247,24 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
              **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
-             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\n\
+             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\
+             Do not emulate Ferrus tools by editing `.ferrus/` files directly.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
         ROLE_SUPERVISOR => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
-             The Supervisor runs in one of two modes — check your initial prompt:\n\n\
-             **Plan mode** (\"You are in planning mode\"): Collaborate with the user to define the task, \
-             then call `/create_task`. The HQ automatically terminates this session once `/create_task` succeeds. \
-             Do NOT call `/wait_for_review`.\n\n\
-             **Review mode** (\"You are in review mode\"): Call `/wait_for_review`, then `/review_pending`, \
-             then `/approve` or `/reject`. After deciding, you are done — exit.\n\n\
-             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full two-mode workflow.\n"
+             The Supervisor runs in multiple modes — check your initial prompt:\n\n\
+             **Task-definition mode** (\"You are a Ferrus Supervisor in TASK DEFINITION mode\"): \
+             collaborate with the user, then call `/create_task` and stop.\n\n\
+             **Review mode** (\"You are a Ferrus Supervisor in REVIEW mode\"): Call `/wait_for_review`, \
+             then `/review_pending`, then `/approve` or `/reject`. After deciding, exit.\n\n\
+             **Consultation mode** (\"You are a Ferrus Supervisor in CONSULTATION mode\"): \
+             investigate read-only, answer via `/respond_consult`, then exit.\n\n\
+             **Free-form planning mode** (\"You are a Ferrus Supervisor in free-form planning mode\"): \
+             explore and plan without forcing a state transition.\n\n\
+             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.\n"
         ),
         _ => format!(
             "\n{marker}\n\

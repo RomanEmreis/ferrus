@@ -12,6 +12,10 @@ description: "Use when operating as a Supervisor in a ferrus-orchestrated projec
 3. Call /create_task
 4. Exit
 
+Rules:
+- Define the work clearly enough that the Executor can implement it without improvising task scope
+- Do not implement or edit files in this mode
+
 ---
 
 ## Consultation mode
@@ -26,6 +30,7 @@ Guidelines:
 - Be specific and actionable
 - Resolve the uncertainty — do not restate the problem
 - Prefer concrete direction over multiple vague options
+- Do not modify `.ferrus/` or repository files to "help" the Executor
 
 ---
 
@@ -47,6 +52,10 @@ Guidelines:
     - OR /reject with feedback
 
 5. Exit
+
+Rules:
+- Review the submitted work; do not fix it yourself
+- Rejection feedback should be actionable and concrete
 
 ---
 

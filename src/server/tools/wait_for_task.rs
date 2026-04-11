@@ -21,7 +21,8 @@ pub const DESCRIPTION: &str =
      On timeout, inspect the state field — call wait_for_task again only if the state is \
      Executing or Addressing. \
      Times out after `wait_timeout_secs` (see ferrus.toml). \
-     Call this at startup and after each /submit to form an autonomous loop.";
+     Call this at the start of each Executor session; after a rejection, the next Executor \
+     session should call it again to claim the Addressing work.";
 
 pub async fn handler(agent_id: &str) -> Result<String, Error> {
     run(agent_id).await.map_err(tool_err)
