@@ -1,3 +1,8 @@
+//! Agent adapters for the supported supervisor and executor backends.
+//!
+//! This module centralizes how Ferrus names agent implementations, spawns them
+//! interactively or headlessly, and derives the MCP configuration used by HQ.
+
 mod claude;
 mod codex;
 
@@ -5,16 +10,42 @@ use anyhow::{bail, Context, Result};
 use std::process::Command;
 use std::sync::Arc;
 
+/// Describes one MCP server entry for a spawned Ferrus agent.
+///
+/// Ferrus writes these values into client-facing configuration so external
+/// tools can reconnect to the correct `ferrus serve` process for a given role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpConfigEntry {
+    /// Executable that should be launched for the MCP server.
     pub command: String,
+    /// Arguments passed to [`Self::command`] when the MCP server starts.
     pub args: Vec<String>,
 }
 
+/// Behavior required from a supervisor-capable agent implementation.
+///
+/// Supervisor agents support both interactive sessions for humans and
+/// headless sessions for HQ-managed workflows.
 pub trait SupervisorAgent: Send + Sync {
+    /// Returns the stable configuration name for this agent backend.
     fn name(&self) -> &'static str;
+
+    /// Builds the interactive command used when a human drives the supervisor.
     fn spawn(&self, prompt: Option<&str>) -> Command;
+
+    /// Builds the non-interactive command used when HQ drives the supervisor.
     fn spawn_headlessly(&self, prompt: &str) -> Command;
+
+    /// Builds the MCP configuration entry for this supervisor instance.
+    ///
+    /// The default implementation points the client back at the current
+    /// `ferrus` executable so HQ can serve tools through the repository's own
+    /// binary rather than relying on an external wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Ferrus cannot resolve the path to the current
+    /// executable.
     fn mcp_config_entry(&self, role: &str, index: u32) -> Result<McpConfigEntry> {
         Ok(McpConfigEntry {
             command: current_exe_string()?,
@@ -23,10 +54,26 @@ pub trait SupervisorAgent: Send + Sync {
     }
 }
 
+/// Behavior required from an executor-capable agent implementation.
+///
+/// Executors mirror the supervisor API because HQ may start them in interactive
+/// or headless modes depending on the orchestration context.
 pub trait ExecutorAgent: Send + Sync {
+    /// Returns the stable configuration name for this agent backend.
     fn name(&self) -> &'static str;
+
+    /// Builds the interactive command used when a human drives the executor.
     fn spawn(&self, prompt: Option<&str>) -> Command;
+
+    /// Builds the non-interactive command used when HQ drives the executor.
     fn spawn_headlessly(&self, prompt: &str) -> Command;
+
+    /// Builds the MCP configuration entry for this executor instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Ferrus cannot resolve the path to the current
+    /// executable.
     fn mcp_config_entry(&self, role: &str, index: u32) -> Result<McpConfigEntry> {
         Ok(McpConfigEntry {
             command: current_exe_string()?,
@@ -35,6 +82,12 @@ pub trait ExecutorAgent: Send + Sync {
     }
 }
 
+/// Parses a configured supervisor agent name into its concrete implementation.
+///
+/// # Errors
+///
+/// Returns an error that lists the supported agent names when `agent_type` does
+/// not match a registered supervisor backend.
 pub fn parse_supervisor_agent(agent_type: &str) -> Result<Arc<dyn SupervisorAgent>> {
     match agent_type {
         claude::NAME => Ok(Arc::new(claude::Supervisor)),
@@ -45,6 +98,12 @@ pub fn parse_supervisor_agent(agent_type: &str) -> Result<Arc<dyn SupervisorAgen
     }
 }
 
+/// Parses a configured executor agent name into its concrete implementation.
+///
+/// # Errors
+///
+/// Returns an error that lists the supported agent names when `agent_type` does
+/// not match a registered executor backend.
 pub fn parse_executor_agent(agent_type: &str) -> Result<Arc<dyn ExecutorAgent>> {
     match agent_type {
         claude::NAME => Ok(Arc::new(claude::Executor)),
@@ -56,6 +115,8 @@ pub fn parse_executor_agent(agent_type: &str) -> Result<Arc<dyn ExecutorAgent>> 
 }
 
 fn current_exe_string() -> Result<String> {
+    // Persist the exact executable path so generated MCP configs keep working
+    // even when Ferrus is launched outside of PATH-based resolution.
     Ok(std::env::current_exe()
         .context("Failed to resolve current executable path")?
         .to_string_lossy()
@@ -63,6 +124,8 @@ fn current_exe_string() -> Result<String> {
 }
 
 fn serve_args(role: &str, agent_name: &str, index: u32) -> Vec<String> {
+    // Ferrus reconnects to agents through `ferrus serve`, so every backend uses
+    // the same argument shape with role and agent identity baked in.
     vec![
         "serve".to_string(),
         "--role".to_string(),
@@ -77,6 +140,8 @@ fn serve_args(role: &str, agent_name: &str, index: u32) -> Vec<String> {
 fn positional_prompt_command(binary: &str, prompt: Option<&str>) -> Command {
     let mut cmd = Command::new(binary);
     if let Some(prompt) = prompt {
+        // Both supported CLIs accept an optional positional prompt for
+        // interactive startup, so we only append it when the caller supplied one.
         cmd.arg(prompt);
     }
     cmd
