@@ -19,7 +19,6 @@ use crate::state::{
 use commands::{parse_command, ShellCommand};
 use display::Display;
 use state_watcher::WatchedState;
-use std::time::Duration;
 
 pub async fn run(debug: bool) -> Result<()> {
     reconcile_agent_pids().await;
@@ -693,9 +692,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let mut std_cmd = agent.spawn(prompt);
-        agent_manager::configure_managed_command(&mut std_cmd);
-        let mut cmd = Command::from(std_cmd);
+        let mut cmd = Command::from(agent.spawn(prompt));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -747,9 +744,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let mut std_cmd = agent.spawn(prompt);
-        agent_manager::configure_managed_command(&mut std_cmd);
-        let mut cmd = Command::from(std_cmd);
+        let mut cmd = Command::from(agent.spawn(prompt));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -844,9 +839,8 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let mut std_cmd = supervisor.spawn(Some(agent_manager::supervisor_task_prompt()));
-        agent_manager::configure_managed_command(&mut std_cmd);
-        let mut cmd = Command::from(std_cmd);
+        let mut cmd =
+            Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -883,8 +877,13 @@ impl HqContext {
                     if let Ok(s) = store::read_state().await {
                         if s.state == TaskState::Executing {
                             self.display.info("Task created — stopping supervisor…");
-                            terminate_child_process_tree(&mut child).await;
+                            #[cfg(target_os = "linux")]
+                            let supervisor_descendants =
+                                collect_descendant_pids(child.id().unwrap_or_default());
+                            let _ = child.kill().await;
                             let _ = child.wait().await;
+                            #[cfg(target_os = "linux")]
+                            terminate_linux_pids(&supervisor_descendants);
                             break;
                         }
                     }
@@ -1064,20 +1063,65 @@ async fn reconcile_agent_pids() {
     }
 }
 
-async fn terminate_child_process_tree(child: &mut tokio::process::Child) {
-    let Some(pid) = child.id() else {
-        return;
-    };
+#[cfg(target_os = "linux")]
+fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
+    if root_pid == 0 {
+        return Vec::new();
+    }
 
-    agent_manager::signal_process(pid, libc::SIGTERM);
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut descendants = Vec::new();
+    let mut stack = vec![root_pid];
 
-    match child.try_wait() {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            agent_manager::signal_process(pid, libc::SIGKILL);
+    while let Some(parent) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            break;
+        };
+
+        for entry in entries.flatten() {
+            let Some(name) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if descendants.contains(&name) || name == root_pid {
+                continue;
+            }
+
+            if read_linux_ppid(name) == Some(parent) {
+                descendants.push(name);
+                stack.push(name);
+            }
         }
-        Err(_) => {}
+    }
+
+    descendants
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_ppid(pid: u32) -> Option<u32> {
+    let path = format!("/proc/{pid}/stat");
+    let stat = std::fs::read_to_string(path).ok()?;
+    let close = stat.rfind(')')?;
+    let rest = stat.get(close + 2..)?;
+    let mut fields = rest.split_whitespace();
+    let _state = fields.next()?;
+    fields.next()?.parse().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_linux_pids(pids: &[u32]) {
+    for &pid in pids {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    for &pid in pids {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
     }
 }
 

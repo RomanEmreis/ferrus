@@ -99,11 +99,10 @@ pub async fn spawn_and_wait_supervisor(
 
 async fn spawn_and_wait(
     agent_type: &str,
-    mut command: std::process::Command,
+    command: std::process::Command,
     role: &str,
     name: &str,
 ) -> Result<i32> {
-    configure_managed_command(&mut command);
     let mut cmd = Command::from(command);
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -185,7 +184,7 @@ pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
 }
 
-pub(crate) fn configure_managed_command(command: &mut StdCommand) {
+pub(crate) fn configure_headless_command(command: &mut StdCommand) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -358,7 +357,7 @@ async fn spawn_headless(
         Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
     };
 
-    configure_managed_command(&mut command);
+    configure_headless_command(&mut command);
 
     let mut child = command.spawn().with_context(|| {
         format!(
