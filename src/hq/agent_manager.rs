@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -189,6 +192,7 @@ pub struct HeadlessHandle {
     pub pid: u32,
     pub exit_rx: tokio::sync::watch::Receiver<Option<i32>>,
     wait_thread: Option<std::thread::JoinHandle<()>>,
+    output_threads: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl HeadlessHandle {
@@ -223,6 +227,9 @@ impl HeadlessHandle {
         if let Some(wait_thread) = self.wait_thread.take() {
             let _ = wait_thread.join();
         }
+        for output_thread in self.output_threads.drain(..) {
+            let _ = output_thread.join();
+        }
     }
 }
 
@@ -236,23 +243,43 @@ pub async fn spawn_headless_executor(
     agent: &dyn ExecutorAgent,
     name: &str,
     prompt: &str,
+    debug: bool,
 ) -> Result<HeadlessHandle> {
-    spawn_headless(agent.name(), agent.spawn_headlessly(prompt), ROLE_EXECUTOR, name).await
+    spawn_headless(
+        agent.name(),
+        agent.spawn_headlessly(prompt),
+        ROLE_EXECUTOR,
+        name,
+        prompt,
+        debug,
+    )
+    .await
 }
 
 pub async fn spawn_headless_supervisor(
     agent: &dyn SupervisorAgent,
     name: &str,
     prompt: &str,
+    debug: bool,
 ) -> Result<HeadlessHandle> {
-    spawn_headless(agent.name(), agent.spawn_headlessly(prompt), ROLE_SUPERVISOR, name).await
+    spawn_headless(
+        agent.name(),
+        agent.spawn_headlessly(prompt),
+        ROLE_SUPERVISOR,
+        name,
+        prompt,
+        debug,
+    )
+    .await
 }
 
 async fn spawn_headless(
     agent_type: &str,
-    mut command: std::process::Command,
+    mut command: StdCommand,
     role: &str,
     name: &str,
+    prompt: &str,
+    debug: bool,
 ) -> Result<HeadlessHandle> {
     let log_dir = std::path::Path::new(".ferrus/logs");
     tokio::fs::create_dir_all(log_dir)
@@ -266,9 +293,27 @@ async fn spawn_headless(
         .append(true)
         .open(&log_path)
         .with_context(|| format!("Failed to open log file {}", log_path.display()))?;
-    let log_stderr = log_file
-        .try_clone()
-        .context("Failed to clone log file handle")?;
+    if debug {
+        append_debug_agent_flags(agent_type, &mut command);
+    }
+    let command_summary = format_command(&command);
+
+    let logger = if debug {
+        let log_stderr = log_file
+            .try_clone()
+            .context("Failed to clone log file handle")?;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_stderr));
+        None
+    } else {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
+    };
 
     // On Linux: ask the kernel to send SIGTERM to this child whenever ferrus exits,
     // even if ferrus is killed with SIGKILL and cannot run its own cleanup.
@@ -291,19 +336,34 @@ async fn spawn_headless(
         }
     }
 
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_stderr))
-        .spawn()
-        .with_context(|| {
-            format!(
-                "Failed to spawn {} headlessly as {role}",
-                command.get_program().to_string_lossy()
-            )
-        })?;
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "Failed to spawn {} headlessly as {role}",
+            command.get_program().to_string_lossy()
+        )
+    })?;
 
     let pid = child.id();
+    let mut output_threads = Vec::new();
+
+    if let Some(logger) = logger.as_ref() {
+        let mut logger = logger.lock().expect("logger poisoned");
+        logger.log_event(
+            "Started",
+            format!("{name} ({role}, {agent_type}, pid {pid})"),
+        )?;
+        logger.log_event("Agent meta", &command_summary)?;
+        logger.log_initial_prompt(prompt)?;
+    }
+
+    if let Some(logger) = logger.as_ref() {
+        if let Some(stdout) = child.stdout.take() {
+            output_threads.push(spawn_slim_log_reader(stdout, Arc::clone(logger)));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            output_threads.push(spawn_slim_log_reader(stderr, Arc::clone(logger)));
+        }
+    }
 
     let mut reg = read_agents().await?;
     reg.upsert(AgentEntry {
@@ -317,8 +377,14 @@ async fn spawn_headless(
     write_agents(&reg).await?;
 
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<i32>>(None);
+    let wait_logger = logger.clone();
     let wait_thread = std::thread::spawn(move || {
         let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        if let Some(logger) = wait_logger {
+            let mut logger = logger.lock().expect("logger poisoned");
+            logger.flush_pending_error();
+            let _ = logger.log_event("Finished", format!("exit code {code}"));
+        }
         let _ = exit_tx.send(Some(code));
     });
     let name_owned = name.to_string();
@@ -343,7 +409,136 @@ async fn spawn_headless(
         pid,
         exit_rx,
         wait_thread: Some(wait_thread),
+        output_threads,
     })
+}
+
+fn append_debug_agent_flags(agent_type: &str, command: &mut StdCommand) {
+    match agent_type {
+        "claude-code" => {
+            command.arg("--verbose");
+        }
+        // `codex --help` and `codex exec --help` expose no verbose/debug flag.
+        "codex" => {}
+        _ => {}
+    }
+}
+
+fn format_command(command: &StdCommand) -> String {
+    let program = command.get_program().to_string_lossy();
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    format!("command={program} args={args:?}")
+}
+
+fn spawn_slim_log_reader<R>(
+    reader: R,
+    logger: Arc<Mutex<SlimLogger>>,
+) -> std::thread::JoinHandle<()>
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mut logger = logger.lock().expect("logger poisoned");
+            let _ = logger.handle_agent_output(&line);
+        }
+    })
+}
+
+struct SlimLogger {
+    file: File,
+    pending_failed_tool: Option<String>,
+}
+
+impl SlimLogger {
+    fn new(file: File) -> Self {
+        Self {
+            file,
+            pending_failed_tool: None,
+        }
+    }
+
+    fn handle_agent_output(&mut self, line: &str) -> std::io::Result<()> {
+        if let Some((tool, status)) = parse_mcp_tool_status(line) {
+            self.flush_pending_error();
+            match status {
+                ToolCallStatus::Started => {}
+                ToolCallStatus::Completed => {
+                    self.log_event("MCP tool call", format!("{tool} - ok"))?;
+                }
+                ToolCallStatus::Failed => {
+                    self.pending_failed_tool = Some(tool);
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(tool) = self.pending_failed_tool.take() {
+            return self.log_event("MCP tool call", format!("{tool} - error: {line}"));
+        }
+
+        Ok(())
+    }
+
+    fn log_initial_prompt(&mut self, prompt: &str) -> std::io::Result<()> {
+        if prompt.trim().is_empty() {
+            return self.log_event("Initial prompt", "(empty)");
+        }
+
+        for line in prompt.lines() {
+            self.log_event("Initial prompt", line)?;
+        }
+        Ok(())
+    }
+
+    fn flush_pending_error(&mut self) {
+        if let Some(tool) = self.pending_failed_tool.take() {
+            let _ = self.log_event("MCP tool call", format!("{tool} - error"));
+        }
+    }
+
+    fn log_event(&mut self, label: &str, value: impl AsRef<str>) -> std::io::Result<()> {
+        writeln!(
+            self.file,
+            "{} {label}: {}",
+            chrono::Utc::now().to_rfc3339(),
+            value.as_ref()
+        )?;
+        self.file.flush()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolCallStatus {
+    Started,
+    Completed,
+    Failed,
+}
+
+fn parse_mcp_tool_status(line: &str) -> Option<(String, ToolCallStatus)> {
+    let rest = line.strip_prefix("mcp: ")?;
+    let (tool_path, status_text) = if let Some(tool_path) = rest.strip_suffix(" started") {
+        (tool_path, ToolCallStatus::Started)
+    } else if let Some(tool_path) = rest.strip_suffix(" (completed)") {
+        (tool_path, ToolCallStatus::Completed)
+    } else if let Some(tool_path) = rest.strip_suffix(" (failed)") {
+        (tool_path, ToolCallStatus::Failed)
+    } else {
+        return None;
+    };
+
+    let tool = tool_path.rsplit('/').next()?.to_string();
+    Some((tool, status_text))
 }
 
 #[cfg(test)]
@@ -386,5 +581,41 @@ mod tests {
     #[test]
     fn executor_resume_prompt_forbids_manual_checks() {
         assert!(executor_resume_prompt().contains("NEVER"));
+    }
+
+    #[test]
+    fn parse_mcp_completed_status_extracts_tool_name() {
+        assert_eq!(
+            parse_mcp_tool_status("mcp: ferrus-executor-1/check (completed)"),
+            Some(("check".to_string(), ToolCallStatus::Completed))
+        );
+    }
+
+    #[test]
+    fn parse_mcp_failed_status_extracts_tool_name() {
+        assert_eq!(
+            parse_mcp_tool_status("mcp: filesystem/read_mcp_resource (failed)"),
+            Some(("read_mcp_resource".to_string(), ToolCallStatus::Failed))
+        );
+    }
+
+    #[test]
+    fn debug_mode_adds_verbose_flag_for_claude_only() {
+        let mut claude = StdCommand::new("claude");
+        append_debug_agent_flags("claude-code", &mut claude);
+        assert_eq!(
+            claude
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["--verbose".to_string()]
+        );
+
+        let mut codex = StdCommand::new("codex");
+        append_debug_agent_flags("codex", &mut codex);
+        assert!(
+            codex.get_args().next().is_none(),
+            "codex should not receive an extra debug flag when none is supported"
+        );
     }
 }

@@ -12,6 +12,7 @@ use clap::Parser;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
+    let debug = args.debug_enabled();
 
     if args.is_hq_mode() {
         init_hq_logger();
@@ -24,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    args.run().await
+    args.run(debug).await
 }
 
 fn init_hq_logger() {

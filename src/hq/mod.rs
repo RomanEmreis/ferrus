@@ -20,7 +20,7 @@ use commands::{parse_command, ShellCommand};
 use display::Display;
 use state_watcher::WatchedState;
 
-pub async fn run() -> Result<()> {
+pub async fn run(debug: bool) -> Result<()> {
     reconcile_agent_pids().await;
 
     let (state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
@@ -41,7 +41,7 @@ pub async fn run() -> Result<()> {
     let (supervisor_version, executor_version) = load_agent_versions(hq_config.as_ref()).await;
 
     let display = Display(msg_tx);
-    let mut ctx = HqContext::new(state_rx.clone(), display.clone());
+    let mut ctx = HqContext::new(state_rx.clone(), display.clone(), debug);
     if let Some(hq) = hq_config {
         ctx.set_hq_config(&hq);
     }
@@ -296,17 +296,19 @@ pub(crate) struct HqContext {
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
+    debug: bool,
     state_rx: watch::Receiver<Option<WatchedState>>,
     pub(crate) display: Display,
 }
 
 impl HqContext {
-    fn new(state_rx: watch::Receiver<Option<WatchedState>>, display: Display) -> Self {
+    fn new(state_rx: watch::Receiver<Option<WatchedState>>, display: Display, debug: bool) -> Self {
         Self {
             supervisor: None,
             executor: None,
             headless: std::collections::HashMap::new(),
             last_task_state: None,
+            debug,
             state_rx,
             display,
         }
@@ -322,7 +324,11 @@ impl HqContext {
             .executor
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?;
-        Ok(agent_id(ROLE_EXECUTOR, executor.name(), DEFAULT_AGENT_INDEX))
+        Ok(agent_id(
+            ROLE_EXECUTOR,
+            executor.name(),
+            DEFAULT_AGENT_INDEX,
+        ))
     }
 
     fn supervisor_agent_id(&self) -> Result<String> {
@@ -510,7 +516,8 @@ impl HqContext {
         self.display
             .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
         let handle =
-            agent_manager::spawn_headless_supervisor(agent.as_ref(), name, prompt).await?;
+            agent_manager::spawn_headless_supervisor(agent.as_ref(), name, prompt, self.debug)
+                .await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -541,7 +548,8 @@ impl HqContext {
         self.display
             .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
         let handle =
-            agent_manager::spawn_headless_executor(agent.as_ref(), name, prompt).await?;
+            agent_manager::spawn_headless_executor(agent.as_ref(), name, prompt, self.debug)
+                .await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -726,11 +734,7 @@ impl HqContext {
         Ok(())
     }
 
-    async fn spawn_interactive_executor(
-        &mut self,
-        name: &str,
-        prompt: Option<&str>,
-    ) -> Result<()> {
+    async fn spawn_interactive_executor(&mut self, name: &str, prompt: Option<&str>) -> Result<()> {
         use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
         use std::process::Stdio;
         use tokio::process::Command;

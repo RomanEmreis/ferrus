@@ -12,6 +12,10 @@ pub mod commands;
     version = env!("CARGO_PKG_VERSION"),
 )]
 pub struct Cli {
+    /// Enable debug mode regardless of build profile
+    #[arg(long, global = true)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -48,18 +52,22 @@ enum Commands {
 }
 
 impl Cli {
+    pub fn debug_enabled(&self) -> bool {
+        cfg!(debug_assertions) || self.debug
+    }
+
     pub fn is_hq_mode(&self) -> bool {
         self.command.is_none()
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(self, debug: bool) -> Result<()> {
         match self.command {
             Some(Commands::Init { agents_path }) => commands::init::run(agents_path).await,
             Some(Commands::Serve {
                 role,
                 agent_name,
                 agent_index,
-            }) => commands::serve::run(role, agent_name, agent_index).await,
+            }) => commands::serve::run(role, agent_name, agent_index, debug).await,
             Some(Commands::Register {
                 supervisor,
                 executor,
@@ -69,7 +77,7 @@ impl Cli {
                 }
                 commands::register::run(supervisor, executor).await
             }
-            None => crate::hq::run().await,
+            None => crate::hq::run(debug).await,
         }
     }
 }
