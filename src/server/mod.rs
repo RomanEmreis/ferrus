@@ -17,6 +17,8 @@ pub enum Role {
 }
 
 pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> Result<()> {
+    set_serve_process_name();
+
     let role_str = match &role {
         Some(Role::Supervisor) => ROLE_SUPERVISOR,
         Some(Role::Executor) => ROLE_EXECUTOR,
@@ -117,4 +119,12 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
 
     app.run().await;
     Ok(())
+}
+
+fn set_serve_process_name() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let name = b"ferrus-mcp\0";
+        let _ = libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
+    }
 }

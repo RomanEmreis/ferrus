@@ -242,24 +242,6 @@ pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
 }
 
-pub(crate) fn configure_interactive_command(command: &mut StdCommand) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        // SAFETY: these libc calls are async-signal-safe and operate only on the
-        // child process between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
-}
-
 pub(crate) fn configure_headless_command(command: &mut StdCommand) {
     #[cfg(unix)]
     {

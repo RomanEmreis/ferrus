@@ -284,55 +284,6 @@ impl ResumeGuard {
     }
 }
 
-struct TerminalGuard {
-    #[cfg(unix)]
-    original_pgid: libc::pid_t,
-    #[cfg(unix)]
-    signal_fd: libc::c_int,
-    #[cfg(unix)]
-    signal_handler: libc::sighandler_t,
-}
-
-impl TerminalGuard {
-    fn for_child(pid: u32) -> Self {
-        #[cfg(unix)]
-        unsafe {
-            let signal_fd = libc::STDIN_FILENO;
-            let original_pgid = libc::tcgetpgrp(signal_fd);
-            let signal_handler = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
-            let _ = libc::tcsetpgrp(signal_fd, pid as libc::pid_t);
-            Self {
-                original_pgid,
-                signal_fd,
-                signal_handler,
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = pid;
-            Self {}
-        }
-    }
-
-    fn restore(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            if self.original_pgid > 0 {
-                let _ = libc::tcsetpgrp(self.signal_fd, self.original_pgid);
-            }
-            let _ = libc::signal(libc::SIGTTOU, self.signal_handler);
-            self.original_pgid = -1;
-        }
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        self.restore();
-    }
-}
-
 impl Drop for ResumeGuard {
     fn drop(&mut self) {
         self.resume_now();
@@ -782,9 +733,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let mut std_cmd = agent.spawn(prompt);
-        agent_manager::configure_interactive_command(&mut std_cmd);
-        let mut cmd = Command::from(std_cmd);
+        let mut cmd = Command::from(agent.spawn(prompt));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -797,16 +746,13 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
-        let pid = child.id().unwrap_or_default();
-        let mut terminal = TerminalGuard::for_child(pid);
-
         {
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
                 role: ROLE_SUPERVISOR.to_string(),
                 agent_type: agent.name().to_string(),
                 name: name.to_string(),
-                pid: Some(pid),
+                pid: child.id(),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
             });
@@ -814,8 +760,6 @@ impl HqContext {
         }
 
         let _ = child.wait().await;
-        terminal.restore();
-        cleanup_process_group(pid);
         guard.resume_now();
 
         {
@@ -840,9 +784,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let mut std_cmd = agent.spawn(prompt);
-        agent_manager::configure_interactive_command(&mut std_cmd);
-        let mut cmd = Command::from(std_cmd);
+        let mut cmd = Command::from(agent.spawn(prompt));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -855,16 +797,13 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
-        let pid = child.id().unwrap_or_default();
-        let mut terminal = TerminalGuard::for_child(pid);
-
         {
             let mut reg = read_agents().await?;
             reg.upsert(AgentEntry {
                 role: ROLE_EXECUTOR.to_string(),
                 agent_type: agent.name().to_string(),
                 name: name.to_string(),
-                pid: Some(pid),
+                pid: child.id(),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
             });
@@ -872,8 +811,6 @@ impl HqContext {
         }
 
         let _ = child.wait().await;
-        terminal.restore();
-        cleanup_process_group(pid);
         guard.resume_now();
 
         {
@@ -941,9 +878,8 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let mut std_cmd = supervisor.spawn(Some(agent_manager::supervisor_task_prompt()));
-        agent_manager::configure_interactive_command(&mut std_cmd);
-        let mut cmd = Command::from(std_cmd);
+        let mut cmd =
+            Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -955,9 +891,6 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
-        let supervisor_pid = child.id().unwrap_or_default();
-        let mut terminal = TerminalGuard::for_child(supervisor_pid);
-
         let supervisor_id = self.supervisor_agent_id()?;
         {
             use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
@@ -967,7 +900,7 @@ impl HqContext {
                 role: ROLE_SUPERVISOR.to_string(),
                 agent_type: supervisor.name().to_string(),
                 name: supervisor_id.clone(),
-                pid: Some(supervisor_pid),
+                pid: child.id(),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
             });
@@ -981,7 +914,8 @@ impl HqContext {
                 _ = ticker.tick() => {
                     if let Ok(s) = store::read_state().await {
                         if s.state == TaskState::Executing {
-                            terminate_process_group(supervisor_pid);
+                            self.display.info("Task created — stopping supervisor…");
+                            let _ = child.kill().await;
                             let _ = child.wait().await;
                             break;
                         }
@@ -989,8 +923,6 @@ impl HqContext {
                 }
             }
         }
-        terminal.restore();
-        cleanup_process_group(supervisor_pid);
         resume_guard.resume_now();
 
         {
@@ -1162,22 +1094,6 @@ async fn reconcile_agent_pids() {
             let _ = write_agents(&reg).await;
         }
     }
-}
-
-fn terminate_process_group(pid: u32) {
-    if pid == 0 {
-        return;
-    }
-    agent_manager::signal_process(pid, libc::SIGTERM);
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    agent_manager::signal_process(pid, libc::SIGKILL);
-}
-
-fn cleanup_process_group(pid: u32) {
-    if pid == 0 {
-        return;
-    }
-    agent_manager::signal_process(pid, libc::SIGTERM);
 }
 
 #[allow(dead_code)]
