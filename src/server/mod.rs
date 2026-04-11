@@ -70,8 +70,6 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
             })
             .with_description(tools::wait_for_task::DESCRIPTION);
         }
-        app.map_tool("next_task", tools::next_task::handler)
-            .with_description(tools::next_task::DESCRIPTION);
         app.map_tool("check", tools::check::handler)
             .with_description(tools::check::DESCRIPTION);
         app.map_tool("consult", tools::consult::handler)

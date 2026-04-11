@@ -53,7 +53,7 @@ async fn run(notes: String) -> Result<String> {
             );
             Ok(format!(
                 "Submission rejected (cycle {}/{}).\n\n**Review notes written.** \
-                 State: Addressing. The Executor should call /next_task to see the notes \
+                 State: Addressing. The Executor should call /wait_for_task to see the notes \
                  and /check after fixes.",
                 state.review_cycles, config.limits.max_review_cycles,
             ))

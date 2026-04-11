@@ -129,7 +129,7 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 | `--role` | Tools exposed |
 |---|---|
 | `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
-| `executor` | `wait_for_task`, `next_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
 ### `ferrus register --supervisor <agent> --executor <agent>`

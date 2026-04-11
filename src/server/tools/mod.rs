@@ -5,7 +5,6 @@ pub mod check;
 pub mod consult;
 pub mod create_task;
 pub mod heartbeat;
-pub mod next_task;
 pub mod reject;
 pub mod reset;
 pub mod respond_consult;

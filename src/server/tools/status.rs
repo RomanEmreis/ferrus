@@ -15,7 +15,7 @@ pub async fn handler() -> Result<String, Error> {
 
 async fn run() -> Result<String> {
     let state = store::read_state().await?;
-    
+
     let mut lines = vec![
         format!("**State:** {:?}", state.state),
         format!("**Check retries:** {}", state.check_retries),

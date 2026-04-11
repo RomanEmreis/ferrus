@@ -77,7 +77,6 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Tool | From state | Description |
 |---|---|---|
 | `wait_for_task` | — | Long-poll until Executing or Addressing |
-| `next_task` | Executing, Addressing | Read task + feedback + review notes |
 | `check` | Executing, Addressing | Run all configured checks |
 | `submit` | Checking | Write submission notes; moves to Reviewing |
 | `wait_for_answer` | AwaitingHuman | Block until human responds; restores previous state |

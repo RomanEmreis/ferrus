@@ -43,5 +43,5 @@ async fn run(description: String) -> Result<String> {
     store::write_state(&state).await?;
 
     info!("Task created, state → Executing");
-    Ok("Task created. State: Executing. The Executor can now call /next_task.".to_string())
+    Ok("Task created. State: Executing. The Executor can now call /wait_for_task.".to_string())
 }

@@ -117,7 +117,6 @@ executor = "codex"          # agent for executor role: claude-code | codex
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `/wait_for_task` | Executing, Addressing | — | Long-poll until a task is ready, then return full task context |
-| `/next_task` | Executing, Addressing | — | Read task + any feedback/review notes |
 | `/check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
 | `/consult` | Executing, Addressing, Checking | Consultation | Ask the Supervisor for guidance; Executor should prefer this before `/ask_human` |
 | `/wait_for_consult` | Consultation | (previous state) | Block until the Supervisor responds; restores paused state and returns the answer |
