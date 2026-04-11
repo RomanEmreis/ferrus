@@ -99,10 +99,11 @@ pub async fn spawn_and_wait_supervisor(
 
 async fn spawn_and_wait(
     agent_type: &str,
-    command: std::process::Command,
+    mut command: std::process::Command,
     role: &str,
     name: &str,
 ) -> Result<i32> {
+    configure_managed_command(&mut command);
     let mut cmd = Command::from(command);
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -184,6 +185,51 @@ pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
 }
 
+pub(crate) fn configure_managed_command(command: &mut StdCommand) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // SAFETY: these libc calls are async-signal-safe and operate only on the
+        // child process between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    if libc::prctl(
+                        libc::PR_SET_PDEATHSIG,
+                        libc::SIGTERM as libc::c_ulong,
+                        0 as libc::c_ulong,
+                        0 as libc::c_ulong,
+                        0 as libc::c_ulong,
+                    ) != 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+
+                Ok(())
+            });
+        }
+    }
+}
+
+pub(crate) fn signal_process(pid: u32, signal: libc::c_int) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), signal);
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, signal);
+    }
+}
+
 /// Handle for a headless background executor process.
 pub struct HeadlessHandle {
     #[allow(dead_code)]
@@ -209,10 +255,7 @@ impl HeadlessHandle {
     }
 
     fn send_signal(&self, signal: libc::c_int) {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(self.pid as libc::pid_t, signal);
-        }
+        signal_process(self.pid, signal);
     }
 
     fn blocking_shutdown(&mut self, terminate: bool) {
@@ -315,26 +358,7 @@ async fn spawn_headless(
         Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
     };
 
-    // On Linux: ask the kernel to send SIGTERM to this child whenever ferrus exits,
-    // even if ferrus is killed with SIGKILL and cannot run its own cleanup.
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: prctl(PR_SET_PDEATHSIG) is async-signal-safe and operates only on
-        // the calling process. It is safe to call between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                libc::prctl(
-                    libc::PR_SET_PDEATHSIG,
-                    libc::SIGTERM as libc::c_ulong,
-                    0 as libc::c_ulong,
-                    0 as libc::c_ulong,
-                    0 as libc::c_ulong,
-                );
-                Ok(())
-            });
-        }
-    }
+    configure_managed_command(&mut command);
 
     let mut child = command.spawn().with_context(|| {
         format!(

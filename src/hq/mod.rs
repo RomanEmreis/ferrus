@@ -19,6 +19,7 @@ use crate::state::{
 use commands::{parse_command, ShellCommand};
 use display::Display;
 use state_watcher::WatchedState;
+use std::time::Duration;
 
 pub async fn run(debug: bool) -> Result<()> {
     reconcile_agent_pids().await;
@@ -692,7 +693,9 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(prompt));
+        let mut std_cmd = agent.spawn(prompt);
+        agent_manager::configure_managed_command(&mut std_cmd);
+        let mut cmd = Command::from(std_cmd);
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -744,7 +747,9 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(prompt));
+        let mut std_cmd = agent.spawn(prompt);
+        agent_manager::configure_managed_command(&mut std_cmd);
+        let mut cmd = Command::from(std_cmd);
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -839,8 +844,9 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let mut cmd =
-            Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
+        let mut std_cmd = supervisor.spawn(Some(agent_manager::supervisor_task_prompt()));
+        agent_manager::configure_managed_command(&mut std_cmd);
+        let mut cmd = Command::from(std_cmd);
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -877,7 +883,7 @@ impl HqContext {
                     if let Ok(s) = store::read_state().await {
                         if s.state == TaskState::Executing {
                             self.display.info("Task created — stopping supervisor…");
-                            let _ = child.kill().await;
+                            terminate_child_process_tree(&mut child).await;
                             let _ = child.wait().await;
                             break;
                         }
@@ -1055,6 +1061,23 @@ async fn reconcile_agent_pids() {
         if changed {
             let _ = write_agents(&reg).await;
         }
+    }
+}
+
+async fn terminate_child_process_tree(child: &mut tokio::process::Child) {
+    let Some(pid) = child.id() else {
+        return;
+    };
+
+    agent_manager::signal_process(pid, libc::SIGTERM);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            agent_manager::signal_process(pid, libc::SIGKILL);
+        }
+        Err(_) => {}
     }
 }
 
