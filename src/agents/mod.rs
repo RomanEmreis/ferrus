@@ -103,7 +103,9 @@ impl SupervisorAgent for ClaudeCodeSupervisor {
     }
 
     fn spawn_headlessly(&self, prompt: &str) -> Command {
-        claude_headless_command(prompt)
+        let mut cmd = Command::new("claude");
+        cmd.arg("-p").arg(prompt);
+        cmd
     }
 
     fn mcp_config_entry(&self, role: &str, index: u32) -> Result<McpConfigEntry> {

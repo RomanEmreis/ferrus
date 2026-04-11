@@ -41,8 +41,18 @@ impl AgentsRegistry {
     }
 
     #[allow(dead_code)]
+    pub fn by_name(&self, name: &str) -> Option<&AgentEntry> {
+        self.agents.iter().find(|a| a.name == name)
+    }
+
+    #[allow(dead_code)]
+    pub fn by_name_mut(&mut self, name: &str) -> Option<&mut AgentEntry> {
+        self.agents.iter_mut().find(|a| a.name == name)
+    }
+
+    #[allow(dead_code)]
     pub fn upsert(&mut self, entry: AgentEntry) {
-        if let Some(e) = self.by_role_mut(&entry.role) {
+        if let Some(e) = self.by_name_mut(&entry.name) {
             *e = entry;
         } else {
             self.agents.push(entry);
@@ -120,7 +130,7 @@ mod tests {
         let entry = AgentEntry {
             role: "executor".into(),
             agent_type: "codex".into(),
-            name: "executor-1".into(),
+            name: "executor:codex:1".into(),
             pid: Some(42),
             status: AgentStatus::Running,
             started_at: None,
@@ -143,12 +153,12 @@ mod tests {
     }
 
     #[test]
-    fn upsert_updates_existing_role() {
+    fn upsert_updates_existing_name() {
         let mut reg = AgentsRegistry::default();
         reg.upsert(AgentEntry {
             role: "executor".into(),
             agent_type: "codex".into(),
-            name: "e1".into(),
+            name: "executor:codex:1".into(),
             pid: Some(1),
             status: AgentStatus::Running,
             started_at: None,
@@ -156,7 +166,7 @@ mod tests {
         reg.upsert(AgentEntry {
             role: "executor".into(),
             agent_type: "codex".into(),
-            name: "e2".into(),
+            name: "executor:codex:1".into(),
             pid: Some(2),
             status: AgentStatus::Suspended,
             started_at: None,

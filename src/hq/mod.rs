@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::watch;
 
+use crate::agent_id::{agent_id, DEFAULT_AGENT_INDEX};
 use crate::agents::{ExecutorAgent, SupervisorAgent};
 use crate::config::{Config, HqConfig};
 use crate::state::{
@@ -316,6 +317,26 @@ impl HqContext {
         self.executor = Some(std::sync::Arc::clone(&hq.executor));
     }
 
+    fn executor_agent_id(&self) -> Result<String> {
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?;
+        Ok(agent_id("executor", executor.name(), DEFAULT_AGENT_INDEX))
+    }
+
+    fn supervisor_agent_id(&self) -> Result<String> {
+        let supervisor = self
+            .supervisor
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?;
+        Ok(agent_id(
+            "supervisor",
+            supervisor.name(),
+            DEFAULT_AGENT_INDEX,
+        ))
+    }
+
     async fn ensure_hq_config(&mut self) -> Result<()> {
         if self.supervisor.is_some() && self.executor.is_some() {
             return Ok(());
@@ -349,10 +370,17 @@ impl HqContext {
                         .error(format!("Failed to load executor config: {err}"));
                     return;
                 }
+                let executor_id = match self.executor_agent_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.display.error(err.to_string());
+                        return;
+                    }
+                };
                 if let Err(err) = self
                     .spawn_headless_executor(
                         "executor",
-                        "executor-1",
+                        &executor_id,
                         agent_manager::executor_prompt(),
                     )
                     .await
@@ -367,16 +395,30 @@ impl HqContext {
                 // If the supervisor later rejects, a new executor is spawned with the same
                 // agent_id, and both race to claim the Addressing task via the idempotent
                 // claim path — causing two executors to work concurrently.
-                self.shutdown_headless("executor-1").await;
+                let executor_id = match self.executor_agent_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.display.error(err.to_string());
+                        return;
+                    }
+                };
+                self.shutdown_headless(&executor_id).await;
                 if let Err(err) = self.ensure_hq_config().await {
                     self.display
                         .error(format!("Failed to load supervisor config: {err}"));
                     return;
                 }
+                let supervisor_id = match self.supervisor_agent_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.display.error(err.to_string());
+                        return;
+                    }
+                };
                 if let Err(err) = self
                     .spawn_headless_supervisor(
                         "supervisor",
-                        "supervisor-1",
+                        &supervisor_id,
                         agent_manager::reviewer_prompt(),
                     )
                     .await
@@ -386,16 +428,30 @@ impl HqContext {
                 }
             }
             TransitionAction::KillReviewerSpawnExecutor => {
-                self.shutdown_headless("supervisor-1").await;
+                let supervisor_id = match self.supervisor_agent_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.display.error(err.to_string());
+                        return;
+                    }
+                };
+                self.shutdown_headless(&supervisor_id).await;
                 if let Err(err) = self.ensure_hq_config().await {
                     self.display
                         .error(format!("Failed to load executor config: {err}"));
                     return;
                 }
+                let executor_id = match self.executor_agent_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.display.error(err.to_string());
+                        return;
+                    }
+                };
                 if let Err(err) = self
                     .spawn_headless_executor(
                         "executor",
-                        "executor-1",
+                        &executor_id,
                         agent_manager::executor_prompt(),
                     )
                     .await
@@ -405,15 +461,23 @@ impl HqContext {
                 }
             }
             TransitionAction::TaskComplete => {
-                for name in ["executor-1", "supervisor-1"] {
-                    self.shutdown_headless(name).await;
+                let agent_ids = [
+                    self.executor_agent_id().ok(),
+                    self.supervisor_agent_id().ok(),
+                ];
+                for name in agent_ids.into_iter().flatten() {
+                    self.shutdown_headless(&name).await;
                 }
                 self.display
                     .info("Task complete! Use /plan to start a new task.");
             }
             TransitionAction::TaskFailed => {
-                for name in ["executor-1", "supervisor-1"] {
-                    self.shutdown_headless(name).await;
+                let agent_ids = [
+                    self.executor_agent_id().ok(),
+                    self.supervisor_agent_id().ok(),
+                ];
+                for name in agent_ids.into_iter().flatten() {
+                    self.shutdown_headless(&name).await;
                 }
                 self.display
                     .info("Task failed. Use /status for details, /reset to try again.");
@@ -545,7 +609,8 @@ impl HqContext {
             agent_manager::executor_prompt()
         };
 
-        self.spawn_headless_executor("executor", "executor-1", prompt)
+        let executor_id = self.executor_agent_id()?;
+        self.spawn_headless_executor("executor", &executor_id, prompt)
             .await
     }
 
@@ -559,9 +624,10 @@ impl HqContext {
         }
 
         self.ensure_hq_config().await?;
+        let supervisor_id = self.supervisor_agent_id()?;
         self.spawn_headless_supervisor(
             "supervisor",
-            "supervisor-1",
+            &supervisor_id,
             agent_manager::reviewer_prompt(),
         )
         .await
@@ -588,11 +654,9 @@ impl HqContext {
         self.shutdown_all_headless().await;
 
         let mut reg = agents::read_agents().await?;
-        for role in ["executor", "supervisor"] {
-            if let Some(entry) = reg.by_role_mut(role) {
-                entry.pid = None;
-                entry.status = agents::AgentStatus::Suspended;
-            }
+        for entry in &mut reg.agents {
+            entry.pid = None;
+            entry.status = agents::AgentStatus::Suspended;
         }
         agents::write_agents(&reg).await?;
 
@@ -623,11 +687,9 @@ impl HqContext {
         self.shutdown_all_headless().await;
 
         let mut reg = agents::read_agents().await?;
-        for role in ["executor", "supervisor"] {
-            if let Some(entry) = reg.by_role_mut(role) {
-                entry.pid = None;
-                entry.status = agents::AgentStatus::Suspended;
-            }
+        for entry in &mut reg.agents {
+            entry.pid = None;
+            entry.status = agents::AgentStatus::Suspended;
         }
         agents::write_agents(&reg).await?;
 
@@ -682,7 +744,7 @@ impl HqContext {
 
         {
             let mut reg = read_agents().await?;
-            if let Some(e) = reg.by_role_mut(role) {
+            if let Some(e) = reg.by_name_mut(name) {
                 e.pid = None;
                 e.status = AgentStatus::Suspended;
             }
@@ -739,7 +801,7 @@ impl HqContext {
 
         {
             let mut reg = read_agents().await?;
-            if let Some(e) = reg.by_role_mut(role) {
+            if let Some(e) = reg.by_name_mut(name) {
                 e.pid = None;
                 e.status = AgentStatus::Suspended;
             }
@@ -762,9 +824,10 @@ impl HqContext {
             agent.name()
         ));
 
+        let supervisor_id = self.supervisor_agent_id()?;
         self.spawn_interactive_supervisor(
             "supervisor",
-            "supervisor-1",
+            &supervisor_id,
             Some(agent_manager::supervisor_plan_prompt()),
         )
         .await
@@ -816,6 +879,7 @@ impl HqContext {
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
 
+        let supervisor_id = self.supervisor_agent_id()?;
         {
             use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
@@ -823,7 +887,7 @@ impl HqContext {
             reg.upsert(AgentEntry {
                 role: "supervisor".into(),
                 agent_type: supervisor.name().to_string(),
-                name: "supervisor-1".into(),
+                name: supervisor_id.clone(),
                 pid: child.id(),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
@@ -853,7 +917,7 @@ impl HqContext {
             use agents::{read_agents, write_agents, AgentStatus};
 
             let mut reg = read_agents().await?;
-            if let Some(entry) = reg.by_role_mut("supervisor") {
+            if let Some(entry) = reg.by_name_mut(&supervisor_id) {
                 entry.pid = None;
                 entry.status = AgentStatus::Suspended;
             }
@@ -862,9 +926,10 @@ impl HqContext {
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
+            let executor_id = self.executor_agent_id()?;
             self.spawn_headless_executor(
                 "executor",
-                "executor-1",
+                &executor_id,
                 agent_manager::executor_prompt(),
             )
             .await?;
@@ -892,7 +957,8 @@ impl HqContext {
             agent.name()
         ));
 
-        self.spawn_interactive_supervisor("supervisor", "supervisor-1", None)
+        let supervisor_id = self.supervisor_agent_id()?;
+        self.spawn_interactive_supervisor("supervisor", &supervisor_id, None)
             .await
     }
 
@@ -909,7 +975,8 @@ impl HqContext {
             agent.name()
         ));
 
-        self.spawn_interactive_executor("executor", "executor-1", None)
+        let executor_id = self.executor_agent_id()?;
+        self.spawn_interactive_executor("executor", &executor_id, None)
             .await
     }
 
@@ -935,14 +1002,14 @@ impl HqContext {
         // Fallback: if the agent has exited, /wait_for_answer will never poll again.
         // Restore state directly so the user can relaunch the agent manually.
         let agent_alive = self
-            .headless
-            .get("executor-1")
-            .map(|h| h.is_alive())
+            .executor_agent_id()
+            .ok()
+            .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
             .unwrap_or(false)
             || self
-                .headless
-                .get("supervisor-1")
-                .map(|h| h.is_alive())
+                .supervisor_agent_id()
+                .ok()
+                .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
                 .unwrap_or(false);
 
         if !agent_alive {

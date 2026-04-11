@@ -1,3 +1,4 @@
+mod agent_id;
 mod agents;
 mod checks;
 mod cli;

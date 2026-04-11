@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::agent_id::agent_id;
 use crate::agents::{parse_executor_agent, parse_supervisor_agent, McpConfigEntry};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -76,7 +77,10 @@ async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
             "args": entry.args,
         }),
     );
-    println!("Registered {key} in .mcp.json (agent_id will be \"{role}:{agent_name}:{index}\")");
+    println!(
+        "Registered {key} in .mcp.json (agent_id will be \"{}\")",
+        agent_id(role, agent_name, index)
+    );
 
     let content = serde_json::to_string_pretty(&root)?;
     tokio::fs::write(path, content).await?;
@@ -142,7 +146,8 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
     );
     mcp_servers.insert(key.clone(), toml::Value::Table(entry));
     println!(
-        "Registered {key} in .codex/config.toml (agent_id will be \"{role}:{agent_name}:{index}\")"
+        "Registered {key} in .codex/config.toml (agent_id will be \"{}\")",
+        agent_id(role, agent_name, index)
     );
 
     let content = toml::to_string_pretty(&table)?;

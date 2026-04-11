@@ -150,9 +150,9 @@ mod tests {
         }
     }
     #[test]
-    fn attach_parses_hyphenated_name() {
-        match parse_command("/attach executor-1").unwrap() {
-            ShellCommand::Attach { name } => assert_eq!(name, "executor-1"),
+    fn attach_parses_structured_name() {
+        match parse_command("/attach executor:codex:1").unwrap() {
+            ShellCommand::Attach { name } => assert_eq!(name, "executor:codex:1"),
             _ => panic!("expected Attach"),
         }
     }

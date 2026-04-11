@@ -124,7 +124,7 @@ async fn spawn_and_wait(
 
     let pid = child.id();
     let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_role_mut(role) {
+    if let Some(e) = reg.by_name_mut(name) {
         e.pid = pid;
     }
     write_agents(&reg).await?;
@@ -135,7 +135,7 @@ async fn spawn_and_wait(
         .with_context(|| format!("{program} process error"))?;
 
     let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_role_mut(role) {
+    if let Some(e) = reg.by_name_mut(name) {
         e.pid = None;
         e.status = AgentStatus::Suspended;
     }
@@ -303,7 +303,7 @@ async fn spawn_headless(
         let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
         let _ = exit_tx.send(Some(code));
     });
-    let role_owned = role.to_string();
+    let name_owned = name.to_string();
     let mut registry_exit_rx = exit_rx.clone();
     tokio::spawn(async move {
         if registry_exit_rx.changed().await.is_err() {
@@ -311,7 +311,7 @@ async fn spawn_headless(
         }
 
         if let Ok(mut reg) = read_agents().await {
-            if let Some(e) = reg.by_role_mut(&role_owned) {
+            if let Some(e) = reg.by_name_mut(&name_owned) {
                 e.pid = None;
                 e.status = AgentStatus::Suspended;
             }

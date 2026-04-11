@@ -4,6 +4,8 @@ use anyhow::Result;
 use neva::types::ToolSchema;
 use neva::App;
 
+use crate::agent_id::agent_id;
+
 mod prompts;
 mod resources;
 mod tools;
@@ -20,7 +22,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         Some(Role::Executor) => "executor",
         None => "agent",
     };
-    let agent_id = Arc::new(format!("{role_str}:{agent_name}:{agent_index}"));
+    let agent_id = Arc::new(agent_id(role_str, &agent_name, agent_index));
 
     let mut app = App::new().with_options(|opt| {
         opt.with_stdio()
