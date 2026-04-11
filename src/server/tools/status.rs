@@ -15,15 +15,9 @@ pub async fn handler() -> Result<String, Error> {
 
 async fn run() -> Result<String> {
     let state = store::read_state().await?;
-    let state_label = match state.state {
-        crate::state::machine::TaskState::Consultation => {
-            "Consultation (consulting supervisor...)".to_string()
-        }
-        _ => format!("{:?}", state.state),
-    };
-
+    
     let mut lines = vec![
-        format!("**State:** {state_label}"),
+        format!("**State:** {:?}", state.state),
         format!("**Check retries:** {}", state.check_retries),
         format!("**Review cycles:** {}", state.review_cycles),
     ];
