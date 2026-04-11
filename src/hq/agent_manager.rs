@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 
 use crate::agents::{ExecutorAgent, SupervisorAgent};
@@ -188,6 +189,7 @@ pub struct HeadlessHandle {
     pub log_path: PathBuf,
     pub pid: u32,
     pub exit_rx: tokio::sync::watch::Receiver<Option<i32>>,
+    wait_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl HeadlessHandle {
@@ -195,11 +197,39 @@ impl HeadlessHandle {
         self.exit_rx.borrow().is_none()
     }
 
-    pub fn kill(&self) {
+    pub async fn terminate(mut self) {
+        let _ = tokio::task::spawn_blocking(move || self.blocking_shutdown(true)).await;
+    }
+
+    pub async fn reap(mut self) {
+        let _ = tokio::task::spawn_blocking(move || self.blocking_shutdown(false)).await;
+    }
+
+    fn send_signal(&self, signal: libc::c_int) {
         #[cfg(unix)]
         unsafe {
-            libc::kill(self.pid as libc::pid_t, libc::SIGTERM);
+            libc::kill(self.pid as libc::pid_t, signal);
         }
+    }
+
+    fn blocking_shutdown(&mut self, terminate: bool) {
+        if terminate && self.is_alive() {
+            self.send_signal(libc::SIGTERM);
+            std::thread::sleep(Duration::from_millis(250));
+            if self.is_alive() {
+                self.send_signal(libc::SIGKILL);
+            }
+        }
+
+        if let Some(wait_thread) = self.wait_thread.take() {
+            let _ = wait_thread.join();
+        }
+    }
+}
+
+impl Drop for HeadlessHandle {
+    fn drop(&mut self) {
+        self.blocking_shutdown(true);
     }
 }
 
@@ -223,7 +253,7 @@ pub async fn spawn_headless_supervisor(
 
 async fn spawn_headless(
     agent_type: &str,
-    command: std::process::Command,
+    mut command: std::process::Command,
     role: &str,
     name: &str,
 ) -> Result<HeadlessHandle> {
@@ -243,17 +273,19 @@ async fn spawn_headless(
         .try_clone()
         .context("Failed to clone log file handle")?;
 
-    let mut cmd = Command::from(command);
-    cmd.stdin(Stdio::null())
+    let mut child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_stderr));
-
-    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-    let mut child = cmd
+        .stderr(Stdio::from(log_stderr))
         .spawn()
-        .with_context(|| format!("Failed to spawn {program} headlessly as {role}"))?;
+        .with_context(|| {
+            format!(
+                "Failed to spawn {} headlessly as {role}",
+                command.get_program().to_string_lossy()
+            )
+        })?;
 
-    let pid = child.id().unwrap_or(0);
+    let pid = child.id();
 
     let mut reg = read_agents().await?;
     reg.upsert(AgentEntry {
@@ -267,14 +299,16 @@ async fn spawn_headless(
     write_agents(&reg).await?;
 
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<i32>>(None);
-    let role_owned = role.to_string();
-    tokio::spawn(async move {
-        let code = child
-            .wait()
-            .await
-            .map(|s| s.code().unwrap_or(-1))
-            .unwrap_or(-1);
+    let wait_thread = std::thread::spawn(move || {
+        let code = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
         let _ = exit_tx.send(Some(code));
+    });
+    let role_owned = role.to_string();
+    let mut registry_exit_rx = exit_rx.clone();
+    tokio::spawn(async move {
+        if registry_exit_rx.changed().await.is_err() {
+            return;
+        }
 
         if let Ok(mut reg) = read_agents().await {
             if let Some(e) = reg.by_role_mut(&role_owned) {
@@ -290,6 +324,7 @@ async fn spawn_headless(
         log_path,
         pid,
         exit_rx,
+        wait_thread: Some(wait_thread),
     })
 }
 

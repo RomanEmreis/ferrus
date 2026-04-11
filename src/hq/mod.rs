@@ -55,7 +55,8 @@ pub async fn run() -> Result<()> {
         executor_version,
     ));
 
-    loop {
+    let mut tui_finished = false;
+    let loop_result: Result<()> = loop {
         tokio::select! {
             changed = ctx.state_rx.changed() => {
                 if changed.is_ok() {
@@ -71,7 +72,7 @@ pub async fn run() -> Result<()> {
                         ctx.last_task_state = Some(watched.state.state.clone());
                     }
                 } else {
-                    break;
+                    break Ok(());
                 }
             }
             maybe_cmd = cmd_rx.recv() => {
@@ -83,28 +84,37 @@ pub async fn run() -> Result<()> {
                         }
                         if line == "/quit" {
                             ctx.display.info("Bye.");
-                            break;
+                            break Ok(());
                         }
                         if let Err(err) = dispatch(line, &mut ctx).await {
                             ctx.display.error(err.to_string());
                         }
                     }
-                    None => break,
+                    None => break Ok(()),
                 }
             }
             result = &mut tui_task => {
-                return result?;
+                tui_finished = true;
+                break match result {
+                    Ok(inner) => inner,
+                    Err(err) => Err(err.into()),
+                };
             }
+        }
+    };
+
+    ctx.shutdown_all_headless().await;
+
+    drop(ctx);
+    if !tui_finished {
+        match tui_task.await {
+            Ok(result) => result?,
+            Err(err) if err.is_cancelled() => {}
+            Err(err) => return Err(err.into()),
         }
     }
 
-    drop(ctx);
-    match tui_task.await {
-        Ok(result) => result?,
-        Err(err) if err.is_cancelled() => {}
-        Err(err) => return Err(err.into()),
-    }
-
+    loop_result?;
     Ok(())
 }
 
@@ -357,9 +367,7 @@ impl HqContext {
                 // If the supervisor later rejects, a new executor is spawned with the same
                 // agent_id, and both race to claim the Addressing task via the idempotent
                 // claim path — causing two executors to work concurrently.
-                if let Some(handle) = self.headless.remove("executor-1") {
-                    handle.kill();
-                }
+                self.shutdown_headless("executor-1").await;
                 if let Err(err) = self.ensure_hq_config().await {
                     self.display
                         .error(format!("Failed to load supervisor config: {err}"));
@@ -378,9 +386,7 @@ impl HqContext {
                 }
             }
             TransitionAction::KillReviewerSpawnExecutor => {
-                if let Some(handle) = self.headless.remove("supervisor-1") {
-                    handle.kill();
-                }
+                self.shutdown_headless("supervisor-1").await;
                 if let Err(err) = self.ensure_hq_config().await {
                     self.display
                         .error(format!("Failed to load executor config: {err}"));
@@ -400,18 +406,14 @@ impl HqContext {
             }
             TransitionAction::TaskComplete => {
                 for name in ["executor-1", "supervisor-1"] {
-                    if let Some(handle) = self.headless.remove(name) {
-                        handle.kill();
-                    }
+                    self.shutdown_headless(name).await;
                 }
                 self.display
                     .info("Task complete! Use /plan to start a new task.");
             }
             TransitionAction::TaskFailed => {
                 for name in ["executor-1", "supervisor-1"] {
-                    if let Some(handle) = self.headless.remove(name) {
-                        handle.kill();
-                    }
+                    self.shutdown_headless(name).await;
                 }
                 self.display
                     .info("Task failed. Use /status for details, /reset to try again.");
@@ -440,13 +442,17 @@ impl HqContext {
         name: &str,
         prompt: &str,
     ) -> Result<()> {
-        if let Some(existing) = self.headless.get(name) {
-            if existing.is_alive() {
-                self.display
-                    .info(format!("{name} already running headlessly."));
-                return Ok(());
-            }
-            self.headless.remove(name);
+        let existing_is_alive = self
+            .headless
+            .get(name)
+            .map(agent_manager::HeadlessHandle::is_alive);
+        if existing_is_alive == Some(true) {
+            self.display
+                .info(format!("{name} already running headlessly."));
+            return Ok(());
+        }
+        if existing_is_alive == Some(false) {
+            self.reap_headless(name).await;
         }
 
         let agent = std::sync::Arc::clone(
@@ -472,13 +478,17 @@ impl HqContext {
         name: &str,
         prompt: &str,
     ) -> Result<()> {
-        if let Some(existing) = self.headless.get(name) {
-            if existing.is_alive() {
-                self.display
-                    .info(format!("{name} already running headlessly."));
-                return Ok(());
-            }
-            self.headless.remove(name);
+        let existing_is_alive = self
+            .headless
+            .get(name)
+            .map(agent_manager::HeadlessHandle::is_alive);
+        if existing_is_alive == Some(true) {
+            self.display
+                .info(format!("{name} already running headlessly."));
+            return Ok(());
+        }
+        if existing_is_alive == Some(false) {
+            self.reap_headless(name).await;
         }
 
         let agent = std::sync::Arc::clone(
@@ -575,9 +585,7 @@ impl HqContext {
             }
         }
 
-        for (_, handle) in self.headless.drain() {
-            handle.kill();
-        }
+        self.shutdown_all_headless().await;
 
         let mut reg = agents::read_agents().await?;
         for role in ["executor", "supervisor"] {
@@ -612,9 +620,7 @@ impl HqContext {
             return Ok(());
         }
 
-        for (_, handle) in self.headless.drain() {
-            handle.kill();
-        }
+        self.shutdown_all_headless().await;
 
         let mut reg = agents::read_agents().await?;
         for role in ["executor", "supervisor"] {
@@ -956,6 +962,25 @@ impl HqContext {
             }
         }
         Ok(())
+    }
+
+    async fn shutdown_headless(&mut self, name: &str) {
+        if let Some(handle) = self.headless.remove(name) {
+            handle.terminate().await;
+        }
+    }
+
+    async fn reap_headless(&mut self, name: &str) {
+        if let Some(handle) = self.headless.remove(name) {
+            handle.reap().await;
+        }
+    }
+
+    async fn shutdown_all_headless(&mut self) {
+        let handles: Vec<_> = self.headless.drain().map(|(_, handle)| handle).collect();
+        for handle in handles {
+            handle.terminate().await;
+        }
     }
 }
 
