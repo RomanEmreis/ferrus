@@ -7,6 +7,7 @@ pub enum TaskState {
     Idle,
     Executing,
     Checking,
+    Consultation,
     Reviewing,
     Addressing,
     Complete,
@@ -205,6 +206,39 @@ impl StateData {
         Ok(())
     }
 
+    /// `Executing | Addressing | Checking → Consultation`. Called by `/consult`.
+    ///
+    /// Returns the paused state so the caller can log it.
+    pub fn consult(&mut self) -> Result<TaskState, TransitionError> {
+        match self.state {
+            TaskState::Executing | TaskState::Addressing | TaskState::Checking => {
+                let paused = self.state.clone();
+                self.paused_state = Some(paused.clone());
+                self.state = TaskState::Consultation;
+                Ok(paused)
+            }
+            _ => Err(TransitionError::InvalidTransition {
+                action: "consult",
+                state: self.state.clone(),
+            }),
+        }
+    }
+
+    /// `Consultation → paused_state`. Called by `/wait_for_consult`.
+    ///
+    /// Returns the restored state so the caller can log it.
+    pub fn finish_consult(&mut self) -> Result<TaskState, TransitionError> {
+        if self.state != TaskState::Consultation {
+            return Err(TransitionError::InvalidTransition {
+                action: "wait_for_consult",
+                state: self.state.clone(),
+            });
+        }
+        let resumed = self.paused_state.take().unwrap_or(TaskState::Idle);
+        self.state = resumed.clone();
+        Ok(resumed)
+    }
+
     /// `Reviewing → Complete`. Called by Supervisor via `/approve`.
     pub fn approve(&mut self) -> Result<(), TransitionError> {
         if self.state != TaskState::Reviewing {
@@ -255,6 +289,7 @@ impl StateData {
             TaskState::Executing
             | TaskState::Addressing
             | TaskState::Checking
+            | TaskState::Consultation
             | TaskState::Reviewing => {
                 let paused = self.state.clone();
                 self.paused_state = Some(paused.clone());
@@ -421,6 +456,21 @@ mod tests {
     }
 
     #[test]
+    fn consult_round_trip_restores_previous_state() {
+        let mut s = state_in(TaskState::Checking);
+
+        let paused = s.consult().unwrap();
+        assert_eq!(paused, TaskState::Checking);
+        assert_eq!(s.state, TaskState::Consultation);
+        assert_eq!(s.paused_state, Some(TaskState::Checking));
+
+        let resumed = s.finish_consult().unwrap();
+        assert_eq!(resumed, TaskState::Checking);
+        assert_eq!(s.state, TaskState::Checking);
+        assert!(s.paused_state.is_none());
+    }
+
+    #[test]
     fn lease_helpers_claimed() {
         use chrono::Duration;
         let mut s = StateData::default();
@@ -536,6 +586,7 @@ mod tests {
             TaskState::Executing,
             TaskState::Addressing,
             TaskState::Checking,
+            TaskState::Consultation,
             TaskState::Reviewing,
         ] {
             let mut s = state_in(state.clone());
@@ -574,6 +625,7 @@ mod tests {
             TaskState::Executing,
             TaskState::Addressing,
             TaskState::Checking,
+            TaskState::Consultation,
             TaskState::Reviewing,
         ] {
             let mut s = state_in(TaskState::AwaitingHuman);

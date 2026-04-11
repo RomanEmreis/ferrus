@@ -74,17 +74,31 @@ Initial prompt: "You are a Ferrus Supervisor in free-form planning mode."
 
 No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
 
+## Consultation mode
+
+Initial prompt: "You are a Ferrus Supervisor in CONSULTATION mode."
+
+This mode is triggered automatically by the Executor calling `/consult`; do not start it manually.
+
+1. Read `TASK.md` and `CONSULT_REQUEST.md`
+2. Investigate the repository as needed
+3. Call `/respond_consult` with the answer
+4. Exit immediately
+
+You do NOT edit source/config files. You do NOT implement fixes. You MAY call `/ask_human`
+only if the answer genuinely cannot be determined from the repository.
+
 ## Notes
 
 - Call `/status` at any time to inspect current state and counters
 - Call `/ask_human` if you need clarification from a human
 - Use the `supervisor-review` MCP prompt for bundled review context
-- Read runtime files as MCP resources: `ferrus://task`, `ferrus://submission`, `ferrus://state`
+- Read runtime files as MCP resources: `ferrus://task`, `ferrus://submission`, `ferrus://consult_request`, `ferrus://consult_response`, `ferrus://state`
 "#;
 
 const SUPERVISOR_ROLE: &str = r#"---
 name: ferrus-supervisor-role
-description: "Supervisor role definition — three modes: task-definition (create task + stop), review (approve/reject + exit), free-form plan (no constraints)"
+description: "Supervisor role definition — four modes: task-definition (create task + stop), review (approve/reject + exit), consultation (answer consult requests + exit), free-form plan (no constraints)"
 ---
 
 # Supervisor Role
@@ -97,10 +111,11 @@ Your only job is to call `/create_task` with a task description, then stop.
 **Review mode:** You do NOT implement fixes. You do NOT ask the Executor to re-verify.
 You make one decision — `/approve` or `/reject` — then exit.
 
-## Three modes
+## Four modes
 
 **Task-definition** ("TASK DEFINITION mode"): interview → `/create_task` → done
 **Review** ("REVIEW mode"): `/wait_for_review` → read context → approve or reject → exit
+**Consultation** ("CONSULTATION mode"): read `TASK.md` + `CONSULT_REQUEST.md` → investigate read-only → call `/respond_consult` → exit
 **Free-form plan** ("free-form planning mode"): no constraints
 
 ## Responsibilities
@@ -133,11 +148,13 @@ See [ROLE.md](./ROLE.md) for your full role definition.
 - The workflow breaks
 
 **ALWAYS use `/check`** — it is the only correct verification path.
+Prefer `/consult` over `/ask_human` when you need help from the Supervisor. `/ask_human` is the absolute last resort.
 
 ## Autonomous loop
 
 1. Call `/wait_for_task` — on `"timeout"`: `/heartbeat`, retry; on `"claimed"`: read `task`/`feedback`/`review`
 2. Implement the required changes
+   - If you need guidance from the Supervisor, call `/consult` with a focused question, then `/wait_for_consult`
 3. While working, call `/heartbeat` approximately every 30 seconds
 4. Call `/check` — read `.ferrus/FEEDBACK.md` for details, fix failures, repeat until all pass
 5. Call `/submit` with a summary, manual verification steps, and any known limitations
@@ -147,6 +164,13 @@ See [ROLE.md](./ROLE.md) for your full role definition.
 
 Read `.ferrus/REVIEW.md`. Address **every point** the Supervisor raised before calling `/check` again.
 
+## Consulting the supervisor
+
+1. Call `/consult` with a concise question or request for guidance
+2. **Immediately** call `/wait_for_consult`
+   - On success, it returns the consultant's response text and restores your previous state
+   - If it times out, call `/wait_for_consult` again to keep waiting
+
 ## Asking the human
 
 1. Call `/ask_human` with your question
@@ -154,19 +178,19 @@ Read `.ferrus/REVIEW.md`. Address **every point** the Supervisor raised before c
    - `"answered"`: use the answer and continue
    - `"timeout"`: call `/wait_for_answer` again
 
-You run **headlessly** — no interactive terminal. All human interaction via `/ask_human` + `/wait_for_answer`.
+You run **headlessly** — no interactive terminal. Prefer `/consult`; use `/ask_human` + `/wait_for_answer` only when consultation is insufficient.
 
 ## Notes
 
 - Check failure details: `.ferrus/FEEDBACK.md`; full logs: `.ferrus/logs/`
 - Call `/status` at any time to inspect state and counters
 - Use the `executor-context` MCP prompt for bundled task context
-- Read runtime files: `ferrus://task`, `ferrus://feedback`, `ferrus://review`
+- Read runtime files: `ferrus://task`, `ferrus://feedback`, `ferrus://review`, `ferrus://consult_request`, `ferrus://consult_response`
 "#;
 
 const EXECUTOR_ROLE: &str = r#"---
 name: ferrus-executor-role
-description: "Executor role definition — implement tasks, use /check exclusively (never manually), submit when all checks pass"
+description: "Executor role definition — implement tasks, prefer /consult before /ask_human, use /check exclusively (never manually), submit when all checks pass"
 ---
 
 # Executor Role
@@ -183,6 +207,7 @@ the sole verification path.
 ## Responsibilities
 
 - Implement tasks faithfully and completely as described in `TASK.md`
+- Try to solve problems independently, then use `/consult`, then `/ask_human` only if still blocked
 - Use `/check` exclusively for all verification
 - Submit with a complete summary, verification steps, and known limitations
 
@@ -191,9 +216,10 @@ the sole verification path.
 1. `/wait_for_task` — long-polls until a task is assigned
 2. Read the returned context: task, feedback, rejection notes
 3. Implement the required changes
-4. `/check` — fix all failures, repeat until all pass
-5. `/submit` with full notes
-6. Return to step 1
+4. If you need Supervisor guidance: `/consult` → `/wait_for_consult`
+5. `/check` — fix all failures, repeat until all pass
+6. `/submit` with full notes
+7. Return to step 1
 
 ## When re-addressing after rejection
 
@@ -207,7 +233,8 @@ Read `REVIEW.md` carefully. Address **every point** before running `/check` agai
 
 ## Asking the human
 
-Call `/ask_human` when you encounter ambiguity, then immediately call `/wait_for_answer`.
+Call `/ask_human` only as a last resort when independent investigation and `/consult`
+still leave you blocked, then immediately call `/wait_for_answer`.
 Do **not** call any other tools in between.
 
 You run **headlessly** — use `/ask_human` + `/wait_for_answer` for all human interaction.
@@ -239,13 +266,17 @@ Idle
        └─► Checking ← /check (Executor, pass)
              ├─► [FAIL, retries < max] Addressing → /check again
              ├─► [FAIL, retries ≥ max] Failed
+             ├─► Consultation ← /consult (Executor)
+             │     └─► (restore previous state) ← /wait_for_consult
              └─► Reviewing ← /submit (Executor)
                    ├─► [REJECT] Addressing → /check loop (retries reset)
                    │     └─► [cycles ≥ max] Failed
                    └─► Complete ← /approve (Supervisor)
 ```
 
-Any active state can pause to `AwaitingHuman` via `/ask_human` (executor then calls `/wait_for_answer`
+Any active Executor work state can pause to `Consultation` via `/consult` (executor then calls `/wait_for_consult`
+to block until the Supervisor responds via `/respond_consult`, which records `CONSULT_RESPONSE.md`).
+Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human` (executor then calls `/wait_for_answer`
 to block until the human responds). The human types their answer in the HQ terminal.
 `/reset` moves `Failed → Idle`.
 
@@ -268,7 +299,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |
-| `/resume` | Resume the executor headlessly (escape hatch) |
+| `/resume` | Resume the executor headlessly; also recovers Consultation by relaunching both consultant and executor |
 | `/status` | Show task state, agent list, and session log paths |
 | `/attach <name>` | Show log path for a running headless agent |
 | `/stop` | Stop all running agent sessions |
@@ -287,6 +318,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `review_pending` | Reviewing | Read task + submission context |
 | `approve` | Reviewing | Accept; moves to Complete |
 | `reject` | Reviewing | Reject with notes; moves to Addressing |
+| `respond_consult` | Consultation | Record the consultation response and let the Executor resume via `/wait_for_consult` |
 
 ### Executor
 | Tool | From state | Description |
@@ -294,8 +326,10 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `wait_for_task` | — | Long-poll until Executing or Addressing |
 | `next_task` | Executing, Addressing | Read task + feedback + review notes |
 | `check` | Executing, Addressing | Run all configured checks |
+| `consult` | Executing, Addressing, Checking | Ask the Supervisor for guidance; moves to Consultation |
+| `wait_for_consult` | Consultation | Block until the Supervisor responds; restores previous state |
 | `submit` | Checking | Write submission notes; moves to Reviewing |
-| `ask_human` | Executing, Addressing, Checking, Reviewing | Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
+| `ask_human` | Executing, Addressing, Checking, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
 | `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 
 ### Shared
@@ -314,6 +348,8 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
+| `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
 
 ## MCP prompts
@@ -352,6 +388,8 @@ heartbeat_interval_secs = 30  # how often to call /heartbeat
 | `SUBMISSION.md` | Submission notes |
 | `QUESTION.md` | Pending human question |
 | `ANSWER.md` | Human answer |
+| `CONSULT_REQUEST.md` | Pending supervisor consultation request |
+| `CONSULT_RESPONSE.md` | Supervisor consultation response |
 | `logs/check_<n>_<ts>.txt` | Full check output |
 "#;
 
@@ -401,6 +439,8 @@ async fn create_ferrus_dir() -> Result<()> {
         "SUBMISSION.md",
         "QUESTION.md",
         "ANSWER.md",
+        "CONSULT_REQUEST.md",
+        "CONSULT_RESPONSE.md",
     ] {
         let path = dir.join(filename);
         if !path.exists() {

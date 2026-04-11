@@ -53,6 +53,9 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         app.map_tool("reject", tools::reject::handler)
             .with_description(tools::reject::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::reject::INPUT_SCHEMA));
+        app.map_tool("respond_consult", tools::respond_consult::handler)
+            .with_description(tools::respond_consult::DESCRIPTION)
+            .with_input_schema(|_| ToolSchema::from_json_str(tools::respond_consult::INPUT_SCHEMA));
     }
 
     if exe {
@@ -68,9 +71,14 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
             .with_description(tools::next_task::DESCRIPTION);
         app.map_tool("check", tools::check::handler)
             .with_description(tools::check::DESCRIPTION);
+        app.map_tool("consult", tools::consult::handler)
+            .with_description(tools::consult::DESCRIPTION)
+            .with_input_schema(|_| ToolSchema::from_json_str(tools::consult::INPUT_SCHEMA));
         app.map_tool("submit", tools::submit::handler)
             .with_description(tools::submit::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::submit::INPUT_SCHEMA));
+        app.map_tool("wait_for_consult", tools::wait_for_consult::handler)
+            .with_description(tools::wait_for_consult::DESCRIPTION);
         app.map_tool("wait_for_answer", tools::wait_for_answer::handler)
             .with_description(tools::wait_for_answer::DESCRIPTION);
     }
@@ -81,6 +89,8 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
     app.add_resource("ferrus://review", "Review Notes");
     app.add_resource("ferrus://submission", "Submission");
     app.add_resource("ferrus://question", "Question");
+    app.add_resource("ferrus://consult_request", "Consult Request");
+    app.add_resource("ferrus://consult_response", "Consult Response");
     app.add_resource("ferrus://state", "State");
     app.map_resource("ferrus://{file}", "ferrus-file", resources::read);
 

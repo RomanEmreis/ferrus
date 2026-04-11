@@ -33,6 +33,7 @@ const LEASABLE_STATES: &[TaskState] = &[
     TaskState::Executing,
     TaskState::Addressing,
     TaskState::Checking,
+    TaskState::Consultation,
     TaskState::Reviewing,
 ];
 

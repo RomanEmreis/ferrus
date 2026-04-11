@@ -140,6 +140,31 @@ pub async fn write_answer(content: &str) -> Result<()> {
     write_file("ANSWER.md", content).await
 }
 
+pub async fn read_consult_request() -> Result<String> {
+    read_file("CONSULT_REQUEST.md").await
+}
+
+pub async fn write_consult_request(content: &str) -> Result<()> {
+    write_file("CONSULT_REQUEST.md", content).await
+}
+
+pub async fn clear_consult_request() -> Result<()> {
+    write_file("CONSULT_REQUEST.md", "").await
+}
+
+pub async fn read_consult_response() -> Result<String> {
+    read_file("CONSULT_RESPONSE.md").await
+}
+
+#[allow(dead_code)]
+pub async fn write_consult_response(content: &str) -> Result<()> {
+    write_file("CONSULT_RESPONSE.md", content).await
+}
+
+pub async fn clear_consult_response() -> Result<()> {
+    write_file("CONSULT_RESPONSE.md", "").await
+}
+
 pub async fn clear_question() -> Result<()> {
     write_file("QUESTION.md", "").await
 }

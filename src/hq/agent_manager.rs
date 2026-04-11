@@ -55,6 +55,7 @@ const EXECUTOR_PROMPT: &str =
        - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
        - ALWAYS use /check for all verification — it records results, updates state, and \
          handles retry counting; running checks manually bypasses the state machine entirely\n\
+       - Prefer /consult over /ask_human; use /ask_human only as a last resort\n\
        - If you are stuck, blocked, or need human input, you MUST use /ask_human\n\
        - Do NOT ask questions in the terminal — you are running headlessly and no one will see them\n\
        - The /ask_human flow is the only supported channel for human communication\n\
@@ -69,11 +70,59 @@ const EXECUTOR_RESUME_PROMPT: &str =
      HARD RULES — no exceptions:\n\
        - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
        - ALWAYS use /check for all verification\n\
+       - Prefer /consult over /ask_human; use /ask_human only as a last resort\n\
        - If you are stuck, blocked, or need human input, you MUST use /ask_human\n\
        - Do NOT ask questions in the terminal — you are running headlessly and no one will see them\n\
        - The /ask_human flow is the only supported channel for human communication\n\
      \n\
      See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
+
+const EXECUTOR_WAIT_FOR_CONSULT_PROMPT: &str =
+    "You are a Ferrus Executor resuming an in-flight supervisor consultation. \
+     CONSULT_REQUEST.md already exists. Your next action is `/wait_for_consult`.\n\
+     \n\
+     HARD RULES — no exceptions:\n\
+       - NEVER run cargo, npm, make, pytest, or any check/build/test command manually\n\
+       - ALWAYS use /check for all verification\n\
+       - Prefer `/consult` over `/ask_human`; use `/ask_human` only as a last resort\n\
+       - Do NOT ask questions in the terminal — you are running headlessly and no one will see them\n\
+       - The /ask_human flow is the only supported human channel\n\
+     \n\
+     See .agents/skills/ferrus-executor/SKILL.md for the full workflow.";
+
+const CONSULTANT_PROMPT: &str =
+    "You are a Ferrus Supervisor in CONSULTATION mode.\n\
+     \n\
+     Your only job: read TASK.md and CONSULT_REQUEST.md, investigate the repository as needed, \
+     then call `/respond_consult` with your answer.\n\
+     \n\
+     HARD RULES:\n\
+       - DO NOT write, edit, or create any source/config files\n\
+       - DO NOT implement fixes or code changes\n\
+       - DO NOT call /create_task, /approve, /reject, or /submit\n\
+       - You MAY read any file in the repository\n\
+       - You MAY run read-only commands (e.g. cargo check, grep, find) to gather information\n\
+       - You MAY call /ask_human if you genuinely cannot determine the answer from the codebase alone\n\
+       - Once you have called `/respond_consult`, you are done — exit immediately\n\
+     \n\
+     See .agents/skills/ferrus-supervisor/SKILL.md for the full workflow.";
+
+const CONSULTANT_RESUME_PROMPT: &str =
+    "You are a Ferrus Supervisor in CONSULTATION mode resuming an interrupted consultation.\n\
+     \n\
+     CONSULT_REQUEST.md already exists. Read it, investigate the repository as needed, then \
+     call `/respond_consult` with your answer.\n\
+     \n\
+     HARD RULES:\n\
+       - DO NOT write, edit, or create any source/config files\n\
+       - DO NOT implement fixes or code changes\n\
+       - DO NOT call /create_task, /approve, /reject, or /submit\n\
+       - You MAY read any file in the repository\n\
+       - You MAY run read-only commands (e.g. cargo check, grep, find) to gather information\n\
+       - You MAY call /ask_human if you genuinely cannot determine the answer from the codebase alone\n\
+       - Once you have called `/respond_consult`, you are done — exit immediately\n\
+     \n\
+     See .agents/skills/ferrus-supervisor/SKILL.md for the full workflow.";
 
 #[allow(dead_code)]
 /// Spawn an executor with inherited stdio and wait for it to exit.
@@ -174,6 +223,15 @@ pub fn executor_prompt() -> &'static str {
 pub fn executor_resume_prompt() -> &'static str {
     EXECUTOR_RESUME_PROMPT
 }
+pub fn executor_wait_for_consult_prompt() -> &'static str {
+    EXECUTOR_WAIT_FOR_CONSULT_PROMPT
+}
+pub fn consultant_prompt() -> &'static str {
+    CONSULTANT_PROMPT
+}
+pub fn consultant_resume_prompt() -> &'static str {
+    CONSULTANT_RESUME_PROMPT
+}
 pub fn reviewer_prompt() -> &'static str {
     REVIEWER_PROMPT
 }
@@ -182,6 +240,24 @@ pub fn supervisor_plan_prompt() -> &'static str {
 }
 pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
+}
+
+pub(crate) fn configure_interactive_command(command: &mut StdCommand) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // SAFETY: these libc calls are async-signal-safe and operate only on the
+        // child process between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
 }
 
 pub(crate) fn configure_headless_command(command: &mut StdCommand) {
@@ -604,6 +680,16 @@ mod tests {
     #[test]
     fn executor_resume_prompt_forbids_manual_checks() {
         assert!(executor_resume_prompt().contains("NEVER"));
+    }
+
+    #[test]
+    fn executor_wait_for_consult_prompt_mentions_tool() {
+        assert!(executor_wait_for_consult_prompt().contains("/wait_for_consult"));
+    }
+
+    #[test]
+    fn consultant_prompt_names_mode() {
+        assert!(consultant_prompt().contains("CONSULTATION mode"));
     }
 
     #[test]

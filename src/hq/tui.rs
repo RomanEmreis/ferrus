@@ -26,7 +26,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/task", "define a task and run executor then review"),
     ("/supervisor", "open an interactive supervisor session"),
     ("/executor", "open an interactive executor session"),
-    ("/resume", "resume the executor headlessly"),
+    (
+        "/resume",
+        "resume the executor headlessly or recover consultation",
+    ),
     ("/review", "spawn supervisor in review mode"),
     ("/status", "show task state and agents"),
     (
@@ -81,6 +84,7 @@ impl StatusSnapshot {
             crate::state::machine::TaskState::Executing
                 | crate::state::machine::TaskState::Checking
                 | crate::state::machine::TaskState::Addressing
+                | crate::state::machine::TaskState::Consultation
                 | crate::state::machine::TaskState::Reviewing
         ) {
             format!(
@@ -1220,6 +1224,15 @@ fn print_status_line(
                 )
             )?;
         }
+    } else if status.task_state == "Consultation" {
+        let hint = "  ← consulting supervisor";
+        let hint_text = truncate_to_width(hint, remaining);
+        if !hint_text.is_empty() {
+            queue!(
+                stdout,
+                PrintStyledContent(style(hint_text.clone()).with(Color::Cyan))
+            )?;
+        }
     }
 
     Ok(())
@@ -1341,6 +1354,7 @@ fn task_state_color(task_state: &str) -> Color {
     match task_state {
         "Idle" => Color::DarkGrey,
         "Executing" | "Addressing" | "Checking" => Color::Yellow,
+        "Consultation" => Color::Blue,
         "Reviewing" => Color::Cyan,
         "Complete" => Color::Green,
         "Failed" => Color::Red,

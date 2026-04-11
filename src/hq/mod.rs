@@ -198,7 +198,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /task              Define a task with the supervisor, then run executor→review loop\n",
                 "  /supervisor        Open an interactive supervisor session\n",
                 "  /executor          Open an interactive executor session\n",
-                "  /resume            Resume the executor headlessly (escape hatch)\n",
+                "  /resume            Resume the executor headlessly; recovers Consultation too\n",
                 "  /review            Manually spawn supervisor in review mode\n",
                 "  /status            Show task state, agent list, and session log paths\n",
                 "  /attach <name>     Show log path for a running headless agent\n",
@@ -281,6 +281,55 @@ impl ResumeGuard {
             self.display.resume();
             self.active = false;
         }
+    }
+}
+
+struct TerminalGuard {
+    #[cfg(unix)]
+    original_pgid: libc::pid_t,
+    #[cfg(unix)]
+    signal_fd: libc::c_int,
+    #[cfg(unix)]
+    signal_handler: libc::sighandler_t,
+}
+
+impl TerminalGuard {
+    fn for_child(pid: u32) -> Self {
+        #[cfg(unix)]
+        unsafe {
+            let signal_fd = libc::STDIN_FILENO;
+            let original_pgid = libc::tcgetpgrp(signal_fd);
+            let signal_handler = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+            let _ = libc::tcsetpgrp(signal_fd, pid as libc::pid_t);
+            Self {
+                original_pgid,
+                signal_fd,
+                signal_handler,
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            Self {}
+        }
+    }
+
+    fn restore(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            if self.original_pgid > 0 {
+                let _ = libc::tcsetpgrp(self.signal_fd, self.original_pgid);
+            }
+            let _ = libc::signal(libc::SIGTTOU, self.signal_handler);
+            self.original_pgid = -1;
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.restore();
     }
 }
 
@@ -423,6 +472,27 @@ impl HqContext {
                 {
                     self.display
                         .error(format!("Failed to spawn reviewer: {err}"));
+                }
+            }
+            TransitionAction::SpawnConsultant => {
+                if let Err(err) = self.ensure_hq_config().await {
+                    self.display
+                        .error(format!("Failed to load supervisor config: {err}"));
+                    return;
+                }
+                let supervisor_id = match self.supervisor_agent_id() {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.display.error(err.to_string());
+                        return;
+                    }
+                };
+                if let Err(err) = self
+                    .spawn_headless_supervisor(&supervisor_id, agent_manager::consultant_prompt())
+                    .await
+                {
+                    self.display
+                        .error(format!("Failed to spawn consultation supervisor: {err}"));
                 }
             }
             TransitionAction::KillReviewerSpawnExecutor => {
@@ -583,6 +653,24 @@ impl HqContext {
                 );
                 return Ok(());
             }
+            TaskState::Consultation => {
+                self.ensure_hq_config().await?;
+                let supervisor_id = self.supervisor_agent_id()?;
+                self.shutdown_headless(&supervisor_id).await;
+                self.spawn_headless_supervisor(
+                    &supervisor_id,
+                    agent_manager::consultant_resume_prompt(),
+                )
+                .await?;
+
+                let executor_id = self.executor_agent_id()?;
+                return self
+                    .spawn_headless_executor(
+                        &executor_id,
+                        agent_manager::executor_wait_for_consult_prompt(),
+                    )
+                    .await;
+            }
             _ => {}
         }
 
@@ -644,6 +732,8 @@ impl HqContext {
         store::clear_task().await?;
         store::clear_submission().await?;
         store::clear_answer().await?;
+        store::clear_consult_request().await?;
+        store::clear_consult_response().await?;
         store::clear_feedback().await?;
         store::clear_question().await?;
         store::clear_review().await?;
@@ -692,7 +782,9 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(prompt));
+        let mut std_cmd = agent.spawn(prompt);
+        agent_manager::configure_interactive_command(&mut std_cmd);
+        let mut cmd = Command::from(std_cmd);
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -705,6 +797,8 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let pid = child.id().unwrap_or_default();
+        let mut terminal = TerminalGuard::for_child(pid);
 
         {
             let mut reg = read_agents().await?;
@@ -712,7 +806,7 @@ impl HqContext {
                 role: ROLE_SUPERVISOR.to_string(),
                 agent_type: agent.name().to_string(),
                 name: name.to_string(),
-                pid: child.id(),
+                pid: Some(pid),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
             });
@@ -720,6 +814,8 @@ impl HqContext {
         }
 
         let _ = child.wait().await;
+        terminal.restore();
+        cleanup_process_group(pid);
         guard.resume_now();
 
         {
@@ -744,7 +840,9 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(prompt));
+        let mut std_cmd = agent.spawn(prompt);
+        agent_manager::configure_interactive_command(&mut std_cmd);
+        let mut cmd = Command::from(std_cmd);
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -757,6 +855,8 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let pid = child.id().unwrap_or_default();
+        let mut terminal = TerminalGuard::for_child(pid);
 
         {
             let mut reg = read_agents().await?;
@@ -764,7 +864,7 @@ impl HqContext {
                 role: ROLE_EXECUTOR.to_string(),
                 agent_type: agent.name().to_string(),
                 name: name.to_string(),
-                pid: child.id(),
+                pid: Some(pid),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
             });
@@ -772,6 +872,8 @@ impl HqContext {
         }
 
         let _ = child.wait().await;
+        terminal.restore();
+        cleanup_process_group(pid);
         guard.resume_now();
 
         {
@@ -839,8 +941,9 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let mut cmd =
-            Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
+        let mut std_cmd = supervisor.spawn(Some(agent_manager::supervisor_task_prompt()));
+        agent_manager::configure_interactive_command(&mut std_cmd);
+        let mut cmd = Command::from(std_cmd);
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -852,6 +955,8 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let supervisor_pid = child.id().unwrap_or_default();
+        let mut terminal = TerminalGuard::for_child(supervisor_pid);
 
         let supervisor_id = self.supervisor_agent_id()?;
         {
@@ -862,7 +967,7 @@ impl HqContext {
                 role: ROLE_SUPERVISOR.to_string(),
                 agent_type: supervisor.name().to_string(),
                 name: supervisor_id.clone(),
-                pid: child.id(),
+                pid: Some(supervisor_pid),
                 status: AgentStatus::Running,
                 started_at: Some(chrono::Utc::now()),
             });
@@ -876,20 +981,16 @@ impl HqContext {
                 _ = ticker.tick() => {
                     if let Ok(s) = store::read_state().await {
                         if s.state == TaskState::Executing {
-                            self.display.info("Task created — stopping supervisor…");
-                            #[cfg(target_os = "linux")]
-                            let supervisor_descendants =
-                                collect_descendant_pids(child.id().unwrap_or_default());
-                            let _ = child.kill().await;
+                            terminate_process_group(supervisor_pid);
                             let _ = child.wait().await;
-                            #[cfg(target_os = "linux")]
-                            terminate_linux_pids(&supervisor_descendants);
                             break;
                         }
                     }
                 }
             }
         }
+        terminal.restore();
+        cleanup_process_group(supervisor_pid);
         resume_guard.resume_now();
 
         {
@@ -1063,66 +1164,20 @@ async fn reconcile_agent_pids() {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn collect_descendant_pids(root_pid: u32) -> Vec<u32> {
-    if root_pid == 0 {
-        return Vec::new();
+fn terminate_process_group(pid: u32) {
+    if pid == 0 {
+        return;
     }
-
-    let mut descendants = Vec::new();
-    let mut stack = vec![root_pid];
-
-    while let Some(parent) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir("/proc") else {
-            break;
-        };
-
-        for entry in entries.flatten() {
-            let Some(name) = entry
-                .file_name()
-                .to_str()
-                .and_then(|s| s.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            if descendants.contains(&name) || name == root_pid {
-                continue;
-            }
-
-            if read_linux_ppid(name) == Some(parent) {
-                descendants.push(name);
-                stack.push(name);
-            }
-        }
-    }
-
-    descendants
-}
-
-#[cfg(target_os = "linux")]
-fn read_linux_ppid(pid: u32) -> Option<u32> {
-    let path = format!("/proc/{pid}/stat");
-    let stat = std::fs::read_to_string(path).ok()?;
-    let close = stat.rfind(')')?;
-    let rest = stat.get(close + 2..)?;
-    let mut fields = rest.split_whitespace();
-    let _state = fields.next()?;
-    fields.next()?.parse().ok()
-}
-
-#[cfg(target_os = "linux")]
-fn terminate_linux_pids(pids: &[u32]) {
-    for &pid in pids {
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-        }
-    }
+    agent_manager::signal_process(pid, libc::SIGTERM);
     std::thread::sleep(std::time::Duration::from_millis(250));
-    for &pid in pids {
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-        }
+    agent_manager::signal_process(pid, libc::SIGKILL);
+}
+
+fn cleanup_process_group(pid: u32) {
+    if pid == 0 {
+        return;
     }
+    agent_manager::signal_process(pid, libc::SIGTERM);
 }
 
 #[allow(dead_code)]
@@ -1130,6 +1185,7 @@ fn terminate_linux_pids(pids: &[u32]) {
 pub(crate) enum TransitionAction {
     SpawnExecutor,
     SpawnReviewer,
+    SpawnConsultant,
     KillReviewerSpawnExecutor,
     TaskComplete,
     TaskFailed,
@@ -1145,9 +1201,11 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
     match (from, to) {
         (Idle, Executing) => TransitionAction::SpawnExecutor,
         (Executing | Addressing | Checking, Reviewing) => TransitionAction::SpawnReviewer,
+        (Executing | Addressing | Checking, Consultation) => TransitionAction::SpawnConsultant,
         (Reviewing, Addressing) => TransitionAction::KillReviewerSpawnExecutor,
         (Reviewing, Complete) => TransitionAction::TaskComplete,
         (_, Failed) => TransitionAction::TaskFailed,
+        (Consultation, Executing | Addressing | Checking) => TransitionAction::NoOp,
         // Executor paused to ask the human a question.
         (Executing | Addressing | Checking | Reviewing, AwaitingHuman) => {
             TransitionAction::PauseForHuman
@@ -1209,6 +1267,22 @@ mod tests {
     fn executing_to_checking_is_noop() {
         assert_eq!(
             transition_action(&Executing, &Checking),
+            TransitionAction::NoOp
+        );
+    }
+
+    #[test]
+    fn executing_to_consultation_spawns_consultant() {
+        assert_eq!(
+            transition_action(&Executing, &Consultation),
+            TransitionAction::SpawnConsultant
+        );
+    }
+
+    #[test]
+    fn consultation_to_executing_is_noop() {
+        assert_eq!(
+            transition_action(&Consultation, &Executing),
             TransitionAction::NoOp
         );
     }

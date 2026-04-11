@@ -53,7 +53,7 @@ Then type `/task` — a supervisor spawns, you describe what you want, and the f
 | `/task` | Define a task with the supervisor, then run the executor→review loop automatically |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
-| `/resume` | Manually resume the executor headlessly (escape hatch if automatic spawning failed) |
+| `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both supervisor and executor |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and session log paths |
 | `/attach <name>` | Show log path for a running headless agent |
@@ -89,6 +89,8 @@ Agents are **stateless between runs** — context lives in `.ferrus/*.md`. Each 
 Idle
  └─► Executing      ← create_task (Supervisor)
        └─► Checking ← check (Executor, pass)
+             ├─► Consultation ← consult (Executor)
+             │     └─► (restore previous state) ← wait_for_consult
              ├─► [FAIL, retries < max] Addressing → check again
              ├─► [FAIL, retries ≥ max] Failed
              └─► Reviewing ← submit (Executor)
@@ -97,7 +99,9 @@ Idle
                    └─► Complete ← approve (Supervisor)
 ```
 
-Any active state (Executing, Addressing, Checking, Reviewing) can pause to `AwaitingHuman` via `/ask_human`. The executor immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
+Any active Executor work state (Executing, Addressing, Checking) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`.
+
+Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human`. The agent immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
 - `/task` from `Complete` → silently resets to Idle and starts the next task (no extra step needed).
 - `/reset` → Idle from any state; prompts for confirmation if an agent is actively working.
@@ -124,8 +128,8 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
-| `executor` | `wait_for_task`, `next_task`, `check`, `submit`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `executor` | `wait_for_task`, `next_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
 ### `ferrus register --supervisor <agent> --executor <agent>`
@@ -180,6 +184,8 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 | `SUBMISSION.md` | Executor submission notes |
 | `QUESTION.md` | Pending human question (written by `/ask_human`) |
 | `ANSWER.md` | Human answer |
+| `CONSULT_REQUEST.md` | Pending supervisor consultation request |
+| `CONSULT_RESPONSE.md` | Supervisor consultation response |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.

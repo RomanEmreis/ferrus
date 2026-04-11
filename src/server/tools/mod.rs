@@ -2,15 +2,18 @@ pub mod answer;
 pub mod approve;
 pub mod ask_human;
 pub mod check;
+pub mod consult;
 pub mod create_task;
 pub mod heartbeat;
 pub mod next_task;
 pub mod reject;
 pub mod reset;
+pub mod respond_consult;
 pub mod review_pending;
 pub mod status;
 pub mod submit;
 pub mod wait_for_answer;
+pub mod wait_for_consult;
 pub mod wait_for_review;
 pub mod wait_for_task;
 

@@ -39,7 +39,7 @@ src/
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs; double-Ctrl+C-to-quit (2-second window)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (headless for executor and reviewer); HeadlessHandle; agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (headless for executor and supervisor); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool (one module = one tool)
   server/resources.rs        # MCP resource handler (ferrus://{file})
@@ -88,5 +88,7 @@ MUST NOT in review mode:
 - MUST NOT ask the Executor to re-verify
 
 **Free-form plan mode** ("You are a Ferrus Supervisor in free-form planning mode"): No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
+
+**Consultation mode** ("You are a Ferrus Supervisor in CONSULTATION mode"): Read `TASK.md` + `CONSULT_REQUEST.md`, investigate read-only, call `/respond_consult`, then exit. You may use `/ask_human` if the answer cannot be determined from the repository.
 
 See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.

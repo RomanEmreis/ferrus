@@ -8,7 +8,7 @@ use super::tool_err;
 
 pub const DESCRIPTION: &str =
     "Human escape hatch: reset a Failed task back to Idle. Clears FEEDBACK.md, \
-     REVIEW.md, and SUBMISSION.md. Only valid in state Failed.";
+     REVIEW.md, SUBMISSION.md, and consultation files. Only valid in state Failed.";
 
 pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)
@@ -29,7 +29,9 @@ async fn run() -> Result<String> {
     store::clear_feedback().await?;
     store::clear_review().await?;
     store::clear_submission().await?;
+    store::clear_consult_request().await?;
+    store::clear_consult_response().await?;
 
     info!("State reset, Idle");
-    Ok("State reset to Idle. FEEDBACK.md, REVIEW.md, and SUBMISSION.md cleared. Ready for a new task.".to_string())
+    Ok("State reset to Idle. FEEDBACK.md, REVIEW.md, SUBMISSION.md, and consultation files cleared. Ready for a new task.".to_string())
 }

@@ -30,7 +30,7 @@ pub enum ShellCommand {
     Supervisor,
     /// Open an interactive executor session (no initial prompt, no state requirement).
     Executor,
-    /// Resume the executor headlessly for the current task (escape hatch).
+    /// Resume the executor headlessly for the current task (escape hatch; also recovers Consultation).
     Resume,
     /// Attach terminal to a running background session. Ctrl+] d to detach.
     Attach { name: String },
