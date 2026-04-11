@@ -23,11 +23,10 @@ description: "Use when operating as an Executor in a ferrus-orchestrated project
 
 5. Verify
    - call /check
-   - read FEEDBACK.md
-   - fix issues and repeat
+   - if checks fail: read FEEDBACK.md, fix issues, repeat
+   - if checks pass: immediately call /submit
 
 6. Submit
-   - call /submit
    - include:
       - summary
       - verification steps
@@ -51,6 +50,13 @@ description: "Use when operating as an Executor in a ferrus-orchestrated project
 2. Immediately call /wait_for_answer
    - "answered": continue
    - "timeout": retry
+
+---
+
+## Completion invariant
+
+Never stop after a successful /check.
+Your next action must be /submit.
 
 ---
 

@@ -168,11 +168,10 @@ description: "Use when operating as an Executor in a ferrus-orchestrated project
 
 5. Verify
    - call /check
-   - read FEEDBACK.md
-   - fix issues and repeat
+   - if checks fail: read FEEDBACK.md, fix issues, repeat
+   - if checks pass: immediately call /submit
 
 6. Submit
-   - call /submit
    - include:
       - summary
       - verification steps
@@ -199,6 +198,13 @@ description: "Use when operating as an Executor in a ferrus-orchestrated project
 
 ---
 
+## Completion invariant
+
+Never stop after a successful /check.
+Your next action must be /submit.
+
+---
+
 ## Useful resources
 
 - ferrus://task
@@ -211,6 +217,19 @@ description: "Use when operating as an Executor in a ferrus-orchestrated project
 
 - Logs: `.ferrus/logs/`
 - Status: `/status`
+"#;
+
+const CONSULT_TEMPLATE: &str = r#"## Problem
+...
+
+## What I tried
+...
+
+## Options (if any)
+...
+
+## Question
+...
 "#;
 
 const EXECUTOR_ROLE: &str = r#"---
@@ -259,10 +278,13 @@ You are responsible for implementing tasks and bringing them to a verified, comp
 
 ## Definition of done
 
-A task is complete when:
+A task is complete only when:
 - implementation matches the task
 - /check passes
+- /submit has been called
 - submission clearly explains changes and limitations
+
+A green /check without /submit is NOT completion.
 "#;
 
 const FERRUS_SKILL: &str = r#"---
@@ -373,6 +395,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://consult_template` | Consultation request template (`CONSULT_TEMPLATE.md`) |
 | `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
@@ -413,6 +436,7 @@ heartbeat_interval_secs = 30  # how often to call /heartbeat
 | `SUBMISSION.md` | Submission notes |
 | `QUESTION.md` | Pending human question |
 | `ANSWER.md` | Human answer |
+| `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
 | `logs/check_<n>_<ts>.txt` | Full check output |
@@ -448,6 +472,14 @@ async fn create_ferrus_dir() -> Result<()> {
     tokio::fs::create_dir_all(dir.join("logs"))
         .await
         .context("Failed to create .ferrus/logs/ directory")?;
+
+    let consult_template_path = dir.join("CONSULT_TEMPLATE.md");
+    if !consult_template_path.exists() {
+        tokio::fs::write(&consult_template_path, CONSULT_TEMPLATE)
+            .await
+            .context("Failed to write .ferrus/CONSULT_TEMPLATE.md")?;
+        println!("Created .ferrus/CONSULT_TEMPLATE.md");
+    }
 
     let state_path = dir.join("STATE.json");
     if !state_path.exists() {

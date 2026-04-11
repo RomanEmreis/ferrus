@@ -44,7 +44,10 @@ You are responsible for implementing tasks and bringing them to a verified, comp
 
 ## Definition of done
 
-A task is complete when:
+A task is complete only when:
 - implementation matches the task
 - /check passes
+- /submit has been called
 - submission clearly explains changes and limitations
+
+A green /check without /submit is NOT completion.

@@ -144,11 +144,12 @@ executor = "codex"          # agent for executor role: claude-code | codex
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://consult_template` | Consultation request template (`CONSULT_TEMPLATE.md`) |
 | `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
 
-Resources are read-only. All eight are listed via `resources/list` and readable via `resources/read`.
+Resources are read-only. All nine are listed via `resources/list` and readable via `resources/read`.
 
 ## MCP Prompts
 
@@ -192,6 +193,7 @@ Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/a
 | `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
 | `QUESTION.md` | Question written by `/ask_human` |
 | `ANSWER.md` | Answer written by `/answer` |
+| `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `CONSULT_REQUEST.md` | Question written by `/consult` |
 | `CONSULT_RESPONSE.md` | Answer written by the consultation Supervisor |
 | `logs/check_<attempt>_<ts>.txt` | Full stdout + stderr for each check run |
