@@ -144,6 +144,7 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
                 .collect::<Vec<_>>(),
         ),
     );
+    apply_codex_tool_approval_overrides(role, &mut entry);
     mcp_servers.insert(key.clone(), toml::Value::Table(entry));
     println!(
         "Registered {key} in .codex/config.toml (agent_id will be \"{}\")",
@@ -155,6 +156,55 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
 
     append_to_agents_md(role).await?;
     Ok(())
+}
+
+fn apply_codex_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
+    let tools = entry
+        .entry("tools")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .expect("tools must be a TOML table");
+
+    for tool in codex_auto_approved_tools(role) {
+        let mut tool_config = toml::Table::new();
+        tool_config.insert(
+            "approval_mode".to_string(),
+            toml::Value::String("approve".to_string()),
+        );
+        tools.insert(tool.to_string(), toml::Value::Table(tool_config));
+    }
+}
+
+fn codex_auto_approved_tools(role: &str) -> &'static [&'static str] {
+    match role {
+        ROLE_EXECUTOR => &[
+            "wait_for_task",
+            "check",
+            "consult",
+            "submit",
+            "wait_for_consult",
+            "wait_for_answer",
+            "ask_human",
+            "answer",
+            "status",
+            "reset",
+            "heartbeat",
+        ],
+        ROLE_SUPERVISOR => &[
+            "create_task",
+            "wait_for_review",
+            "review_pending",
+            "approve",
+            "reject",
+            "respond_consult",
+            "ask_human",
+            "answer",
+            "status",
+            "reset",
+            "heartbeat",
+        ],
+        _ => &[],
+    }
 }
 
 async fn append_to_agents_md(role: &str) -> Result<()> {

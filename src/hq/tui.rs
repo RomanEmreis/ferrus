@@ -9,7 +9,10 @@ use std::{
 use anyhow::Result;
 use crossterm::{
     cursor::{MoveDown, MoveToColumn, MoveUp},
-    event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     queue,
     style::{style, Attribute, Color, Print, PrintStyledContent, Stylize},
     terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType},
@@ -185,6 +188,14 @@ impl App {
     fn insert_char(&mut self, ch: char) {
         let idx = byte_index_for_char(&self.input, self.cursor_pos);
         self.input.insert(idx, ch);
+        self.cursor_pos += 1;
+        self.history_idx = None;
+        self.update_command_context();
+    }
+
+    fn insert_newline(&mut self) {
+        let idx = byte_index_for_char(&self.input, self.cursor_pos);
+        self.input.insert(idx, '\n');
         self.cursor_pos += 1;
         self.history_idx = None;
         self.update_command_context();
@@ -396,7 +407,7 @@ impl App {
             self.should_quit = true;
         }
         let _ = cmd_tx.send(line.clone());
-        if self.history.last() != Some(&line) {
+        if !line.contains('\n') && self.history.last() != Some(&line) {
             self.history.push(line);
             if self.history.len() > MAX_HISTORY {
                 let extra = self.history.len() - MAX_HISTORY;
@@ -421,6 +432,8 @@ struct StartupHeader {
 
 struct TerminalUi {
     prompt_visible: bool,
+    prompt_lines: u16,
+    prompt_cursor_row: u16,
     lower_lines: u16,
 }
 
@@ -461,6 +474,8 @@ pub async fn run_tui(
 
     let mut ui = TerminalUi {
         prompt_visible: false,
+        prompt_lines: 0,
+        prompt_cursor_row: 0,
         lower_lines: 0,
     };
     redraw_live_area(&mut stdout, &app, &mut ui)?;
@@ -606,6 +621,11 @@ fn handle_event(
                     }
                     (KeyCode::Tab, _) => app.next_completion(),
                     (KeyCode::BackTab, _) => app.previous_completion(),
+                    // Some Linux terminals report Shift+Enter as an ESC-prefixed Enter
+                    // sequence, which crossterm surfaces as Alt+Enter via its fallback parser.
+                    (KeyCode::Enter, modifiers) if is_multiline_enter(modifiers) => {
+                        app.insert_newline()
+                    }
                     (KeyCode::Enter, _) => {
                         if app.completion_popup_visible() {
                             app.accept_completion_and_submit(cmd_tx);
@@ -701,6 +721,8 @@ fn handle_message(
             flush_stdin_input_buffer();
             app.suspended = false;
             ui.prompt_visible = false;
+            ui.prompt_lines = 0;
+            ui.prompt_cursor_row = 0;
             ui.lower_lines = 0;
             redraw_live_area(stdout, app, ui)?;
             return Ok(true);
@@ -784,9 +806,9 @@ fn clear_live_area(stdout: &mut Stdout, ui: &TerminalUi) -> Result<()> {
         return Ok(());
     }
     let lower_lines = ui.lower_lines;
-    let total_lines = lower_lines + 3;
+    let total_lines = lower_lines + ui.prompt_lines + 2;
 
-    queue!(stdout, MoveUp(1), MoveToColumn(0))?;
+    queue!(stdout, MoveUp(ui.prompt_cursor_row + 1), MoveToColumn(0))?;
     for idx in 0..total_lines {
         queue!(stdout, Clear(ClearType::UntilNewLine), MoveToColumn(0))?;
         if idx + 1 < total_lines {
@@ -802,28 +824,35 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
     let width = terminal_width() as usize;
     let lower_lines = render_lower_live_area(app, width);
     print_live_area_border(stdout, width)?;
-    crlf(stdout)?;
-    let prompt_cursor_col = if let Some(confirm) = app.confirmation.as_ref() {
-        let prompt_text = truncate_to_width(&confirm.prompt, width.max(1));
-        queue!(
-            stdout,
-            MoveToColumn(0),
-            Clear(ClearType::UntilNewLine),
-            Print(prompt_text.clone()),
-            Print(" [y/N]")
-        )?;
-        prompt_text.chars().count() as u16 + 6
-    } else {
-        let prompt = render_prompt_line(app, width);
-        queue!(
-            stdout,
-            MoveToColumn(0),
-            Clear(ClearType::UntilNewLine),
-            Print("> "),
-            Print(prompt.visible.clone())
-        )?;
-        prompt.cursor_col
-    };
+    let (prompt_lines, prompt_cursor_row, prompt_cursor_col) =
+        if let Some(confirm) = app.confirmation.as_ref() {
+            crlf(stdout)?;
+            let prompt_text = truncate_to_width(&confirm.prompt, width.max(1));
+            queue!(
+                stdout,
+                MoveToColumn(0),
+                Clear(ClearType::UntilNewLine),
+                Print(prompt_text.clone()),
+                Print(" [y/N]")
+            )?;
+            (1, 0, prompt_text.chars().count() as u16 + 6)
+        } else {
+            let prompt = render_prompt(app, width);
+            for (idx, line) in prompt.lines.iter().enumerate() {
+                crlf(stdout)?;
+                queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+                if idx == 0 {
+                    queue!(stdout, Print("> "), Print(line.clone()))?;
+                } else {
+                    queue!(stdout, Print("  "), Print(line.clone()))?;
+                }
+            }
+            (
+                prompt.lines.len() as u16,
+                prompt.cursor_row,
+                prompt.cursor_col,
+            )
+        };
 
     crlf(stdout)?;
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
@@ -842,10 +871,12 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
     }
     queue!(
         stdout,
-        MoveUp((lower_lines.len() + 1) as u16),
+        MoveUp(lower_lines.len() as u16 + 1 + (prompt_lines - 1 - prompt_cursor_row)),
         MoveToColumn(prompt_cursor_col)
     )?;
     ui.prompt_visible = true;
+    ui.prompt_lines = prompt_lines;
+    ui.prompt_cursor_row = prompt_cursor_row;
     ui.lower_lines = lower_lines.len() as u16;
     stdout.flush()?;
     Ok(())
@@ -863,16 +894,32 @@ fn print_message_and_restore_prompt(
         print_transcript_line(stdout, line)?;
     }
     ui.prompt_visible = false;
+    ui.prompt_lines = 0;
+    ui.prompt_cursor_row = 0;
     ui.lower_lines = 0;
     redraw_live_area(stdout, app, ui)
 }
 
 fn enter_tui() -> Result<()> {
     enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    let _ = queue!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
+    );
+    let _ = stdout.flush();
     Ok(())
 }
 
 fn leave_tui() -> Result<()> {
+    let mut stdout = io::stdout();
+    let _ = queue!(stdout, PopKeyboardEnhancementFlags);
+    let _ = stdout.flush();
     disable_raw_mode()?;
     Ok(())
 }
@@ -1134,24 +1181,57 @@ fn startup_agent_line(label: &str, agent_type: &str, version: &str) -> String {
 }
 
 struct PromptLine {
-    visible: String,
+    lines: Vec<String>,
+    cursor_row: u16,
     cursor_col: u16,
 }
 
-fn render_prompt_line(app: &App, width: usize) -> PromptLine {
+fn render_prompt(app: &App, width: usize) -> PromptLine {
     let available = width.saturating_sub(2).max(1);
     let chars: Vec<char> = app.input.chars().collect();
-    let total = chars.len();
-    let start = if total <= available {
-        0
-    } else {
-        app.cursor_pos.saturating_sub(available)
-    };
-    let end = (start + available).min(total);
-    let visible: String = chars[start..end].iter().collect();
-    let cursor_col = 2 + app.cursor_pos.saturating_sub(start) as u16;
+    let mut lines = Vec::new();
+    let mut cursor_row = 0u16;
+    let mut cursor_col = 2u16;
+    let mut line = String::new();
+    let mut line_width = 0usize;
+    let mut row = 0u16;
+
+    for (idx, ch) in chars.iter().enumerate() {
+        if idx == app.cursor_pos {
+            cursor_row = row;
+            cursor_col = 2 + line_width as u16;
+        }
+
+        if *ch == '\n' {
+            lines.push(std::mem::take(&mut line));
+            line_width = 0;
+            row += 1;
+            continue;
+        }
+
+        if line_width == available {
+            lines.push(std::mem::take(&mut line));
+            line_width = 0;
+            row += 1;
+            if idx == app.cursor_pos {
+                cursor_row = row;
+                cursor_col = 2;
+            }
+        }
+
+        line.push(*ch);
+        line_width += 1;
+    }
+
+    if app.cursor_pos == chars.len() {
+        cursor_row = row;
+        cursor_col = 2 + line_width as u16;
+    }
+
+    lines.push(line);
     PromptLine {
-        visible,
+        lines,
+        cursor_row,
         cursor_col,
     }
 }
@@ -1426,6 +1506,13 @@ fn display_width(text: &str) -> usize {
     text.chars().count()
 }
 
+fn is_multiline_enter(modifiers: KeyModifiers) -> bool {
+    let multiline = KeyModifiers::SHIFT | KeyModifiers::ALT;
+    let disallowed =
+        KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META;
+    modifiers.intersects(multiline) && !modifiers.intersects(disallowed)
+}
+
 fn history_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_default()
@@ -1586,5 +1673,57 @@ mod tui_tests {
         assert!(commands.contains(&"/supervisor"));
         assert!(commands.contains(&"/executor"));
         assert!(!commands.contains(&"/execute"));
+    }
+
+    #[test]
+    fn render_prompt_wraps_multiline_input() {
+        let mut app = App::new();
+        app.input = "abcd\nef".into();
+        app.cursor_pos = app.input.chars().count();
+
+        let prompt = render_prompt(&app, 6);
+
+        assert_eq!(prompt.lines, vec!["abcd", "ef"]);
+        assert_eq!(prompt.cursor_row, 1);
+        assert_eq!(prompt.cursor_col, 4);
+    }
+
+    #[test]
+    fn render_prompt_preserves_trailing_newline() {
+        let mut app = App::new();
+        app.input = "abcd\n".into();
+        app.cursor_pos = app.input.chars().count();
+
+        let prompt = render_prompt(&app, 10);
+
+        assert_eq!(prompt.lines, vec!["abcd", ""]);
+        assert_eq!(prompt.cursor_row, 1);
+        assert_eq!(prompt.cursor_col, 2);
+    }
+
+    #[test]
+    fn multiline_submission_does_not_enter_history() {
+        let mut app = App::new();
+        let original_history_len = app.history.len();
+        app.input = "first\nsecond".into();
+        app.cursor_pos = app.input.chars().count();
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+
+        app.submit_input(&cmd_tx);
+
+        assert_eq!(cmd_rx.try_recv().unwrap(), "first\nsecond");
+        assert_eq!(app.history.len(), original_history_len);
+    }
+
+    #[test]
+    fn multiline_enter_accepts_shift_and_alt_enter() {
+        assert!(is_multiline_enter(KeyModifiers::SHIFT));
+        assert!(is_multiline_enter(KeyModifiers::ALT));
+        assert!(is_multiline_enter(KeyModifiers::SHIFT | KeyModifiers::ALT));
+        assert!(!is_multiline_enter(KeyModifiers::NONE));
+        assert!(!is_multiline_enter(KeyModifiers::CONTROL));
+        assert!(!is_multiline_enter(KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+        assert!(!is_multiline_enter(KeyModifiers::CONTROL | KeyModifiers::ALT));
+        assert!(!is_multiline_enter(KeyModifiers::SUPER | KeyModifiers::ALT));
     }
 }
