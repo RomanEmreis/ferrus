@@ -23,9 +23,13 @@ path = ".agents" # root directory for agent skill files
 ttl_secs = 90              # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 
-[hq]
-supervisor = "claude-code"  # agent to use for supervisor/reviewer role: claude-code | codex
-executor = "codex"          # agent to use for executor role: claude-code | codex
+[hq.supervisor]
+agent = "claude-code"  # agent to use for supervisor/reviewer role: claude-code | codex
+model = ""             # optional override; empty = agent default
+
+[hq.executor]
+agent = "codex"        # agent to use for executor role: claude-code | codex
+model = ""             # optional override; empty = agent default
 "#;
 
 const SUPERVISOR_SKILL: &str = r#"---
@@ -341,7 +345,7 @@ to block until the human responds). The human types their answer in the HQ termi
 ```sh
 ferrus init [--agents-path <path>]              # scaffold project files and skill files
 ferrus serve [--role supervisor|executor]       # start MCP server on stdio
-ferrus register --supervisor <a> --executor <a> # write MCP config for agents
+ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executor-model <m> # write MCP config for agents
 ```
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
@@ -362,6 +366,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `/reset` | Reset state to Idle (clears task files) |
 | `/init` | Initialize ferrus in the current directory |
 | `/register` | Register agent configs |
+| `/model` | Update the supervisor or executor model override |
 | `/quit` | Exit HQ |
 
 ## MCP tools
@@ -430,6 +435,14 @@ wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
 [lease]
 ttl_secs = 90            # lease validity without renewal
 heartbeat_interval_secs = 30  # how often to call /heartbeat
+
+[hq.supervisor]
+agent = "claude-code"   # agent for supervisor/reviewer role: claude-code | codex
+model = ""              # optional override; empty = agent default
+
+[hq.executor]
+agent = "codex"         # agent for executor role: claude-code | codex
+model = ""              # optional override; empty = agent default
 ```
 
 ## Runtime files (`.ferrus/`)

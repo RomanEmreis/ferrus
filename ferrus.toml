@@ -19,5 +19,10 @@ ttl_secs = 90              # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 
 [hq]
-supervisor = "claude-code"  # agent to use for supervisor/reviewer role: claude-code | codex
-executor = "codex"          # agent to use for executor role: claude-code | codex
+
+[hq.supervisor]
+agent = "claude-code"
+model = ""
+
+[hq.executor]
+agent = "codex"

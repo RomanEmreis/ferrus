@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::sync::Arc;
+use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::agents::{parse_executor_agent, parse_supervisor_agent, ExecutorAgent, SupervisorAgent};
 
@@ -44,9 +45,17 @@ pub struct LeaseConfig {
     pub heartbeat_interval_secs: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct HqAgentConfig {
+    pub agent: String,
+    #[serde(default, deserialize_with = "deserialize_optional_model")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HqConfig {
-    pub supervisor: Arc<dyn SupervisorAgent>,
-    pub executor: Arc<dyn ExecutorAgent>,
+    pub supervisor: HqAgentConfig,
+    pub executor: HqAgentConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,27 +69,33 @@ struct RawConfig {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawHqConfig {
-    supervisor: String,
-    executor: String,
-}
-
-impl std::fmt::Debug for HqConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HqConfig")
-            .field("supervisor", &self.supervisor.name())
-            .field("executor", &self.executor.name())
-            .finish()
-    }
+#[serde(untagged)]
+enum RawHqConfig {
+    Nested {
+        supervisor: HqAgentConfig,
+        executor: HqAgentConfig,
+    },
+    Flat {
+        supervisor: String,
+        executor: String,
+    },
 }
 
 impl HqConfig {
-    pub fn supervisor_name(&self) -> &'static str {
-        self.supervisor.name()
+    pub fn supervisor_name(&self) -> &str {
+        &self.supervisor.agent
     }
 
-    pub fn executor_name(&self) -> &'static str {
-        self.executor.name()
+    pub fn executor_name(&self) -> &str {
+        &self.executor.agent
+    }
+
+    pub fn supervisor_agent(&self) -> Result<Arc<dyn SupervisorAgent>> {
+        parse_supervisor_agent(&self.supervisor.agent)
+    }
+
+    pub fn executor_agent(&self) -> Result<Arc<dyn ExecutorAgent>> {
+        parse_executor_agent(&self.executor.agent)
     }
 }
 
@@ -102,10 +117,47 @@ impl TryFrom<RawHqConfig> for HqConfig {
     type Error = anyhow::Error;
 
     fn try_from(raw: RawHqConfig) -> Result<Self> {
+        let (supervisor, executor) = match raw {
+            RawHqConfig::Nested {
+                supervisor,
+                executor,
+            } => (supervisor, executor),
+            RawHqConfig::Flat {
+                supervisor,
+                executor,
+            } => (
+                HqAgentConfig {
+                    agent: supervisor,
+                    model: None,
+                },
+                HqAgentConfig {
+                    agent: executor,
+                    model: None,
+                },
+            ),
+        };
+
+        parse_supervisor_agent(&supervisor.agent)?;
+        parse_executor_agent(&executor.agent)?;
         Ok(Self {
-            supervisor: parse_supervisor_agent(&raw.supervisor)?,
-            executor: parse_executor_agent(&raw.executor)?,
+            supervisor,
+            executor,
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HqRole {
+    Supervisor,
+    Executor,
+}
+
+impl HqRole {
+    pub fn table_name(self) -> &'static str {
+        match self {
+            Self::Supervisor => "supervisor",
+            Self::Executor => "executor",
+        }
     }
 }
 
@@ -149,6 +201,110 @@ impl Config {
         let raw: RawConfig = toml::from_str(contents).context("Failed to parse ferrus.toml")?;
         raw.try_into()
     }
+}
+
+pub async fn update_hq_agent_config(
+    role: HqRole,
+    agent: Option<&str>,
+    model: Option<Option<&str>>,
+) -> Result<()> {
+    let contents = tokio::fs::read_to_string("ferrus.toml")
+        .await
+        .context("ferrus.toml not found — run `ferrus init` first")?;
+    let updated = update_hq_agent_config_in_contents(&contents, role, agent, model)?;
+    tokio::fs::write("ferrus.toml", updated)
+        .await
+        .context("Failed to write ferrus.toml")?;
+    Ok(())
+}
+
+fn update_hq_agent_config_in_contents(
+    contents: &str,
+    role: HqRole,
+    agent: Option<&str>,
+    model: Option<Option<&str>>,
+) -> Result<String> {
+    let mut doc = contents
+        .parse::<DocumentMut>()
+        .context("Failed to parse ferrus.toml")?;
+
+    if !doc.contains_key("hq") {
+        doc["hq"] = Item::Table(Table::new());
+    }
+    let hq = doc["hq"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("ferrus.toml [hq] must be a table"))?;
+
+    let flat_supervisor = hq
+        .get("supervisor")
+        .and_then(Item::as_str)
+        .map(str::to_string);
+    let flat_executor = hq
+        .get("executor")
+        .and_then(Item::as_str)
+        .map(str::to_string);
+    if flat_supervisor.is_some() {
+        hq.remove("supervisor");
+    }
+    if flat_executor.is_some() {
+        hq.remove("executor");
+    }
+
+    let table_name = role.table_name();
+    if !hq.contains_key(table_name) {
+        hq[table_name] = Item::Table(Table::new());
+    }
+    if !hq.contains_key(HqRole::Supervisor.table_name()) {
+        hq[HqRole::Supervisor.table_name()] = Item::Table(Table::new());
+    }
+    if !hq.contains_key(HqRole::Executor.table_name()) {
+        hq[HqRole::Executor.table_name()] = Item::Table(Table::new());
+    }
+    if let Some(supervisor) = flat_supervisor {
+        let supervisor_table = hq[HqRole::Supervisor.table_name()]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("ferrus.toml [hq.supervisor] must be a table"))?;
+        if !supervisor_table.contains_key("agent") {
+            supervisor_table["agent"] = value(supervisor);
+        }
+    }
+    if let Some(executor) = flat_executor {
+        let executor_table = hq[HqRole::Executor.table_name()]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("ferrus.toml [hq.executor] must be a table"))?;
+        if !executor_table.contains_key("agent") {
+            executor_table["agent"] = value(executor);
+        }
+    }
+    let agent_table = hq[table_name]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("ferrus.toml [hq.{table_name}] must be a table"))?;
+
+    if let Some(agent) = agent {
+        agent_table["agent"] = value(agent);
+    }
+    if let Some(model) = model {
+        agent_table["model"] = value(model.unwrap_or(""));
+    }
+
+    Ok(doc.to_string())
+}
+
+fn deserialize_optional_model<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let model = Option::<String>::deserialize(deserializer)?;
+    Ok(model.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -226,17 +382,75 @@ heartbeat_interval_secs = 45
 
     #[test]
     fn hq_config_parses_when_present() {
-        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\"\n";
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq.supervisor]\nagent = \"claude-code\"\nmodel = \"\"\n[hq.executor]\nagent = \"codex\"\nmodel = \"gpt-5.4\"\n";
         let config = Config::from_toml(toml).unwrap();
         let hq = config.hq.unwrap();
         assert_eq!(hq.supervisor_name(), "claude-code");
         assert_eq!(hq.executor_name(), "codex");
+        assert_eq!(hq.supervisor.model, None);
+        assert_eq!(hq.executor.model.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]
     fn invalid_hq_agent_is_rejected_at_load_time() {
-        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"unknown\"\nexecutor = \"codex\"\n";
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq.supervisor]\nagent = \"unknown\"\n[hq.executor]\nagent = \"codex\"\n";
         let err = Config::from_toml(toml).unwrap_err().to_string();
         assert!(err.contains("Unknown supervisor agent 'unknown'"));
+    }
+
+    #[test]
+    fn flat_hq_config_still_parses_for_backward_compatibility() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\"\n";
+        let config = Config::from_toml(toml).unwrap();
+        let hq = config.hq.unwrap();
+        assert_eq!(hq.supervisor.agent, "claude-code");
+        assert_eq!(hq.executor.agent, "codex");
+        assert_eq!(hq.supervisor.model, None);
+        assert_eq!(hq.executor.model, None);
+    }
+
+    #[test]
+    fn missing_model_deserializes_to_none() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq.supervisor]\nagent = \"claude-code\"\n[hq.executor]\nagent = \"codex\"\n";
+        let config = Config::from_toml(toml).unwrap();
+        let hq = config.hq.unwrap();
+        assert_eq!(hq.supervisor.model, None);
+        assert_eq!(hq.executor.model, None);
+    }
+
+    #[test]
+    fn update_hq_agent_config_only_changes_requested_fields() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq.supervisor]\nagent = \"claude-code\"\nmodel = \"\"\n[hq.executor]\nagent = \"codex\"\nmodel = \"gpt-5.4\"\n";
+        let updated = update_hq_agent_config_in_contents(
+            toml,
+            HqRole::Supervisor,
+            None,
+            Some(Some("claude-opus-4-6")),
+        )
+        .unwrap();
+
+        let config = Config::from_toml(&updated).unwrap();
+        let hq = config.hq.unwrap();
+        assert_eq!(hq.supervisor.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(hq.executor.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(hq.supervisor.agent, "claude-code");
+    }
+
+    #[test]
+    fn update_hq_agent_config_migrates_flat_hq_tables() {
+        let toml = "[checks]\ncommands = [\"cargo test\"]\n[limits]\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\"\n";
+        let updated =
+            update_hq_agent_config_in_contents(toml, HqRole::Executor, None, Some(Some("gpt-5.4")))
+                .unwrap();
+
+        assert!(updated.contains("[hq.supervisor]"));
+        assert!(updated.contains("[hq.executor]"));
+        assert!(!updated.contains("\nsupervisor = \"claude-code\"\nexecutor = \"codex\""));
+
+        let config = Config::from_toml(&updated).unwrap();
+        let hq = config.hq.unwrap();
+        assert_eq!(hq.supervisor.agent, "claude-code");
+        assert_eq!(hq.executor.agent, "codex");
+        assert_eq!(hq.executor.model.as_deref(), Some("gpt-5.4"));
     }
 }

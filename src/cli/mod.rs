@@ -45,9 +45,15 @@ enum Commands {
         /// Agent to configure as Supervisor (optional if --executor is set)
         #[arg(long, value_enum, value_name = "AGENT")]
         supervisor: Option<commands::register::Agent>,
+        /// Optional model override to store for the Supervisor
+        #[arg(long, value_name = "MODEL")]
+        supervisor_model: Option<String>,
         /// Agent to configure as Executor (optional if --supervisor is set)
         #[arg(long, value_enum, value_name = "AGENT")]
         executor: Option<commands::register::Agent>,
+        /// Optional model override to store for the Executor
+        #[arg(long, value_name = "MODEL")]
+        executor_model: Option<String>,
     },
 }
 
@@ -70,12 +76,15 @@ impl Cli {
             }) => commands::serve::run(role, agent_name, agent_index, debug).await,
             Some(Commands::Register {
                 supervisor,
+                supervisor_model,
                 executor,
+                executor_model,
             }) => {
                 if supervisor.is_none() && executor.is_none() {
                     anyhow::bail!("At least one of --supervisor or --executor must be specified");
                 }
-                commands::register::run(supervisor, executor).await
+                commands::register::run(supervisor, supervisor_model, executor, executor_model)
+                    .await
             }
             None => crate::hq::run(debug).await,
         }

@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::agent_id::{agent_id, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{parse_executor_agent, parse_supervisor_agent, McpConfigEntry};
+use crate::config::{update_hq_agent_config, HqRole};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
@@ -20,21 +21,45 @@ impl Agent {
     }
 }
 
-pub async fn run(supervisor: Option<Agent>, executor: Option<Agent>) -> Result<()> {
+pub async fn run(
+    supervisor: Option<Agent>,
+    supervisor_model: Option<String>,
+    executor: Option<Agent>,
+    executor_model: Option<String>,
+) -> Result<()> {
+    if supervisor.is_none() && supervisor_model.is_some() {
+        anyhow::bail!("--supervisor-model requires --supervisor");
+    }
+    if executor.is_none() && executor_model.is_some() {
+        anyhow::bail!("--executor-model requires --executor");
+    }
+
     if let Some(agent) = &supervisor {
-        register_role(ROLE_SUPERVISOR, agent).await?;
+        register_role(ROLE_SUPERVISOR, agent, supervisor_model.as_deref()).await?;
+        update_hq_agent_config(
+            HqRole::Supervisor,
+            Some(agent.name()),
+            normalize_model_update(supervisor_model.as_deref()),
+        )
+        .await?;
     }
     if let Some(agent) = &executor {
-        register_role(ROLE_EXECUTOR, agent).await?;
+        register_role(ROLE_EXECUTOR, agent, executor_model.as_deref()).await?;
+        update_hq_agent_config(
+            HqRole::Executor,
+            Some(agent.name()),
+            normalize_model_update(executor_model.as_deref()),
+        )
+        .await?;
     }
     Ok(())
 }
 
-async fn register_role(role: &str, agent: &Agent) -> Result<()> {
+async fn register_role(role: &str, agent: &Agent, model: Option<&str>) -> Result<()> {
     let agent_name = agent.name();
     match agent {
-        Agent::ClaudeCode => register_claude_code(role, agent_name).await,
-        Agent::Codex => register_codex(role, agent_name).await,
+        Agent::ClaudeCode => register_claude_code(role, agent_name, model).await,
+        Agent::Codex => register_codex(role, agent_name, model).await,
     }
 }
 
@@ -46,7 +71,7 @@ fn config_entry(role: &str, agent_name: &str, index: u32) -> Result<McpConfigEnt
     }
 }
 
-async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
+async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
     let path = std::path::Path::new(".mcp.json");
 
     let mut root: serde_json::Value = if path.exists() {
@@ -70,13 +95,14 @@ async fn register_claude_code(role: &str, agent_name: &str) -> Result<()> {
     let key = format!("ferrus-{role}-{index}");
     let entry = config_entry(role, agent_name, index)?;
 
-    servers_obj.insert(
-        key.clone(),
-        serde_json::json!({
-            "command": entry.command,
-            "args": entry.args,
-        }),
-    );
+    let mut server_entry = serde_json::json!({
+        "command": entry.command,
+        "args": entry.args,
+    });
+    if let Some(model) = model {
+        server_entry["model"] = serde_json::Value::String(model.to_string());
+    }
+    servers_obj.insert(key.clone(), server_entry);
     println!(
         "Registered {key} in .mcp.json (agent_id will be \"{}\")",
         agent_id(role, agent_name, index)
@@ -110,7 +136,7 @@ fn count_mcp_entries(
         .count() as u32
 }
 
-async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
+async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
     let dir = std::path::Path::new(".codex");
     tokio::fs::create_dir_all(dir).await?;
     let path = dir.join("config.toml");
@@ -144,6 +170,9 @@ async fn register_codex(role: &str, agent_name: &str) -> Result<()> {
                 .collect::<Vec<_>>(),
         ),
     );
+    if let Some(model) = model {
+        entry.insert("model".to_string(), toml::Value::String(model.to_string()));
+    }
     apply_codex_tool_approval_overrides(role, &mut entry);
     mcp_servers.insert(key.clone(), toml::Value::Table(entry));
     println!(
@@ -347,6 +376,16 @@ fn has_flag_pair(args: &[&str], flag: &str, value: &str) -> bool {
     args.windows(2).any(|w| w[0] == flag && w[1] == value)
 }
 
+fn normalize_model_update(model: Option<&str>) -> Option<Option<&str>> {
+    model.map(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +402,24 @@ mod tests {
         let section = claude_md_section(ROLE_SUPERVISOR, "<!-- marker -->");
         assert!(section.contains("explicit user approval"));
         assert!(section.contains("show it for feedback"));
+    }
+
+    #[test]
+    fn normalize_model_update_treats_blank_as_clear() {
+        assert_eq!(normalize_model_update(None), None);
+        assert_eq!(normalize_model_update(Some("")), Some(None));
+        assert_eq!(
+            normalize_model_update(Some("gpt-5.4")),
+            Some(Some("gpt-5.4"))
+        );
+    }
+
+    #[tokio::test]
+    async fn model_flag_requires_matching_agent_flag() {
+        let err = run(None, Some("gpt-5.4".to_string()), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--supervisor-model requires --supervisor"));
     }
 }

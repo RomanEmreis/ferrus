@@ -45,9 +45,15 @@ pub enum ShellCommand {
     Register {
         #[arg(long, value_name = "AGENT")]
         supervisor: Option<String>,
+        #[arg(long, value_name = "MODEL")]
+        supervisor_model: Option<String>,
         #[arg(long, value_name = "AGENT")]
         executor: Option<String>,
+        #[arg(long, value_name = "MODEL")]
+        executor_model: Option<String>,
     },
+    /// Update the configured supervisor or executor model override.
+    Model,
     /// Show all available HQ commands.
     Help,
 }
@@ -136,6 +142,13 @@ mod tests {
         assert!(matches!(
             parse_command("/resume").unwrap(),
             ShellCommand::Resume
+        ));
+    }
+    #[test]
+    fn parse_model() {
+        assert!(matches!(
+            parse_command("/model").unwrap(),
+            ShellCommand::Model
         ));
     }
     #[test]

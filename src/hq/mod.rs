@@ -10,7 +10,7 @@ use tokio::sync::watch;
 
 use crate::agent_id::{agent_id, DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{ExecutorAgent, SupervisorAgent};
-use crate::config::{Config, HqConfig};
+use crate::config::{update_hq_agent_config, Config, HqConfig, HqRole};
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
@@ -80,11 +80,11 @@ pub async fn run(debug: bool) -> Result<()> {
             maybe_cmd = cmd_rx.recv() => {
                 match maybe_cmd {
                     Some(cmd) => {
-                        let line = cmd.trim();
-                        if line.is_empty() {
+                        let line = cmd.as_str();
+                        if line.trim().is_empty() && ctx.pending_model_prompt.is_none() {
                             continue;
                         }
-                        if line == "/quit" {
+                        if line.trim() == "/quit" {
                             ctx.display.info("Bye.");
                             break Ok(());
                         }
@@ -128,8 +128,14 @@ async fn load_agent_versions(hq: Option<&HqConfig>) -> (String, String) {
     let Some(hq) = hq else {
         return (String::new(), String::new());
     };
-    let supervisor = load_agent_version_from_command(hq.supervisor.spawn(None)).await;
-    let executor = load_agent_version_from_command(hq.executor.spawn(None)).await;
+    let supervisor = match hq.supervisor_agent() {
+        Ok(agent) => load_agent_version_from_command(agent.spawn(None)).await,
+        Err(_) => String::new(),
+    };
+    let executor = match hq.executor_agent() {
+        Ok(agent) => load_agent_version_from_command(agent.spawn(None)).await,
+        Err(_) => String::new(),
+    };
     (supervisor, executor)
 }
 
@@ -151,6 +157,10 @@ async fn load_agent_version_from_command(command: std::process::Command) -> Stri
 }
 
 async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
+    if ctx.pending_model_prompt.is_some() && !line.starts_with('/') {
+        return ctx.handle_model_prompt_input(line).await;
+    }
+
     // When state is AwaitingHuman, non-command input is treated as the human's answer.
     if !line.starts_with('/') {
         let state = store::read_state().await?;
@@ -207,6 +217,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /reset             Reset state to Idle (clears task files)\n",
                 "  /init              Initialize ferrus in the current directory\n",
                 "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
+                "  /model             Update the configured supervisor/executor model override\n",
                 "  /quit              Exit HQ\n",
                 "\n",
                 "When an agent asks a question (state = AwaitingHuman):\n",
@@ -239,7 +250,9 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         }
         ShellCommand::Register {
             supervisor,
+            supervisor_model,
             executor,
+            executor_model,
         } => {
             let sup = supervisor.as_deref().and_then(parse_agent_type);
             let exe = executor.as_deref().and_then(parse_agent_type);
@@ -247,9 +260,12 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 ctx.display
                     .error("At least one of --supervisor or --executor required");
             } else {
-                crate::cli::commands::register::run(sup, exe).await?;
+                crate::cli::commands::register::run(sup, supervisor_model, exe, executor_model)
+                    .await?;
+                ctx.reload_hq_config().await?;
             }
         }
+        ShellCommand::Model => ctx.begin_model_prompt().await?,
     }
     Ok(())
 }
@@ -291,12 +307,51 @@ impl Drop for ResumeGuard {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelTarget {
+    Supervisor,
+    Executor,
+}
+
+impl ModelTarget {
+    fn from_selection(selection: &str) -> Option<Self> {
+        match selection.trim() {
+            "1" => Some(Self::Supervisor),
+            "2" => Some(Self::Executor),
+            _ => None,
+        }
+    }
+
+    fn config_role(self) -> HqRole {
+        match self {
+            Self::Supervisor => HqRole::Supervisor,
+            Self::Executor => HqRole::Executor,
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Supervisor => "Supervisor",
+            Self::Executor => "Executor",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingModelPrompt {
+    SelectAgent,
+    EnterModel { target: ModelTarget },
+}
+
 pub(crate) struct HqContext {
     pub(crate) supervisor: Option<std::sync::Arc<dyn SupervisorAgent>>,
     pub(crate) executor: Option<std::sync::Arc<dyn ExecutorAgent>>,
+    pub(crate) supervisor_model: Option<String>,
+    pub(crate) executor_model: Option<String>,
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
+    pending_model_prompt: Option<PendingModelPrompt>,
     debug: bool,
     state_rx: watch::Receiver<Option<WatchedState>>,
     pub(crate) display: Display,
@@ -307,8 +362,11 @@ impl HqContext {
         Self {
             supervisor: None,
             executor: None,
+            supervisor_model: None,
+            executor_model: None,
             headless: std::collections::HashMap::new(),
             last_task_state: None,
+            pending_model_prompt: None,
             debug,
             state_rx,
             display,
@@ -316,8 +374,10 @@ impl HqContext {
     }
 
     fn set_hq_config(&mut self, hq: &HqConfig) {
-        self.supervisor = Some(std::sync::Arc::clone(&hq.supervisor));
-        self.executor = Some(std::sync::Arc::clone(&hq.executor));
+        self.supervisor = hq.supervisor_agent().ok();
+        self.executor = hq.executor_agent().ok();
+        self.supervisor_model = hq.supervisor.model.clone();
+        self.executor_model = hq.executor.model.clone();
     }
 
     fn executor_agent_id(&self) -> Result<String> {
@@ -352,10 +412,75 @@ impl HqContext {
         let config = Config::load().await?;
         let hq = config.hq.ok_or_else(|| {
             anyhow::anyhow!(
-                "No [hq] section in ferrus.toml. Add:\n[hq]\nsupervisor = \"claude-code\"\nexecutor = \"codex\""
+                "No [hq.supervisor] / [hq.executor] sections in ferrus.toml. Add:\n[hq.supervisor]\nagent = \"claude-code\"\nmodel = \"\"\n\n[hq.executor]\nagent = \"codex\"\nmodel = \"\""
             )
         })?;
         self.set_hq_config(&hq);
+        Ok(())
+    }
+
+    async fn reload_hq_config(&mut self) -> Result<()> {
+        let config = Config::load().await?;
+        let hq = config.hq.ok_or_else(|| {
+            anyhow::anyhow!("No [hq.supervisor] / [hq.executor] sections in ferrus.toml.")
+        })?;
+        self.set_hq_config(&hq);
+        Ok(())
+    }
+
+    fn supervisor_model(&self) -> Option<&str> {
+        self.supervisor_model.as_deref()
+    }
+
+    fn executor_model(&self) -> Option<&str> {
+        self.executor_model.as_deref()
+    }
+
+    async fn begin_model_prompt(&mut self) -> Result<()> {
+        self.ensure_hq_config().await?;
+        self.pending_model_prompt = Some(PendingModelPrompt::SelectAgent);
+        self.display.allow_blank_input(false);
+        self.display
+            .info("Which agent? 1 - supervisor  2 - executor");
+        Ok(())
+    }
+
+    async fn handle_model_prompt_input(&mut self, input: &str) -> Result<()> {
+        let Some(prompt) = self.pending_model_prompt else {
+            return Ok(());
+        };
+
+        match prompt {
+            PendingModelPrompt::SelectAgent => {
+                let Some(target) = ModelTarget::from_selection(input) else {
+                    self.pending_model_prompt = None;
+                    self.display.allow_blank_input(false);
+                    self.display.info("Model change cancelled.");
+                    return Ok(());
+                };
+                self.pending_model_prompt = Some(PendingModelPrompt::EnterModel { target });
+                self.display.allow_blank_input(true);
+                self.display.info("New model name (leave blank to clear):");
+            }
+            PendingModelPrompt::EnterModel { target } => {
+                let model = input.trim();
+                let model_update = if model.is_empty() { None } else { Some(model) };
+                update_hq_agent_config(target.config_role(), None, Some(model_update)).await?;
+                self.reload_hq_config().await?;
+                self.pending_model_prompt = None;
+                self.display.allow_blank_input(false);
+                if let Some(model) = model_update {
+                    self.display.info(format!(
+                        "{} model set to \"{model}\"",
+                        target.display_name()
+                    ));
+                } else {
+                    self.display
+                        .info(format!("{} model cleared", target.display_name()));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -537,9 +662,14 @@ impl HqContext {
         );
         self.display
             .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
-        let handle =
-            agent_manager::spawn_headless_supervisor(agent.as_ref(), name, prompt, self.debug)
-                .await?;
+        let handle = agent_manager::spawn_headless_supervisor(
+            agent.as_ref(),
+            name,
+            prompt,
+            self.supervisor_model(),
+            self.debug,
+        )
+        .await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -569,9 +699,14 @@ impl HqContext {
         );
         self.display
             .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
-        let handle =
-            agent_manager::spawn_headless_executor(agent.as_ref(), name, prompt, self.debug)
-                .await?;
+        let handle = agent_manager::spawn_headless_executor(
+            agent.as_ref(),
+            name,
+            prompt,
+            self.executor_model(),
+            self.debug,
+        )
+        .await?;
         self.display.info(format!(
             "{name} started in background. Logs: {}",
             handle.log_path.display()
@@ -735,6 +870,7 @@ impl HqContext {
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
         let mut cmd = Command::from(agent.spawn(prompt));
+        agent_manager::apply_model_override(cmd.as_std_mut(), self.supervisor_model());
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -786,6 +922,7 @@ impl HqContext {
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
         let mut cmd = Command::from(agent.spawn(prompt));
+        agent_manager::apply_model_override(cmd.as_std_mut(), self.executor_model());
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -881,6 +1018,7 @@ impl HqContext {
 
         let mut cmd =
             Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
+        agent_manager::apply_model_override(cmd.as_std_mut(), self.supervisor_model());
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;

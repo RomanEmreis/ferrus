@@ -33,7 +33,7 @@ ferrus serve [--role supervisor|executor] [--agent-name <name>] [--agent-index <
     # --agent-name / --agent-index are baked into the claimed_by field (e.g. "executor:codex:1")
     # defaults: agent-name=unknown, agent-index=0
 
-ferrus register [--supervisor <agent>] [--executor <agent>]
+ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor <agent>] [--executor-model <model>]
     # write MCP config for claude-code (.mcp.json) or codex (.codex/config.toml)
     # at least one flag required
     # e.g. ferrus register --supervisor claude-code --executor codex
@@ -55,6 +55,7 @@ ferrus register [--supervisor <agent>] [--executor <agent>]
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
 | `/register` | Register agent configs (same as `ferrus register`) |
+| `/model` | Update the supervisor or executor model override |
 | `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
@@ -83,9 +84,13 @@ wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
 ttl_secs = 90            # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30  # how often agents should call /heartbeat
 
-[hq]
-supervisor = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
-executor = "codex"          # agent for executor role: claude-code | codex
+[hq.supervisor]
+agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+model = ""             # optional override; empty = agent default
+
+[hq.executor]
+agent = "codex"        # agent for executor role: claude-code | codex
+model = ""             # optional override; empty = agent default
 ```
 
 ## Skill Files

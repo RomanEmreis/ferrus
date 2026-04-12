@@ -61,6 +61,7 @@ Then type `/task` — a supervisor spawns, you describe what you want, and the f
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
 | `/register` | Register agent configs (same as `ferrus register`) |
+| `/model` | Update the supervisor or executor model override |
 | `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
@@ -132,7 +133,7 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 | `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
-### `ferrus register --supervisor <agent> --executor <agent>`
+### `ferrus register --supervisor <agent> [--supervisor-model <model>] --executor <agent> [--executor-model <model>]`
 
 Writes agent config files so they automatically load `ferrus serve` as a tool server. Supported agents:
 
@@ -163,9 +164,13 @@ wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
 ttl_secs = 90                  # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30   # how often agents should call heartbeat
 
-[hq]
-supervisor = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
-executor = "codex"          # agent for executor role: claude-code | codex
+[hq.supervisor]
+agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+model = ""             # optional override; empty = agent default
+
+[hq.executor]
+agent = "codex"        # agent for executor role: claude-code | codex
+model = ""             # optional override; empty = agent default
 ```
 
 Check commands run in the directory where `ferrus serve` was started. Full output is written to `.ferrus/logs/check_<attempt>_<ts>.txt`. `FEEDBACK.md` contains a short summary so the Executor gets the signal without noise.
