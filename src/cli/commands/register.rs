@@ -248,7 +248,7 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              The Supervisor runs in multiple modes — check your initial prompt:\n\n\
              **Task-definition mode** (\"You are a Ferrus Supervisor in TASK DEFINITION mode\"): \
-             collaborate with the user, then call `/create_task` and stop.\n\n\
+             collaborate with the user, draft the exact task text, show it for feedback, and call `/create_task` only after explicit user approval.\n\n\
              **Review mode** (\"You are a Ferrus Supervisor in REVIEW mode\"): Call `/wait_for_review`, \
              then `/review_pending`, then `/approve` or `/reject`. After deciding, exit.\n\n\
              **Consultation mode** (\"You are a Ferrus Supervisor in CONSULTATION mode\"): \
@@ -307,7 +307,7 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              The Supervisor runs in multiple modes — check your initial prompt:\n\n\
              **Task-definition mode** (\"You are a Ferrus Supervisor in TASK DEFINITION mode\"): \
-             collaborate with the user, then call `/create_task` and stop.\n\n\
+             collaborate with the user, draft the exact task text, show it for feedback, and call `/create_task` only after explicit user approval.\n\n\
              **Review mode** (\"You are a Ferrus Supervisor in REVIEW mode\"): Call `/wait_for_review`, \
              then `/review_pending`, then `/approve` or `/reject`. After deciding, exit.\n\n\
              **Consultation mode** (\"You are a Ferrus Supervisor in CONSULTATION mode\"): \
@@ -345,4 +345,23 @@ fn count_codex_entries(servers: &toml::Table, role: &str, agent_name: &str) -> u
 /// Returns true if `args` contains `flag` immediately followed by `value`.
 fn has_flag_pair(args: &[&str], flag: &str, value: &str) -> bool {
     args.windows(2).any(|w| w[0] == flag && w[1] == value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_md_supervisor_section_requires_user_approval_before_create_task() {
+        let section = agents_md_section(ROLE_SUPERVISOR, "<!-- marker -->");
+        assert!(section.contains("explicit user approval"));
+        assert!(section.contains("show it for feedback"));
+    }
+
+    #[test]
+    fn claude_md_supervisor_section_requires_user_approval_before_create_task() {
+        let section = claude_md_section(ROLE_SUPERVISOR, "<!-- marker -->");
+        assert!(section.contains("explicit user approval"));
+        assert!(section.contains("show it for feedback"));
+    }
 }

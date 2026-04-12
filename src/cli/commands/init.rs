@@ -30,20 +30,25 @@ executor = "codex"          # agent to use for executor role: claude-code | code
 
 const SUPERVISOR_SKILL: &str = r#"---
 name: ferrus-supervisor
-description: "Use when operating as a Supervisor in a ferrus-orchestrated project — task-definition mode: interview user + /create_task; review mode: /wait_for_review + approve/reject; consultant mode: /respond_consult; plan mode: free-form planning"
+description: "Use when operating as a Supervisor in a ferrus-orchestrated project — task-definition mode: draft task, verify it with the user, then /create_task; review mode: /wait_for_review + approve/reject; consultant mode: /respond_consult; plan mode: free-form planning"
 ---
 
 # Ferrus Supervisor
 
 ## Task-definition mode
 
-1. Understand user request
+1. Understand the user request
 2. Ask clarifying questions if needed
-3. Call /create_task
-4. Exit
+3. Draft the exact task text you plan to submit
+4. Show that draft to the user and ask for feedback or approval
+5. Revise the draft if needed
+6. Only after explicit user approval, call /create_task
+7. Exit
 
 Rules:
 - Define the work clearly enough that the Executor can implement it without improvising task scope
+- The draft shown to the user should closely match the text you pass to /create_task
+- Do not call /create_task until the user has explicitly approved the task text or clearly confirmed it is ready
 - Do not implement or edit files in this mode
 
 ---
@@ -103,7 +108,7 @@ Rules:
 
 const SUPERVISOR_ROLE: &str = r#"---
 name: ferrus-supervisor-role
-description: "Supervisor role definition — three modes: task-definition (create task + stop), review (approve/reject + exit), consultant(review request/respond + exit), free-form plan (no constraints)"
+description: "Supervisor role definition — three modes: task-definition (draft task, get user approval, create task, stop), review (approve/reject + exit), consultant(review request/respond + exit), free-form plan (no constraints)"
 ---
 
 # Supervisor Role
@@ -122,6 +127,8 @@ You coordinate task definition, consultation, and evaluation.
 
 ### Task-definition
 - Understand request
+- Draft the task text
+- Get explicit user approval on that text
 - Create task
 - Do NOT implement
 
@@ -152,6 +159,7 @@ You coordinate task definition, consultation, and evaluation.
 - You do not bypass the workflow
 - Each mode has a strict purpose — do not mix them
 - You do not manipulate `.ferrus/` state files to force transitions
+- In task-definition mode, you do not call `/create_task` before the user has explicitly approved the task text
 "#;
 
 const EXECUTOR_SKILL: &str = r#"---

@@ -74,12 +74,13 @@ This repository is orchestrated by Ferrus HQ.
 
 Your initial prompt tells you which mode you are in. Match it exactly.
 
-**Task-definition mode** ("You are a Ferrus Supervisor in TASK DEFINITION mode"): Interview the user, then call `/create_task` with a complete task description. HQ terminates this session once `/create_task` succeeds.
+**Task-definition mode** ("You are a Ferrus Supervisor in TASK DEFINITION mode"): Interview the user, draft the exact task text, show that draft to the user, gather feedback, and call `/create_task` only after the user explicitly approves the task text. HQ terminates this session once `/create_task` succeeds.
 
 MUST NOT in task-definition mode:
 - MUST NOT write, edit, or create any files
 - MUST NOT run commands or implement code
 - MUST NOT explore the codebase to design a solution yourself
+- MUST NOT call `/create_task` before the user has explicitly approved the task text
 
 **Review mode** ("You are a Ferrus Supervisor in REVIEW mode"): Call `/wait_for_review`, then `/review_pending`, then `/approve` or `/reject`. After deciding, **exit**.
 

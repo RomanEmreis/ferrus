@@ -1722,8 +1722,12 @@ mod tui_tests {
         assert!(is_multiline_enter(KeyModifiers::SHIFT | KeyModifiers::ALT));
         assert!(!is_multiline_enter(KeyModifiers::NONE));
         assert!(!is_multiline_enter(KeyModifiers::CONTROL));
-        assert!(!is_multiline_enter(KeyModifiers::CONTROL | KeyModifiers::SHIFT));
-        assert!(!is_multiline_enter(KeyModifiers::CONTROL | KeyModifiers::ALT));
+        assert!(!is_multiline_enter(
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        ));
+        assert!(!is_multiline_enter(
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        ));
         assert!(!is_multiline_enter(KeyModifiers::SUPER | KeyModifiers::ALT));
     }
 }

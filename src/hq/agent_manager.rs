@@ -18,14 +18,19 @@ Your goal: define a clear, executable task.
 Do:
   - understand the user request
   - clarify if needed
-  - define a precise task
+  - draft a precise task
+  - show the draft task text to the user
+  - revise it if needed
+  - get explicit user approval before creating the task
 
 HARD RULES:
-  - implement code
-  - edit files
-  - perform the task yourself
+  - do NOT implement code
+  - do NOT edit files
+  - do NOT perform the task yourself
+  - do NOT call /create_task until the user has explicitly approved the task text
+  - the text you pass to /create_task should match the approved draft closely
 
-Call /create_task when ready, then stop.
+After explicit approval: call /create_task, then stop.
 
 Follow ROLE.md and SKILL.md.
 ";
@@ -664,6 +669,13 @@ mod tests {
     #[test]
     fn supervisor_task_prompt_has_hard_rules() {
         assert!(supervisor_task_prompt().contains("HARD RULES"));
+    }
+
+    #[test]
+    fn supervisor_task_prompt_requires_user_approval_before_create_task() {
+        let prompt = supervisor_task_prompt();
+        assert!(prompt.contains("explicit user approval"));
+        assert!(prompt.contains("do NOT call /create_task until the user has explicitly approved"));
     }
 
     #[test]
