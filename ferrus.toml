@@ -18,8 +18,6 @@ path = ".agents" # root directory for agent skill files
 ttl_secs = 90              # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 
-[hq]
-
 [hq.supervisor]
 agent = "claude-code"
 model = ""

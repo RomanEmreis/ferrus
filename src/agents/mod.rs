@@ -20,6 +20,15 @@ pub struct McpConfigEntry {
     pub command: String,
     /// Arguments passed to [`Self::command`] when the MCP server starts.
     pub args: Vec<String>,
+    /// Optional model override understood by the target client.
+    pub model: Option<String>,
+}
+
+/// Describes how Ferrus intends to run an agent process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRunMode<'a> {
+    Interactive { prompt: Option<&'a str> },
+    Headless { prompt: &'a str },
 }
 
 /// Behavior required from a supervisor-capable agent implementation.
@@ -30,11 +39,8 @@ pub trait SupervisorAgent: Send + Sync {
     /// Returns the stable configuration name for this agent backend.
     fn name(&self) -> &'static str;
 
-    /// Builds the interactive command used when a human drives the supervisor.
-    fn spawn(&self, prompt: Option<&str>) -> Command;
-
-    /// Builds the non-interactive command used when HQ drives the supervisor.
-    fn spawn_headlessly(&self, prompt: &str) -> Command;
+    /// Builds the command used when a human or HQ drives the supervisor.
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Command;
 
     /// Builds the MCP configuration entry for this supervisor instance.
     ///
@@ -50,8 +56,12 @@ pub trait SupervisorAgent: Send + Sync {
         Ok(McpConfigEntry {
             command: current_exe_string()?,
             args: serve_args(role, self.name(), index),
+            model: self.model().map(ToOwned::to_owned),
         })
     }
+
+    /// Returns the optional model override used by this backend.
+    fn model(&self) -> Option<&str>;
 }
 
 /// Behavior required from an executor-capable agent implementation.
@@ -62,11 +72,8 @@ pub trait ExecutorAgent: Send + Sync {
     /// Returns the stable configuration name for this agent backend.
     fn name(&self) -> &'static str;
 
-    /// Builds the interactive command used when a human drives the executor.
-    fn spawn(&self, prompt: Option<&str>) -> Command;
-
-    /// Builds the non-interactive command used when HQ drives the executor.
-    fn spawn_headlessly(&self, prompt: &str) -> Command;
+    /// Builds the command used when a human or HQ drives the executor.
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Command;
 
     /// Builds the MCP configuration entry for this executor instance.
     ///
@@ -78,8 +85,12 @@ pub trait ExecutorAgent: Send + Sync {
         Ok(McpConfigEntry {
             command: current_exe_string()?,
             args: serve_args(role, self.name(), index),
+            model: self.model().map(ToOwned::to_owned),
         })
     }
+
+    /// Returns the optional model override used by this backend.
+    fn model(&self) -> Option<&str>;
 }
 
 /// Parses a configured supervisor agent name into its concrete implementation.
@@ -88,10 +99,10 @@ pub trait ExecutorAgent: Send + Sync {
 ///
 /// Returns an error that lists the supported agent names when `agent_type` does
 /// not match a registered supervisor backend.
-pub fn parse_supervisor_agent(agent_type: &str) -> Result<Arc<dyn SupervisorAgent>> {
+pub fn parse_supervisor_agent(agent_type: &str, model: Option<&str>) -> Result<Arc<dyn SupervisorAgent>> {
     match agent_type {
-        claude::NAME => Ok(Arc::new(claude::Supervisor)),
-        codex::NAME => Ok(Arc::new(codex::Supervisor)),
+        claude::NAME => Ok(Arc::new(claude::Supervisor::new(model))),
+        codex::NAME => Ok(Arc::new(codex::Supervisor::new(model))),
         other => bail!(
             "Unknown supervisor agent '{other}'. Supported values: \"claude-code\", \"codex\"."
         ),
@@ -104,10 +115,10 @@ pub fn parse_supervisor_agent(agent_type: &str) -> Result<Arc<dyn SupervisorAgen
 ///
 /// Returns an error that lists the supported agent names when `agent_type` does
 /// not match a registered executor backend.
-pub fn parse_executor_agent(agent_type: &str) -> Result<Arc<dyn ExecutorAgent>> {
+pub fn parse_executor_agent(agent_type: &str, model: Option<&str>) -> Result<Arc<dyn ExecutorAgent>> {
     match agent_type {
-        claude::NAME => Ok(Arc::new(claude::Executor)),
-        codex::NAME => Ok(Arc::new(codex::Executor)),
+        claude::NAME => Ok(Arc::new(claude::Executor::new(model))),
+        codex::NAME => Ok(Arc::new(codex::Executor::new(model))),
         other => {
             bail!("Unknown executor agent '{other}'. Supported values: \"claude-code\", \"codex\".")
         }
@@ -137,14 +148,15 @@ fn serve_args(role: &str, agent_name: &str, index: u32) -> Vec<String> {
     ]
 }
 
-fn positional_prompt_command(binary: &str, prompt: Option<&str>) -> Command {
-    let mut cmd = Command::new(binary);
-    if let Some(prompt) = prompt {
-        // Both supported CLIs accept an optional positional prompt for
-        // interactive startup, so we only append it when the caller supplied one.
-        cmd.arg(prompt);
-    }
-    cmd
+pub(crate) fn normalized_model(model: Option<&str>) -> Option<String> {
+    model.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -166,7 +178,7 @@ mod tests {
 
     #[test]
     fn unknown_supervisor_agent_is_actionable() {
-        let err = match parse_supervisor_agent("unknown") {
+        let err = match parse_supervisor_agent("unknown", None) {
             Ok(_) => panic!("expected unknown supervisor agent to fail"),
             Err(err) => err.to_string(),
         };
@@ -177,12 +189,20 @@ mod tests {
 
     #[test]
     fn unknown_executor_agent_is_actionable() {
-        let err = match parse_executor_agent("unknown") {
+        let err = match parse_executor_agent("unknown", None) {
             Ok(_) => panic!("expected unknown executor agent to fail"),
             Err(err) => err.to_string(),
         };
         assert!(err.contains("Unknown executor agent 'unknown'"));
         assert!(err.contains("claude-code"));
         assert!(err.contains("codex"));
+    }
+
+    #[test]
+    fn blank_model_is_normalized_to_none() {
+        assert_eq!(normalized_model(None), None);
+        assert_eq!(normalized_model(Some("")), None);
+        assert_eq!(normalized_model(Some("  ")), None);
+        assert_eq!(normalized_model(Some("gpt-5.4")), Some("gpt-5.4".to_string()));
     }
 }

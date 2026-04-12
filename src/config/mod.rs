@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::sync::Arc;
 use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::agents::{parse_executor_agent, parse_supervisor_agent, ExecutorAgent, SupervisorAgent};
@@ -90,12 +89,12 @@ impl HqConfig {
         &self.executor.agent
     }
 
-    pub fn supervisor_agent(&self) -> Result<Arc<dyn SupervisorAgent>> {
-        parse_supervisor_agent(&self.supervisor.agent)
+    pub fn supervisor_agent(&self) -> Result<std::sync::Arc<dyn SupervisorAgent>> {
+        parse_supervisor_agent(&self.supervisor.agent, self.supervisor.model.as_deref())
     }
 
-    pub fn executor_agent(&self) -> Result<Arc<dyn ExecutorAgent>> {
-        parse_executor_agent(&self.executor.agent)
+    pub fn executor_agent(&self) -> Result<std::sync::Arc<dyn ExecutorAgent>> {
+        parse_executor_agent(&self.executor.agent, self.executor.model.as_deref())
     }
 }
 
@@ -137,8 +136,8 @@ impl TryFrom<RawHqConfig> for HqConfig {
             ),
         };
 
-        parse_supervisor_agent(&supervisor.agent)?;
-        parse_executor_agent(&executor.agent)?;
+        parse_supervisor_agent(&supervisor.agent, supervisor.model.as_deref())?;
+        parse_executor_agent(&executor.agent, executor.model.as_deref())?;
         Ok(Self {
             supervisor,
             executor,

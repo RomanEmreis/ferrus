@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::agent_id::{agent_id, DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use crate::agents::{ExecutorAgent, SupervisorAgent};
+use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::config::{update_hq_agent_config, Config, HqConfig, HqRole};
 use crate::state::{
     agents,
@@ -129,11 +129,17 @@ async fn load_agent_versions(hq: Option<&HqConfig>) -> (String, String) {
         return (String::new(), String::new());
     };
     let supervisor = match hq.supervisor_agent() {
-        Ok(agent) => load_agent_version_from_command(agent.spawn(None)).await,
+        Ok(agent) => {
+            load_agent_version_from_command(agent.spawn(AgentRunMode::Interactive { prompt: None }))
+                .await
+        }
         Err(_) => String::new(),
     };
     let executor = match hq.executor_agent() {
-        Ok(agent) => load_agent_version_from_command(agent.spawn(None)).await,
+        Ok(agent) => {
+            load_agent_version_from_command(agent.spawn(AgentRunMode::Interactive { prompt: None }))
+                .await
+        }
         Err(_) => String::new(),
     };
     (supervisor, executor)
@@ -346,8 +352,6 @@ enum PendingModelPrompt {
 pub(crate) struct HqContext {
     pub(crate) supervisor: Option<std::sync::Arc<dyn SupervisorAgent>>,
     pub(crate) executor: Option<std::sync::Arc<dyn ExecutorAgent>>,
-    pub(crate) supervisor_model: Option<String>,
-    pub(crate) executor_model: Option<String>,
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
@@ -362,8 +366,6 @@ impl HqContext {
         Self {
             supervisor: None,
             executor: None,
-            supervisor_model: None,
-            executor_model: None,
             headless: std::collections::HashMap::new(),
             last_task_state: None,
             pending_model_prompt: None,
@@ -376,8 +378,6 @@ impl HqContext {
     fn set_hq_config(&mut self, hq: &HqConfig) {
         self.supervisor = hq.supervisor_agent().ok();
         self.executor = hq.executor_agent().ok();
-        self.supervisor_model = hq.supervisor.model.clone();
-        self.executor_model = hq.executor.model.clone();
     }
 
     fn executor_agent_id(&self) -> Result<String> {
@@ -426,14 +426,6 @@ impl HqContext {
         })?;
         self.set_hq_config(&hq);
         Ok(())
-    }
-
-    fn supervisor_model(&self) -> Option<&str> {
-        self.supervisor_model.as_deref()
-    }
-
-    fn executor_model(&self) -> Option<&str> {
-        self.executor_model.as_deref()
     }
 
     async fn begin_model_prompt(&mut self) -> Result<()> {
@@ -666,7 +658,6 @@ impl HqContext {
             agent.as_ref(),
             name,
             prompt,
-            self.supervisor_model(),
             self.debug,
         )
         .await?;
@@ -703,7 +694,6 @@ impl HqContext {
             agent.as_ref(),
             name,
             prompt,
-            self.executor_model(),
             self.debug,
         )
         .await?;
@@ -869,8 +859,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(prompt));
-        agent_manager::apply_model_override(cmd.as_std_mut(), self.supervisor_model());
+        let mut cmd = Command::from(agent.spawn(AgentRunMode::Interactive { prompt }));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -921,8 +910,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(prompt));
-        agent_manager::apply_model_override(cmd.as_std_mut(), self.executor_model());
+        let mut cmd = Command::from(agent.spawn(AgentRunMode::Interactive { prompt }));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -1016,9 +1004,9 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let mut cmd =
-            Command::from(supervisor.spawn(Some(agent_manager::supervisor_task_prompt())));
-        agent_manager::apply_model_override(cmd.as_std_mut(), self.supervisor_model());
+        let mut cmd = Command::from(supervisor.spawn(AgentRunMode::Interactive {
+            prompt: Some(agent_manager::supervisor_task_prompt()),
+        }));
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;

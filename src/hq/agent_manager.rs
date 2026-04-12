@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use crate::agents::{ExecutorAgent, SupervisorAgent};
+use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
 const SUPERVISOR_TASK_PROMPT: &str = "You are a Ferrus Supervisor in TASK DEFINITION mode.
@@ -159,7 +159,13 @@ pub async fn spawn_and_wait_executor(
     name: &str,
     prompt: Option<&str>,
 ) -> Result<i32> {
-    spawn_and_wait(agent.name(), agent.spawn(prompt), ROLE_EXECUTOR, name).await
+    spawn_and_wait(
+        agent.name(),
+        agent.spawn(AgentRunMode::Interactive { prompt }),
+        ROLE_EXECUTOR,
+        name,
+    )
+    .await
 }
 
 #[allow(dead_code)]
@@ -170,7 +176,13 @@ pub async fn spawn_and_wait_supervisor(
     name: &str,
     prompt: Option<&str>,
 ) -> Result<i32> {
-    spawn_and_wait(agent.name(), agent.spawn(prompt), ROLE_SUPERVISOR, name).await
+    spawn_and_wait(
+        agent.name(),
+        agent.spawn(AgentRunMode::Interactive { prompt }),
+        ROLE_SUPERVISOR,
+        name,
+    )
+    .await
 }
 
 async fn spawn_and_wait(
@@ -370,11 +382,9 @@ pub async fn spawn_headless_executor(
     agent: &dyn ExecutorAgent,
     name: &str,
     prompt: &str,
-    model: Option<&str>,
     debug: bool,
 ) -> Result<HeadlessHandle> {
-    let mut command = agent.spawn_headlessly(prompt);
-    apply_model_override(&mut command, model);
+    let command = agent.spawn(AgentRunMode::Headless { prompt });
     spawn_headless(agent.name(), command, ROLE_EXECUTOR, name, prompt, debug).await
 }
 
@@ -382,11 +392,9 @@ pub async fn spawn_headless_supervisor(
     agent: &dyn SupervisorAgent,
     name: &str,
     prompt: &str,
-    model: Option<&str>,
     debug: bool,
 ) -> Result<HeadlessHandle> {
-    let mut command = agent.spawn_headlessly(prompt);
-    apply_model_override(&mut command, model);
+    let command = agent.spawn(AgentRunMode::Headless { prompt });
     spawn_headless(agent.name(), command, ROLE_SUPERVISOR, name, prompt, debug).await
 }
 
@@ -509,13 +517,6 @@ async fn spawn_headless(
         wait_thread: Some(wait_thread),
         output_threads,
     })
-}
-
-pub(crate) fn apply_model_override(command: &mut StdCommand, model: Option<&str>) {
-    let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
-        return;
-    };
-    command.arg("--model").arg(model);
 }
 
 fn append_debug_agent_flags(agent_type: &str, command: &mut StdCommand) {
@@ -738,20 +739,6 @@ mod tests {
         assert!(
             codex.get_args().next().is_none(),
             "codex should not receive an extra debug flag when none is supported"
-        );
-    }
-
-    #[test]
-    fn model_override_adds_shared_flag() {
-        let mut command = StdCommand::new("codex");
-        apply_model_override(&mut command, Some("gpt-5.4"));
-
-        assert_eq!(
-            command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec!["--model".to_string(), "gpt-5.4".to_string()]
         );
     }
 }

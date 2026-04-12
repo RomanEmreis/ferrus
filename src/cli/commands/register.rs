@@ -35,7 +35,7 @@ pub async fn run(
     }
 
     if let Some(agent) = &supervisor {
-        register_role(ROLE_SUPERVISOR, agent, supervisor_model.as_deref()).await?;
+        register_role(ROLE_SUPERVISOR, agent, normalize_model(supervisor_model.as_deref())).await?;
         update_hq_agent_config(
             HqRole::Supervisor,
             Some(agent.name()),
@@ -44,7 +44,7 @@ pub async fn run(
         .await?;
     }
     if let Some(agent) = &executor {
-        register_role(ROLE_EXECUTOR, agent, executor_model.as_deref()).await?;
+        register_role(ROLE_EXECUTOR, agent, normalize_model(executor_model.as_deref())).await?;
         update_hq_agent_config(
             HqRole::Executor,
             Some(agent.name()),
@@ -63,10 +63,15 @@ async fn register_role(role: &str, agent: &Agent, model: Option<&str>) -> Result
     }
 }
 
-fn config_entry(role: &str, agent_name: &str, index: u32) -> Result<McpConfigEntry> {
+fn config_entry(
+    role: &str,
+    agent_name: &str,
+    index: u32,
+    model: Option<&str>,
+) -> Result<McpConfigEntry> {
     match role {
-        ROLE_SUPERVISOR => parse_supervisor_agent(agent_name)?.mcp_config_entry(role, index),
-        ROLE_EXECUTOR => parse_executor_agent(agent_name)?.mcp_config_entry(role, index),
+        ROLE_SUPERVISOR => parse_supervisor_agent(agent_name, model)?.mcp_config_entry(role, index),
+        ROLE_EXECUTOR => parse_executor_agent(agent_name, model)?.mcp_config_entry(role, index),
         other => anyhow::bail!("Unsupported role '{other}'"),
     }
 }
@@ -93,14 +98,18 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
 
     let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
     let key = format!("ferrus-{role}-{index}");
-    let entry = config_entry(role, agent_name, index)?;
+    let McpConfigEntry {
+        command,
+        args,
+        model,
+    } = config_entry(role, agent_name, index, model)?;
 
     let mut server_entry = serde_json::json!({
-        "command": entry.command,
-        "args": entry.args,
+        "command": command,
+        "args": args,
     });
     if let Some(model) = model {
-        server_entry["model"] = serde_json::Value::String(model.to_string());
+        server_entry["model"] = serde_json::Value::String(model);
     }
     servers_obj.insert(key.clone(), server_entry);
     println!(
@@ -156,22 +165,25 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
 
     let index = count_codex_entries(mcp_servers, role, agent_name) + 1;
     let key = format!("ferrus-{role}-{index}");
-    let config = config_entry(role, agent_name, index)?;
+    let McpConfigEntry {
+        command,
+        args,
+        model,
+    } = config_entry(role, agent_name, index, model)?;
 
     let mut entry = toml::Table::new();
-    entry.insert("command".to_string(), toml::Value::String(config.command));
+    entry.insert("command".to_string(), toml::Value::String(command));
     entry.insert(
         "args".to_string(),
         toml::Value::Array(
-            config
-                .args
+            args
                 .into_iter()
                 .map(toml::Value::String)
                 .collect::<Vec<_>>(),
         ),
     );
     if let Some(model) = model {
-        entry.insert("model".to_string(), toml::Value::String(model.to_string()));
+        entry.insert("model".to_string(), toml::Value::String(model));
     }
     apply_codex_tool_approval_overrides(role, &mut entry);
     mcp_servers.insert(key.clone(), toml::Value::Table(entry));
@@ -386,6 +398,17 @@ fn normalize_model_update(model: Option<&str>) -> Option<Option<&str>> {
     })
 }
 
+fn normalize_model(model: Option<&str>) -> Option<&str> {
+    model.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +435,14 @@ mod tests {
             normalize_model_update(Some("gpt-5.4")),
             Some(Some("gpt-5.4"))
         );
+    }
+
+    #[test]
+    fn normalize_model_treats_blank_as_none() {
+        assert_eq!(normalize_model(None), None);
+        assert_eq!(normalize_model(Some("")), None);
+        assert_eq!(normalize_model(Some(" ")), None);
+        assert_eq!(normalize_model(Some("gpt-5.4")), Some("gpt-5.4"));
     }
 
     #[tokio::test]
