@@ -610,18 +610,30 @@ impl HqContext {
         Ok(())
     }
 
-    async fn spawn_headless_supervisor(&mut self, name: &str, prompt: &str) -> Result<()> {
+    async fn prepare_headless_slot(&mut self, name: &str) -> bool {
         let existing_is_alive = self
             .headless
             .get(name)
             .map(agent_manager::HeadlessHandle::is_alive);
         if existing_is_alive == Some(true) {
-            self.display
-                .info(format!("{name} already running headlessly."));
-            return Ok(());
+            self.display.info(format!("{name} is already running."));
+            return false;
         }
         if existing_is_alive == Some(false) {
             self.reap_headless(name).await;
+        }
+        true
+    }
+
+    fn store_headless_handle(&mut self, name: &str, handle: agent_manager::HeadlessHandle) {
+        self.display
+            .muted(format!("  • Spawning {name}…\n  ╰─ Logs: {}\n\n", handle.log_path.display()));
+        self.headless.insert(name.to_string(), handle);
+    }
+
+    async fn spawn_headless_supervisor(&mut self, name: &str, prompt: &str) -> Result<()> {
+        if !self.prepare_headless_slot(name).await {
+            return Ok(());
         }
 
         let agent = std::sync::Arc::clone(
@@ -629,8 +641,6 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        self.display
-            .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
         let handle = agent_manager::spawn_headless_supervisor(
             agent.as_ref(),
             name,
@@ -638,26 +648,13 @@ impl HqContext {
             self.debug,
         )
         .await?;
-        self.display.info(format!(
-            "{name} started in background. Logs: {}",
-            handle.log_path.display()
-        ));
-        self.headless.insert(name.to_string(), handle);
+        self.store_headless_handle(name, handle);
         Ok(())
     }
 
     async fn spawn_headless_executor(&mut self, name: &str, prompt: &str) -> Result<()> {
-        let existing_is_alive = self
-            .headless
-            .get(name)
-            .map(agent_manager::HeadlessHandle::is_alive);
-        if existing_is_alive == Some(true) {
-            self.display
-                .info(format!("{name} already running headlessly."));
+        if !self.prepare_headless_slot(name).await {
             return Ok(());
-        }
-        if existing_is_alive == Some(false) {
-            self.reap_headless(name).await;
         }
 
         let agent = std::sync::Arc::clone(
@@ -665,8 +662,6 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        self.display
-            .info(format!("Spawning {name} ({}) headlessly…", agent.name()));
         let handle = agent_manager::spawn_headless_executor(
             agent.as_ref(),
             name,
@@ -674,11 +669,7 @@ impl HqContext {
             self.debug,
         )
         .await?;
-        self.display.info(format!(
-            "{name} started in background. Logs: {}",
-            handle.log_path.display()
-        ));
-        self.headless.insert(name.to_string(), handle);
+        self.store_headless_handle(name, handle);
         Ok(())
     }
 

@@ -15,6 +15,10 @@ impl Display {
         let _ = self.0.send(UiMessage::Info(msg.into()));
     }
 
+    pub fn muted(&self, msg: impl Into<String>) {
+        let _ = self.0.send(UiMessage::Muted(msg.into()));
+    }
+
     pub fn error(&self, msg: impl Into<String>) {
         let _ = self.0.send(UiMessage::Error(msg.into()));
     }
