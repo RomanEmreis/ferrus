@@ -690,8 +690,8 @@ fn handle_message(
         UiMessage::Transition { from, to } => {
             let line = TranscriptLine {
                 text: match from {
-                    Some(from) => format!("── {from} → {to} ──"),
-                    None => format!("── {to} ──"),
+                    Some(from) => format!("  • {from} -> {to}"),
+                    None => format!("  • {to}"),
                 },
                 kind: TranscriptKind::Transition,
             };

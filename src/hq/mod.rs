@@ -945,11 +945,7 @@ impl HqContext {
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
-            let executor_id = self.executor_agent_id()?;
-            self.spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
-                .await?;
-            self.display
-                .info("Executor running headlessly. State changes print automatically.");
+            // Let the state watcher handle Idle -> Executing consistently.
         } else {
             self.display.info(format!(
                 "No task created (state is {:?}). Re-run /task when ready.",
