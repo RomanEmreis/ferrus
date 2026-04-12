@@ -7,7 +7,7 @@ use super::{positional_prompt_command, ExecutorAgent, SupervisorAgent};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
-pub(super) const NAME: &str = "codex";
+pub(crate) const NAME: &str = "codex";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone, Copy)]

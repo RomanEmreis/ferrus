@@ -5,7 +5,7 @@ use crate::agents::{parse_executor_agent, parse_supervisor_agent, McpConfigEntry
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
-    #[value(name = "claude-code")]
+    #[value(name = crate::agents::claude::NAME)]
     ClaudeCode,
     Codex,
 }
@@ -14,8 +14,8 @@ impl Agent {
     /// The string representation used in --agent-name CLI flags and claimed_by identifiers.
     pub fn name(&self) -> &str {
         match self {
-            Agent::ClaudeCode => "claude-code",
-            Agent::Codex => "codex",
+            Agent::ClaudeCode => crate::agents::claude::NAME,
+            Agent::Codex => crate::agents::codex::NAME,
         }
     }
 }

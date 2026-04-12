@@ -3,8 +3,8 @@
 //! This module centralizes how Ferrus names agent implementations, spawns them
 //! interactively or headlessly, and derives the MCP configuration used by HQ.
 
-mod claude;
-mod codex;
+pub(crate) mod claude;
+pub(crate) mod codex;
 
 use anyhow::{bail, Context, Result};
 use std::process::Command;

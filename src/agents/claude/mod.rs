@@ -7,7 +7,7 @@ use super::{positional_prompt_command, ExecutorAgent, SupervisorAgent};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
-pub(super) const NAME: &str = "claude-code";
+pub(crate) const NAME: &str = "claude-code";
 /// Actual CLI executable name used to launch Claude Code.
 const EXECUTABLE: &str = "claude";
 
