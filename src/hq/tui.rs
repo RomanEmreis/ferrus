@@ -37,13 +37,13 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/status", "show task state and agents"),
     (
         "/attach",
-        "attach terminal to PTY session (supervisor only)",
+        "show log path for a running headless session",
     ),
     ("/stop", "stop all running sessions"),
     ("/reset", "reset state to Idle"),
     ("/init", "initialize ferrus in current directory"),
     ("/register", "register agent configs"),
-    ("/model", "update supervisor or executor model override"),
+    ("/model", "set or clear a role model override"),
     ("/help", "list all commands"),
     ("/quit", "exit HQ"),
 ];
@@ -63,9 +63,6 @@ pub enum UiMessage {
     ConfirmationRequest {
         prompt: String,
         reply: oneshot::Sender<bool>,
-    },
-    AllowBlankInput {
-        allowed: bool,
     },
 }
 
@@ -148,7 +145,6 @@ pub struct App {
     completion_active: bool,
     completion_hidden: bool,
     confirmation: Option<ConfirmationState>,
-    accept_blank_input: bool,
     suspended: bool,
     should_quit: bool,
     ctrl_c_pending: bool,
@@ -171,7 +167,6 @@ impl App {
             completion_active: false,
             completion_hidden: false,
             confirmation: None,
-            accept_blank_input: false,
             suspended: false,
             should_quit: false,
             ctrl_c_pending: false,
@@ -406,7 +401,7 @@ impl App {
 
     fn submit_input(&mut self, cmd_tx: &mpsc::UnboundedSender<String>) {
         let line = self.input.trim().to_string();
-        if line.is_empty() && !self.accept_blank_input {
+        if line.is_empty() {
             return;
         }
         if line == "/quit" {
@@ -425,7 +420,6 @@ impl App {
         self.history_idx = None;
         self.history_saved.clear();
         self.clear_completion();
-        self.accept_blank_input = false;
     }
 }
 
@@ -740,9 +734,6 @@ fn handle_message(
                 clear_live_area(stdout, ui)?;
                 redraw_live_area(stdout, app, ui)?;
             }
-        }
-        UiMessage::AllowBlankInput { allowed } => {
-            app.accept_blank_input = allowed;
         }
     }
     Ok(false)
@@ -1684,18 +1675,6 @@ mod tui_tests {
         assert!(commands.contains(&"/supervisor"));
         assert!(commands.contains(&"/executor"));
         assert!(!commands.contains(&"/execute"));
-    }
-
-    #[test]
-    fn blank_submission_can_be_enabled_for_interactive_prompts() {
-        let mut app = App::new();
-        app.accept_blank_input = true;
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
-
-        app.submit_input(&cmd_tx);
-
-        assert_eq!(cmd_rx.try_recv().unwrap(), "");
-        assert!(!app.accept_blank_input);
     }
 
     #[test]

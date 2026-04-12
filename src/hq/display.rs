@@ -79,10 +79,6 @@ impl Display {
         });
         reply_rx
     }
-
-    pub fn allow_blank_input(&self, allowed: bool) {
-        let _ = self.0.send(UiMessage::AllowBlankInput { allowed });
-    }
 }
 
 fn agent_status_label<'a>(agents: &'a AgentsRegistry, role: &str) -> &'a str {

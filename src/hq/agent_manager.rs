@@ -5,8 +5,6 @@ use std::path::PathBuf;
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::process::Command;
-
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
@@ -150,89 +148,6 @@ Follow all standard CONSULTANT rules.
 
 Exit immediately after responding.
 ";
-
-#[allow(dead_code)]
-/// Spawn an executor with inherited stdio and wait for it to exit.
-/// Returns the exit code.
-pub async fn spawn_and_wait_executor(
-    agent: &dyn ExecutorAgent,
-    name: &str,
-    prompt: Option<&str>,
-) -> Result<i32> {
-    spawn_and_wait(
-        agent.name(),
-        agent.spawn(AgentRunMode::Interactive { prompt }),
-        ROLE_EXECUTOR,
-        name,
-    )
-    .await
-}
-
-#[allow(dead_code)]
-/// Spawn a supervisor with inherited stdio and wait for it to exit.
-/// Returns the exit code.
-pub async fn spawn_and_wait_supervisor(
-    agent: &dyn SupervisorAgent,
-    name: &str,
-    prompt: Option<&str>,
-) -> Result<i32> {
-    spawn_and_wait(
-        agent.name(),
-        agent.spawn(AgentRunMode::Interactive { prompt }),
-        ROLE_SUPERVISOR,
-        name,
-    )
-    .await
-}
-
-async fn spawn_and_wait(
-    agent_type: &str,
-    command: std::process::Command,
-    role: &str,
-    name: &str,
-) -> Result<i32> {
-    let mut cmd = Command::from(command);
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    let mut reg = read_agents().await?;
-    reg.upsert(AgentEntry {
-        role: role.to_string(),
-        agent_type: agent_type.to_string(),
-        name: name.to_string(),
-        pid: None,
-        status: AgentStatus::Running,
-        started_at: Some(chrono::Utc::now()),
-    });
-    write_agents(&reg).await?;
-
-    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-    let mut child = cmd
-        .spawn()
-        .with_context(|| format!("Failed to spawn {program} as {role}"))?;
-
-    let pid = child.id();
-    let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_name_mut(name) {
-        e.pid = pid;
-    }
-    write_agents(&reg).await?;
-
-    let status = child
-        .wait()
-        .await
-        .with_context(|| format!("{program} process error"))?;
-
-    let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_name_mut(name) {
-        e.pid = None;
-        e.status = AgentStatus::Suspended;
-    }
-    write_agents(&reg).await?;
-
-    Ok(status.code().unwrap_or(-1))
-}
 
 #[allow(dead_code)]
 /// Best-effort cleanup: send SIGTERM to a role's process and mark it Suspended.

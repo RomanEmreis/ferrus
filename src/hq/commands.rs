@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -10,6 +10,12 @@ use clap::{Parser, Subcommand};
 struct HqCli {
     #[command(subcommand)]
     command: ShellCommand,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ModelTarget {
+    Supervisor,
+    Executor,
 }
 
 #[derive(Debug, Subcommand)]
@@ -32,7 +38,7 @@ pub enum ShellCommand {
     Executor,
     /// Resume the executor headlessly for the current task (escape hatch; also recovers Consultation).
     Resume,
-    /// Attach terminal to a running background session. Ctrl+] d to detach.
+    /// Show the log path for a running background session.
     Attach { name: String },
     /// Manually spawn supervisor in review mode (for the current Reviewing submission).
     Review,
@@ -53,7 +59,14 @@ pub enum ShellCommand {
         executor_model: Option<String>,
     },
     /// Update the configured supervisor or executor model override.
-    Model,
+    Model {
+        #[arg(value_enum)]
+        target: ModelTarget,
+        #[arg(value_name = "MODEL", conflicts_with = "clear")]
+        model: Option<String>,
+        #[arg(long, conflicts_with = "model")]
+        clear: bool,
+    },
     /// Show all available HQ commands.
     Help,
 }
@@ -146,10 +159,33 @@ mod tests {
     }
     #[test]
     fn parse_model() {
-        assert!(matches!(
-            parse_command("/model").unwrap(),
-            ShellCommand::Model
-        ));
+        match parse_command("/model supervisor claude-opus-4.6").unwrap() {
+            ShellCommand::Model {
+                target,
+                model,
+                clear,
+            } => {
+                assert_eq!(target, ModelTarget::Supervisor);
+                assert_eq!(model.as_deref(), Some("claude-opus-4.6"));
+                assert!(!clear);
+            }
+            _ => panic!("expected Model"),
+        }
+    }
+    #[test]
+    fn parse_model_clear() {
+        match parse_command("/model executor --clear").unwrap() {
+            ShellCommand::Model {
+                target,
+                model,
+                clear,
+            } => {
+                assert_eq!(target, ModelTarget::Executor);
+                assert_eq!(model, None);
+                assert!(clear);
+            }
+            _ => panic!("expected Model"),
+        }
     }
     #[test]
     fn execute_command_removed() {

@@ -16,7 +16,7 @@ use crate::state::{
     machine::{StateData, TaskState},
     store,
 };
-use commands::{parse_command, ShellCommand};
+use commands::{parse_command, ModelTarget, ShellCommand};
 use display::Display;
 use state_watcher::WatchedState;
 
@@ -81,7 +81,7 @@ pub async fn run(debug: bool) -> Result<()> {
                 match maybe_cmd {
                     Some(cmd) => {
                         let line = cmd.as_str();
-                        if line.trim().is_empty() && ctx.pending_model_prompt.is_none() {
+                        if line.trim().is_empty() {
                             continue;
                         }
                         if line.trim() == "/quit" {
@@ -163,10 +163,6 @@ async fn load_agent_version_from_command(command: std::process::Command) -> Stri
 }
 
 async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
-    if ctx.pending_model_prompt.is_some() && !line.starts_with('/') {
-        return ctx.handle_model_prompt_input(line).await;
-    }
-
     // When state is AwaitingHuman, non-command input is treated as the human's answer.
     if !line.starts_with('/') {
         let state = store::read_state().await?;
@@ -223,7 +219,10 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /reset             Reset state to Idle (clears task files)\n",
                 "  /init              Initialize ferrus in the current directory\n",
                 "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
-                "  /model             Update the configured supervisor/executor model override\n",
+                "  /model <role> <model>\n",
+                "                     Update the configured model override\n",
+                "  /model <role> --clear\n",
+                "                     Clear the configured model override\n",
                 "  /quit              Exit HQ\n",
                 "\n",
                 "When an agent asks a question (state = AwaitingHuman):\n",
@@ -271,7 +270,18 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 ctx.reload_hq_config().await?;
             }
         }
-        ShellCommand::Model => ctx.begin_model_prompt().await?,
+        ShellCommand::Model {
+            target,
+            model,
+            clear,
+        } => {
+            let model = match (model, clear) {
+                (Some(model), false) => Some(model),
+                (None, true) => None,
+                _ => anyhow::bail!("Usage: /model <supervisor|executor> <model> | /model <supervisor|executor> --clear"),
+            };
+            ctx.update_model(target, model.as_deref()).await?;
+        }
     }
     Ok(())
 }
@@ -313,21 +323,7 @@ impl Drop for ResumeGuard {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelTarget {
-    Supervisor,
-    Executor,
-}
-
 impl ModelTarget {
-    fn from_selection(selection: &str) -> Option<Self> {
-        match selection.trim() {
-            "1" => Some(Self::Supervisor),
-            "2" => Some(Self::Executor),
-            _ => None,
-        }
-    }
-
     fn config_role(self) -> HqRole {
         match self {
             Self::Supervisor => HqRole::Supervisor,
@@ -343,19 +339,12 @@ impl ModelTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PendingModelPrompt {
-    SelectAgent,
-    EnterModel { target: ModelTarget },
-}
-
 pub(crate) struct HqContext {
     pub(crate) supervisor: Option<std::sync::Arc<dyn SupervisorAgent>>,
     pub(crate) executor: Option<std::sync::Arc<dyn ExecutorAgent>>,
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
     pub(crate) last_task_state: Option<TaskState>,
-    pending_model_prompt: Option<PendingModelPrompt>,
     debug: bool,
     state_rx: watch::Receiver<Option<WatchedState>>,
     pub(crate) display: Display,
@@ -368,7 +357,6 @@ impl HqContext {
             executor: None,
             headless: std::collections::HashMap::new(),
             last_task_state: None,
-            pending_model_prompt: None,
             debug,
             state_rx,
             display,
@@ -428,51 +416,17 @@ impl HqContext {
         Ok(())
     }
 
-    async fn begin_model_prompt(&mut self) -> Result<()> {
+    async fn update_model(&mut self, target: ModelTarget, model: Option<&str>) -> Result<()> {
         self.ensure_hq_config().await?;
-        self.pending_model_prompt = Some(PendingModelPrompt::SelectAgent);
-        self.display.allow_blank_input(false);
-        self.display
-            .info("Which agent? 1 - supervisor  2 - executor");
-        Ok(())
-    }
-
-    async fn handle_model_prompt_input(&mut self, input: &str) -> Result<()> {
-        let Some(prompt) = self.pending_model_prompt else {
-            return Ok(());
-        };
-
-        match prompt {
-            PendingModelPrompt::SelectAgent => {
-                let Some(target) = ModelTarget::from_selection(input) else {
-                    self.pending_model_prompt = None;
-                    self.display.allow_blank_input(false);
-                    self.display.info("Model change cancelled.");
-                    return Ok(());
-                };
-                self.pending_model_prompt = Some(PendingModelPrompt::EnterModel { target });
-                self.display.allow_blank_input(true);
-                self.display.info("New model name (leave blank to clear):");
-            }
-            PendingModelPrompt::EnterModel { target } => {
-                let model = input.trim();
-                let model_update = if model.is_empty() { None } else { Some(model) };
-                update_hq_agent_config(target.config_role(), None, Some(model_update)).await?;
-                self.reload_hq_config().await?;
-                self.pending_model_prompt = None;
-                self.display.allow_blank_input(false);
-                if let Some(model) = model_update {
-                    self.display.info(format!(
-                        "{} model set to \"{model}\"",
-                        target.display_name()
-                    ));
-                } else {
-                    self.display
-                        .info(format!("{} model cleared", target.display_name()));
-                }
-            }
+        update_hq_agent_config(target.config_role(), None, Some(model)).await?;
+        self.reload_hq_config().await?;
+        if let Some(model) = model {
+            self.display
+                .info(format!("{} model set to \"{model}\"", target.display_name()));
+        } else {
+            self.display
+                .info(format!("{} model cleared", target.display_name()));
         }
-
         Ok(())
     }
 
@@ -487,150 +441,173 @@ impl HqContext {
 
         let action = transition_action(prev, &state.state);
 
-        match action {
-            TransitionAction::SpawnExecutor => {
-                if let Err(err) = self.ensure_hq_config().await {
-                    self.display
-                        .error(format!("Failed to load executor config: {err}"));
-                    return;
-                }
-                let executor_id = match self.executor_agent_id() {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.display.error(err.to_string());
-                        return;
-                    }
-                };
-                if let Err(err) = self
-                    .spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
-                    .await
-                {
-                    self.display
-                        .error(format!("Failed to spawn executor: {err}"));
-                }
-            }
-            TransitionAction::SpawnReviewer => {
-                // Executor submitted — terminate it so it doesn't compete with the next cycle.
-                // Without the kill, the executor process stays alive in its wait_for_task loop.
-                // If the supervisor later rejects, a new executor is spawned with the same
-                // agent_id, and both race to claim the Addressing task via the idempotent
-                // claim path — causing two executors to work concurrently.
-                let executor_id = match self.executor_agent_id() {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.display.error(err.to_string());
-                        return;
-                    }
-                };
-                self.shutdown_headless(&executor_id).await;
-                if let Err(err) = self.ensure_hq_config().await {
-                    self.display
-                        .error(format!("Failed to load supervisor config: {err}"));
-                    return;
-                }
-                let supervisor_id = match self.supervisor_agent_id() {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.display.error(err.to_string());
-                        return;
-                    }
-                };
-                if let Err(err) = self
-                    .spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
-                    .await
-                {
-                    self.display
-                        .error(format!("Failed to spawn reviewer: {err}"));
-                }
-            }
-            TransitionAction::SpawnConsultant => {
-                if let Err(err) = self.ensure_hq_config().await {
-                    self.display
-                        .error(format!("Failed to load supervisor config: {err}"));
-                    return;
-                }
-                let supervisor_id = match self.supervisor_agent_id() {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.display.error(err.to_string());
-                        return;
-                    }
-                };
-                if let Err(err) = self
-                    .spawn_headless_supervisor(&supervisor_id, agent_manager::consultant_prompt())
-                    .await
-                {
-                    self.display
-                        .error(format!("Failed to spawn consultation supervisor: {err}"));
-                }
-            }
+        let result = match action {
+            TransitionAction::SpawnExecutor => self.handle_spawn_executor_transition().await,
+            TransitionAction::SpawnReviewer => self.handle_spawn_reviewer_transition().await,
+            TransitionAction::SpawnConsultant => self.handle_spawn_consultant_transition().await,
             TransitionAction::KillReviewerSpawnExecutor => {
-                let supervisor_id = match self.supervisor_agent_id() {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.display.error(err.to_string());
-                        return;
-                    }
-                };
-                self.shutdown_headless(&supervisor_id).await;
-                if let Err(err) = self.ensure_hq_config().await {
-                    self.display
-                        .error(format!("Failed to load executor config: {err}"));
-                    return;
-                }
-                let executor_id = match self.executor_agent_id() {
-                    Ok(id) => id,
-                    Err(err) => {
-                        self.display.error(err.to_string());
-                        return;
-                    }
-                };
-                if let Err(err) = self
-                    .spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
-                    .await
-                {
-                    self.display
-                        .error(format!("Failed to spawn executor: {err}"));
-                }
+                self.handle_restart_executor_transition().await
             }
             TransitionAction::TaskComplete => {
-                let agent_ids = [
-                    self.executor_agent_id().ok(),
-                    self.supervisor_agent_id().ok(),
-                ];
-                for name in agent_ids.into_iter().flatten() {
-                    self.shutdown_headless(&name).await;
-                }
-                self.display
-                    .info("Task complete! Use /plan to start a new task.");
+                self.handle_terminal_transition("Task complete! Use /plan to start a new task.")
+                    .await
             }
             TransitionAction::TaskFailed => {
-                let agent_ids = [
-                    self.executor_agent_id().ok(),
-                    self.supervisor_agent_id().ok(),
-                ];
-                for name in agent_ids.into_iter().flatten() {
-                    self.shutdown_headless(&name).await;
-                }
-                self.display
-                    .info("Task failed. Use /status for details, /reset to try again.");
+                self.handle_terminal_transition(
+                    "Task failed. Use /status for details, /reset to try again.",
+                )
+                .await
             }
-            TransitionAction::PauseForHuman => match store::read_question().await {
-                Ok(q) if !q.trim().is_empty() => {
-                    self.display.info(format!(
-                        "\n[AWAITING YOUR ANSWER]\n{q}\n\nType your answer and press Enter."
-                    ));
-                }
-                _ => {
-                    self.display
-                        .info("[AWAITING YOUR ANSWER] Type your response and press Enter.");
-                }
-            },
+            TransitionAction::PauseForHuman => self.handle_pause_for_human().await,
             // (AwaitingHuman, Executing|Addressing|...) → NoOp: the executor either
             // resumed via /wait_for_answer (alive path) or was relaunched by answer()
             // (dead path). No further action needed from the state watcher.
-            TransitionAction::NoOp => {}
+            TransitionAction::NoOp => Ok(()),
+        };
+
+        if let Err(err) = result {
+            self.display.error(err.to_string());
         }
+    }
+
+    async fn handle_spawn_executor_transition(&mut self) -> Result<()> {
+        let executor_id = self
+            .executor_agent_id_after_config()
+            .await
+            .context("Failed to load executor config")?;
+        self.spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
+            .await
+            .context("Failed to spawn executor")
+    }
+
+    async fn handle_spawn_reviewer_transition(&mut self) -> Result<()> {
+        let executor_id = self.executor_agent_id()?;
+        self.shutdown_headless(&executor_id).await;
+        let supervisor_id = self
+            .supervisor_agent_id_after_config()
+            .await
+            .context("Failed to load supervisor config")?;
+        self.spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
+            .await
+            .context("Failed to spawn reviewer")
+    }
+
+    async fn handle_spawn_consultant_transition(&mut self) -> Result<()> {
+        let supervisor_id = self
+            .supervisor_agent_id_after_config()
+            .await
+            .context("Failed to load supervisor config")?;
+        self.spawn_headless_supervisor(&supervisor_id, agent_manager::consultant_prompt())
+            .await
+            .context("Failed to spawn consultation supervisor")
+    }
+
+    async fn handle_restart_executor_transition(&mut self) -> Result<()> {
+        let supervisor_id = self.supervisor_agent_id()?;
+        self.shutdown_headless(&supervisor_id).await;
+        let executor_id = self
+            .executor_agent_id_after_config()
+            .await
+            .context("Failed to load executor config")?;
+        self.spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
+            .await
+            .context("Failed to spawn executor")
+    }
+
+    async fn handle_terminal_transition(&mut self, message: &str) -> Result<()> {
+        let agent_ids = [self.executor_agent_id().ok(), self.supervisor_agent_id().ok()];
+        for name in agent_ids.into_iter().flatten() {
+            self.shutdown_headless(&name).await;
+        }
+        self.display.info(message);
+        Ok(())
+    }
+
+    async fn handle_pause_for_human(&mut self) -> Result<()> {
+        match store::read_question().await {
+            Ok(q) if !q.trim().is_empty() => {
+                self.display.info(format!(
+                    "\n[AWAITING YOUR ANSWER]\n{q}\n\nType your answer and press Enter."
+                ));
+            }
+            _ => {
+                self.display
+                    .info("[AWAITING YOUR ANSWER] Type your response and press Enter.");
+            }
+        }
+        Ok(())
+    }
+
+    async fn executor_agent_id_after_config(&mut self) -> Result<String> {
+        self.ensure_hq_config().await?;
+        self.executor_agent_id()
+    }
+
+    async fn supervisor_agent_id_after_config(&mut self) -> Result<String> {
+        self.ensure_hq_config().await?;
+        self.supervisor_agent_id()
+    }
+
+    async fn mark_agent_running(
+        &self,
+        role: &str,
+        agent_type: &str,
+        name: &str,
+        pid: Option<u32>,
+    ) -> Result<()> {
+        use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+
+        let mut reg = read_agents().await?;
+        reg.upsert(AgentEntry {
+            role: role.to_string(),
+            agent_type: agent_type.to_string(),
+            name: name.to_string(),
+            pid,
+            status: AgentStatus::Running,
+            started_at: Some(chrono::Utc::now()),
+        });
+        write_agents(&reg).await
+    }
+
+    async fn mark_agent_suspended(&self, name: &str) -> Result<()> {
+        use agents::{read_agents, write_agents, AgentStatus};
+
+        let mut reg = read_agents().await?;
+        if let Some(entry) = reg.by_name_mut(name) {
+            entry.pid = None;
+            entry.status = AgentStatus::Suspended;
+        }
+        write_agents(&reg).await
+    }
+
+    async fn spawn_interactive_command(
+        &mut self,
+        role: &str,
+        agent_type: &str,
+        name: &str,
+        command: std::process::Command,
+    ) -> Result<()> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        let mut cmd = Command::from(command);
+        let ack_rx = self.display.suspend();
+        let _ = ack_rx.await;
+        let mut guard = ResumeGuard::new(self.display.clone());
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+
+        let mut child = cmd
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("Failed to spawn {program}"))?;
+        self.mark_agent_running(role, agent_type, name, child.id()).await?;
+
+        let _ = child.wait().await;
+        guard.resume_now();
+        self.mark_agent_suspended(name).await?;
+        Ok(())
     }
 
     async fn spawn_headless_supervisor(&mut self, name: &str, prompt: &str) -> Result<()> {
@@ -850,105 +827,33 @@ impl HqContext {
         name: &str,
         prompt: Option<&str>,
     ) -> Result<()> {
-        use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
-        use std::process::Stdio;
-        use tokio::process::Command;
-
         let agent = std::sync::Arc::clone(
             self.supervisor
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(AgentRunMode::Interactive { prompt }));
-
-        let ack_rx = self.display.suspend();
-        let _ = ack_rx.await;
-        let mut guard = ResumeGuard::new(self.display.clone());
-        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-
-        let mut child = cmd
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .with_context(|| format!("Failed to spawn {program}"))?;
-        {
-            let mut reg = read_agents().await?;
-            reg.upsert(AgentEntry {
-                role: ROLE_SUPERVISOR.to_string(),
-                agent_type: agent.name().to_string(),
-                name: name.to_string(),
-                pid: child.id(),
-                status: AgentStatus::Running,
-                started_at: Some(chrono::Utc::now()),
-            });
-            write_agents(&reg).await?;
-        }
-
-        let _ = child.wait().await;
-        guard.resume_now();
-
-        {
-            let mut reg = read_agents().await?;
-            if let Some(e) = reg.by_name_mut(name) {
-                e.pid = None;
-                e.status = AgentStatus::Suspended;
-            }
-            write_agents(&reg).await?;
-        }
-
-        Ok(())
+        self.spawn_interactive_command(
+            ROLE_SUPERVISOR,
+            agent.name(),
+            name,
+            agent.spawn(AgentRunMode::Interactive { prompt }),
+        )
+        .await
     }
 
     async fn spawn_interactive_executor(&mut self, name: &str, prompt: Option<&str>) -> Result<()> {
-        use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
-        use std::process::Stdio;
-        use tokio::process::Command;
-
         let agent = std::sync::Arc::clone(
             self.executor
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let mut cmd = Command::from(agent.spawn(AgentRunMode::Interactive { prompt }));
-
-        let ack_rx = self.display.suspend();
-        let _ = ack_rx.await;
-        let mut guard = ResumeGuard::new(self.display.clone());
-        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-
-        let mut child = cmd
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .with_context(|| format!("Failed to spawn {program}"))?;
-        {
-            let mut reg = read_agents().await?;
-            reg.upsert(AgentEntry {
-                role: ROLE_EXECUTOR.to_string(),
-                agent_type: agent.name().to_string(),
-                name: name.to_string(),
-                pid: child.id(),
-                status: AgentStatus::Running,
-                started_at: Some(chrono::Utc::now()),
-            });
-            write_agents(&reg).await?;
-        }
-
-        let _ = child.wait().await;
-        guard.resume_now();
-
-        {
-            let mut reg = read_agents().await?;
-            if let Some(e) = reg.by_name_mut(name) {
-                e.pid = None;
-                e.status = AgentStatus::Suspended;
-            }
-            write_agents(&reg).await?;
-        }
-
-        Ok(())
+        self.spawn_interactive_command(
+            ROLE_EXECUTOR,
+            agent.name(),
+            name,
+            agent.spawn(AgentRunMode::Interactive { prompt }),
+        )
+        .await
     }
 
     async fn plan(&mut self) -> Result<()> {
@@ -1019,20 +924,13 @@ impl HqContext {
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
         let supervisor_id = self.supervisor_agent_id()?;
-        {
-            use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
-
-            let mut reg = read_agents().await?;
-            reg.upsert(AgentEntry {
-                role: ROLE_SUPERVISOR.to_string(),
-                agent_type: supervisor.name().to_string(),
-                name: supervisor_id.clone(),
-                pid: child.id(),
-                status: AgentStatus::Running,
-                started_at: Some(chrono::Utc::now()),
-            });
-            write_agents(&reg).await?;
-        }
+        self.mark_agent_running(
+            ROLE_SUPERVISOR,
+            supervisor.name(),
+            &supervisor_id,
+            child.id(),
+        )
+        .await?;
 
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
@@ -1052,16 +950,7 @@ impl HqContext {
         }
         resume_guard.resume_now();
 
-        {
-            use agents::{read_agents, write_agents, AgentStatus};
-
-            let mut reg = read_agents().await?;
-            if let Some(entry) = reg.by_name_mut(&supervisor_id) {
-                entry.pid = None;
-                entry.status = AgentStatus::Suspended;
-            }
-            write_agents(&reg).await?;
-        }
+        self.mark_agent_suspended(&supervisor_id).await?;
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
