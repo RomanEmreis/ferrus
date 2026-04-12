@@ -28,6 +28,12 @@ pub async fn read(file: String) -> Result<ReadResourceResult, Error> {
                 .await
                 .unwrap_or_default(),
         ),
+        "answer" => (
+            "text/markdown",
+            tokio::fs::read_to_string(".ferrus/ANSWER.md")
+                .await
+                .unwrap_or_default(),
+        ),
         "consult_template" => (
             "text/markdown",
             tokio::fs::read_to_string(".ferrus/CONSULT_TEMPLATE.md")

@@ -66,6 +66,12 @@ If started manually: call MCP tool `/wait_for_task` as your first action.
 
 **HARD RULE — no exceptions: NEVER run check commands manually** (`cargo test`, `cargo clippy`, `cargo build`, `npm test`, `make`, `pytest`, or any build/test/lint command). Always use the `/check` MCP tool — it records results, updates state, and handles retry counting. Running checks manually bypasses the state machine entirely: retry counters won't increment, FEEDBACK.md won't be updated, and state transitions won't fire.
 
+If `/check` or another required Ferrus tool is cancelled, unavailable, or appears missing, retry that exact tool. Do not ask the Supervisor how to handle Ferrus tool availability or workflow mechanics.
+
+Use `/consult` only for code/task/architecture uncertainty. Before calling it, read `ferrus://consult_template` and follow that template exactly.
+
+If you are genuinely stuck and neither retrying the required Ferrus tool nor `/consult` can unblock you, use `/ask_human` and then `/wait_for_answer` instead of stalling.
+
 Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
 
 ## Ferrus Supervisor

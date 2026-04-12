@@ -37,6 +37,8 @@ async fn run(_ctx: &mut Context, question: String) -> Result<String> {
         );
     }
 
+    validate_consult_request(&question)?;
+
     store::write_consult_request(&question).await?;
     store::clear_consult_response().await?;
     let paused = state.consult()?;
@@ -49,4 +51,50 @@ async fn run(_ctx: &mut Context, question: String) -> Result<String> {
          HQ should spawn the configured Supervisor in consultation mode.\n\
          Call /wait_for_consult to block until the response is ready.",
     ))
+}
+
+fn validate_consult_request(question: &str) -> Result<()> {
+    let trimmed = question.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "Consultation request cannot be empty. Read ferrus://consult_template and follow it exactly."
+        );
+    }
+
+    let required_sections = [
+        "## Problem",
+        "## What I tried",
+        "## Options (if any)",
+        "## Question",
+    ];
+
+    for section in required_sections {
+        if !trimmed.contains(section) {
+            anyhow::bail!(
+                "Consultation request must follow ferrus://consult_template exactly. Missing section: {section}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_consult_request;
+
+    #[test]
+    fn consult_request_requires_template_sections() {
+        let err = validate_consult_request("Implementation complete, what now?")
+            .expect_err("request without template should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("ferrus://consult_template"));
+        assert!(msg.contains("## Problem"));
+    }
+
+    #[test]
+    fn consult_request_accepts_template_shape() {
+        let request = "## Problem\n/check appears unavailable.\n\n## What I tried\nRetried once.\n\n## Options (if any)\n- Retry again\n\n## Question\nShould I keep retrying /check?\n";
+        validate_consult_request(request).expect("template-shaped request should be accepted");
+    }
 }

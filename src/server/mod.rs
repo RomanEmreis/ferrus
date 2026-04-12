@@ -90,6 +90,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
     app.add_resource("ferrus://review", "Review Notes");
     app.add_resource("ferrus://submission", "Submission");
     app.add_resource("ferrus://question", "Question");
+    app.add_resource("ferrus://answer", "Answer");
     app.add_resource("ferrus://consult_template", "Consultation Template");
     app.add_resource("ferrus://consult_request", "Consult Request");
     app.add_resource("ferrus://consult_response", "Consult Response");

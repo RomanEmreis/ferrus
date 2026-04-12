@@ -25,7 +25,10 @@ Each Executor session is a single worker pass:
 
 5. Escalate when blocked
    - use `/consult`, then immediately `/wait_for_consult`, for technical or architectural uncertainty
-   - use `/ask_human`, then immediately `/wait_for_answer`, only for missing requirements or decisions a human must make
+   - before `/consult`, read `ferrus://consult_template` and format the request with that template exactly
+   - do not use `/consult` for Ferrus tool availability, MCP failures, or workflow mechanics; if a required Ferrus tool fails or is cancelled, retry that same tool
+   - if repeated Ferrus tool retries do not unblock you, and `/consult` is not the right path or did not resolve the blocker, use `/ask_human` instead of stalling
+   - use `/ask_human`, then immediately `/wait_for_answer`, for missing requirements, decisions a human must make, or a real execution dead end that cannot be resolved via tool retry or `/consult`
 
 6. Verify
    - call `/check`
@@ -42,6 +45,8 @@ Each Executor session is a single worker pass:
 - `/wait_for_task` is the required first step for a new Executor session
 - `/check` is the only valid verification mechanism; never run tests, builds, or linters manually
 - a green `/check` is not completion; the next action must be `/submit`
+- `/consult` is only for code/task/architecture uncertainty, not for asking what to do about missing Ferrus tools or workflow rules
+- `/ask_human` is the last-resort escape hatch when you are genuinely stuck; use it instead of looping or stalling
 - do not emulate Ferrus tools by editing `.ferrus/` files or manually advancing `STATE.json`
 - if a required Ferrus MCP tool is cancelled or unavailable, retry that tool; do not invent an on-disk fallback for task claiming, checking, or submitting
 
@@ -56,3 +61,4 @@ Each Executor session is a single worker pass:
 - `ferrus://task`
 - `ferrus://feedback`
 - `ferrus://review`
+- `ferrus://consult_template`

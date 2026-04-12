@@ -35,10 +35,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/review", "spawn supervisor in review mode"),
     ("/status", "show task state and agents"),
-    (
-        "/attach",
-        "show log path for a running headless session",
-    ),
+    ("/attach", "show log path for a running headless session"),
     ("/stop", "stop all running sessions"),
     ("/reset", "reset state to Idle"),
     ("/init", "initialize ferrus in current directory"),

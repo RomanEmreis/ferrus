@@ -1,3 +1,6 @@
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
+use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -5,9 +8,6 @@ use std::path::PathBuf;
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
-use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
 
 const SUPERVISOR_TASK_PROMPT: &str = "You are a Ferrus Supervisor in TASK DEFINITION mode.
 
@@ -71,10 +71,13 @@ Required workflow:
 Critical rules:
   - NEVER run tests/builds manually — always use /check
   - A green /check is not completion by itself; /submit is required
-  - Use /consult for technical uncertainty
-  - Use /ask_human only when information is missing or a decision is required
+  - Use /consult only for code/task/architecture uncertainty
+  - Before /consult, read ferrus://consult_template and follow it exactly
+  - Use /ask_human when information is missing, a human decision is required, or you are genuinely stuck after tool retry and /consult are not enough
   - Do NOT emulate Ferrus tools by editing `.ferrus/` files or manually advancing state
-  - If a Ferrus MCP tool is cancelled or fails, retry that tool; do NOT reconstruct task state from `.ferrus/`
+  - If a Ferrus MCP tool is cancelled, unavailable, or appears missing, retry that exact tool; do NOT ask the Supervisor how to handle Ferrus tool availability
+  - If a Ferrus MCP tool is cancelled or fails, do NOT reconstruct task state from `.ferrus/`
+  - Do NOT stall indefinitely; if the blocker is real and cannot be resolved through retry or /consult, call /ask_human and then /wait_for_answer
   - You run headlessly — do not ask questions in the terminal
 
 Follow ROLE.md and SKILL.md for full behavior.
@@ -604,6 +607,20 @@ mod tests {
     #[test]
     fn executor_prompt_forbids_manual_checks() {
         assert!(executor_prompt().contains("NEVER"));
+    }
+
+    #[test]
+    fn executor_prompt_forbids_consulting_about_tool_availability() {
+        let prompt = executor_prompt();
+        assert!(prompt.contains("ferrus://consult_template"));
+        assert!(prompt.contains("do NOT ask the Supervisor how to handle Ferrus tool availability"));
+    }
+
+    #[test]
+    fn executor_prompt_requires_ask_human_when_truly_stuck() {
+        let prompt = executor_prompt();
+        assert!(prompt.contains("genuinely stuck"));
+        assert!(prompt.contains("call /ask_human and then /wait_for_answer"));
     }
 
     #[test]

@@ -421,8 +421,10 @@ impl HqContext {
         update_hq_agent_config(target.config_role(), None, Some(model)).await?;
         self.reload_hq_config().await?;
         if let Some(model) = model {
-            self.display
-                .info(format!("{} model set to \"{model}\"", target.display_name()));
+            self.display.info(format!(
+                "{} model set to \"{model}\"",
+                target.display_name()
+            ));
         } else {
             self.display
                 .info(format!("{} model cleared", target.display_name()));
@@ -515,7 +517,10 @@ impl HqContext {
     }
 
     async fn handle_terminal_transition(&mut self, message: &str) -> Result<()> {
-        let agent_ids = [self.executor_agent_id().ok(), self.supervisor_agent_id().ok()];
+        let agent_ids = [
+            self.executor_agent_id().ok(),
+            self.supervisor_agent_id().ok(),
+        ];
         for name in agent_ids.into_iter().flatten() {
             self.shutdown_headless(&name).await;
         }
@@ -602,7 +607,8 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
-        self.mark_agent_running(role, agent_type, name, child.id()).await?;
+        self.mark_agent_running(role, agent_type, name, child.id())
+            .await?;
 
         let _ = child.wait().await;
         guard.resume_now();
@@ -626,8 +632,10 @@ impl HqContext {
     }
 
     fn store_headless_handle(&mut self, name: &str, handle: agent_manager::HeadlessHandle) {
-        self.display
-            .muted(format!("  • Spawning {name}…\n  ╰─ Logs: {}\n\n", handle.log_path.display()));
+        self.display.muted(format!(
+            "  • Spawning {name}…\n  ╰─ Logs: {}\n\n",
+            handle.log_path.display()
+        ));
         self.headless.insert(name.to_string(), handle);
     }
 
@@ -641,13 +649,9 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
-        let handle = agent_manager::spawn_headless_supervisor(
-            agent.as_ref(),
-            name,
-            prompt,
-            self.debug,
-        )
-        .await?;
+        let handle =
+            agent_manager::spawn_headless_supervisor(agent.as_ref(), name, prompt, self.debug)
+                .await?;
         self.store_headless_handle(name, handle);
         Ok(())
     }
@@ -662,13 +666,9 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let handle = agent_manager::spawn_headless_executor(
-            agent.as_ref(),
-            name,
-            prompt,
-            self.debug,
-        )
-        .await?;
+        let handle =
+            agent_manager::spawn_headless_executor(agent.as_ref(), name, prompt, self.debug)
+                .await?;
         self.store_headless_handle(name, handle);
         Ok(())
     }

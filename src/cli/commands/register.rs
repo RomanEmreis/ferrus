@@ -35,7 +35,12 @@ pub async fn run(
     }
 
     if let Some(agent) = &supervisor {
-        register_role(ROLE_SUPERVISOR, agent, normalize_model(supervisor_model.as_deref())).await?;
+        register_role(
+            ROLE_SUPERVISOR,
+            agent,
+            normalize_model(supervisor_model.as_deref()),
+        )
+        .await?;
         update_hq_agent_config(
             HqRole::Supervisor,
             Some(agent.name()),
@@ -44,7 +49,12 @@ pub async fn run(
         .await?;
     }
     if let Some(agent) = &executor {
-        register_role(ROLE_EXECUTOR, agent, normalize_model(executor_model.as_deref())).await?;
+        register_role(
+            ROLE_EXECUTOR,
+            agent,
+            normalize_model(executor_model.as_deref()),
+        )
+        .await?;
         update_hq_agent_config(
             HqRole::Executor,
             Some(agent.name()),
@@ -176,8 +186,7 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
     entry.insert(
         "args".to_string(),
         toml::Value::Array(
-            args
-                .into_iter()
+            args.into_iter()
                 .map(toml::Value::String)
                 .collect::<Vec<_>>(),
         ),
@@ -280,6 +289,9 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
              **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
              Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\
+             If `/check` or another required Ferrus tool is cancelled, unavailable, or appears missing, retry that same tool; do not ask the Supervisor how to handle Ferrus tool availability.\n\
+             Use `/consult` only for code/task/architecture uncertainty, and read `ferrus://consult_template` before calling it.\n\
+             If you are genuinely stuck and neither retrying the required Ferrus tool nor `/consult` can unblock you, use `/ask_human` instead of stalling.\n\
              Do not emulate Ferrus tools by editing `.ferrus/` files directly.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
@@ -339,6 +351,9 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
              **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
              Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\
+             If `/check` or another required Ferrus tool is cancelled, unavailable, or appears missing, retry that same tool; do not ask the Supervisor how to handle Ferrus tool availability.\n\
+             Use `/consult` only for code/task/architecture uncertainty, and read `ferrus://consult_template` before calling it.\n\
+             If you are genuinely stuck and neither retrying the required Ferrus tool nor `/consult` can unblock you, use `/ask_human` instead of stalling.\n\
              Do not emulate Ferrus tools by editing `.ferrus/` files directly.\n\n\
              Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
         ),
@@ -425,6 +440,34 @@ mod tests {
         let section = claude_md_section(ROLE_SUPERVISOR, "<!-- marker -->");
         assert!(section.contains("explicit user approval"));
         assert!(section.contains("show it for feedback"));
+    }
+
+    #[test]
+    fn agents_md_executor_section_forbids_consulting_about_tool_availability() {
+        let section = agents_md_section(ROLE_EXECUTOR, "<!-- marker -->");
+        assert!(section.contains("retry that same tool"));
+        assert!(section.contains("ferrus://consult_template"));
+    }
+
+    #[test]
+    fn agents_md_executor_section_uses_ask_human_when_truly_stuck() {
+        let section = agents_md_section(ROLE_EXECUTOR, "<!-- marker -->");
+        assert!(section.contains("genuinely stuck"));
+        assert!(section.contains("/ask_human"));
+    }
+
+    #[test]
+    fn claude_md_executor_section_forbids_consulting_about_tool_availability() {
+        let section = claude_md_section(ROLE_EXECUTOR, "<!-- marker -->");
+        assert!(section.contains("retry that same tool"));
+        assert!(section.contains("ferrus://consult_template"));
+    }
+
+    #[test]
+    fn claude_md_executor_section_uses_ask_human_when_truly_stuck() {
+        let section = claude_md_section(ROLE_EXECUTOR, "<!-- marker -->");
+        assert!(section.contains("genuinely stuck"));
+        assert!(section.contains("/ask_human"));
     }
 
     #[test]

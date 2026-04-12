@@ -99,7 +99,10 @@ pub trait ExecutorAgent: Send + Sync {
 ///
 /// Returns an error that lists the supported agent names when `agent_type` does
 /// not match a registered supervisor backend.
-pub fn parse_supervisor_agent(agent_type: &str, model: Option<&str>) -> Result<Arc<dyn SupervisorAgent>> {
+pub fn parse_supervisor_agent(
+    agent_type: &str,
+    model: Option<&str>,
+) -> Result<Arc<dyn SupervisorAgent>> {
     match agent_type {
         claude::NAME => Ok(Arc::new(claude::Supervisor::new(model))),
         codex::NAME => Ok(Arc::new(codex::Supervisor::new(model))),
@@ -115,7 +118,10 @@ pub fn parse_supervisor_agent(agent_type: &str, model: Option<&str>) -> Result<A
 ///
 /// Returns an error that lists the supported agent names when `agent_type` does
 /// not match a registered executor backend.
-pub fn parse_executor_agent(agent_type: &str, model: Option<&str>) -> Result<Arc<dyn ExecutorAgent>> {
+pub fn parse_executor_agent(
+    agent_type: &str,
+    model: Option<&str>,
+) -> Result<Arc<dyn ExecutorAgent>> {
     match agent_type {
         claude::NAME => Ok(Arc::new(claude::Executor::new(model))),
         codex::NAME => Ok(Arc::new(codex::Executor::new(model))),
@@ -203,6 +209,9 @@ mod tests {
         assert_eq!(normalized_model(None), None);
         assert_eq!(normalized_model(Some("")), None);
         assert_eq!(normalized_model(Some("  ")), None);
-        assert_eq!(normalized_model(Some("gpt-5.4")), Some("gpt-5.4".to_string()));
+        assert_eq!(
+            normalized_model(Some("gpt-5.4")),
+            Some("gpt-5.4".to_string())
+        );
     }
 }
