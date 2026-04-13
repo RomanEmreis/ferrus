@@ -80,7 +80,7 @@ fn qwen_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     match mode {
         AgentRunMode::Interactive { prompt } => {
             if let Some(prompt) = prompt {
-                cmd.arg(prompt);
+                cmd.arg("-i").arg(prompt);
             }
         }
         AgentRunMode::Headless { prompt } => {
@@ -104,7 +104,7 @@ mod tests {
                 prompt: Some("plan"),
             }),
             "qwen",
-            &["plan"],
+            &["-i", "plan"],
         );
     }
 
