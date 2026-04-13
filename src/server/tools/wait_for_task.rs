@@ -20,7 +20,8 @@ pub const DESCRIPTION: &str =
      claimed, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \
      On timeout, inspect the state field — call wait_for_task again only if the state is \
      Executing, Fixing, or Addressing. \
-     Times out after `wait_timeout_secs` (see ferrus.toml). \
+     Each call waits up to `wait_timeout_secs` (see ferrus.toml), then returns timeout so the \
+     agent can poll again. \
      Call this at the start of each Executor session; after a rejection, the next Executor \
      session should call it again to claim the Addressing work.";
 

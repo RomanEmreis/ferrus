@@ -85,7 +85,7 @@ pub async fn run(debug: bool) -> Result<()> {
                             continue;
                         }
                         if line.trim() == "/quit" {
-                            ctx.display.info("Bye.");
+                            ctx.display.muted("Bye.");
                             break Ok(());
                         }
                         if let Err(err) = dispatch(line, &mut ctx).await {
@@ -174,7 +174,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
 
     match parse_command(line)? {
         ShellCommand::Quit => {
-            ctx.display.info("Bye.");
+            ctx.display.muted("Bye.");
         }
         ShellCommand::Status => {
             let reg = agents::read_agents().await?;
@@ -760,7 +760,7 @@ impl HqContext {
             ));
             let confirmed = reply_rx.await.unwrap_or(false);
             if !confirmed {
-                self.display.info("Reset cancelled.");
+                self.display.muted("Reset cancelled.");
                 return Ok(());
             }
         }
@@ -796,7 +796,7 @@ impl HqContext {
         let reply_rx = self.display.confirm("Stop all running agents?");
         let confirmed = reply_rx.await.unwrap_or(false);
         if !confirmed {
-            self.display.info("Stop cancelled.");
+            self.display.muted("Stop cancelled.");
             return Ok(());
         }
 
@@ -809,7 +809,7 @@ impl HqContext {
         }
         agents::write_agents(&reg).await?;
 
-        self.display.info("All agent sessions stopped.");
+        self.display.muted("All agent sessions stopped.");
         Ok(())
     }
 
@@ -930,7 +930,7 @@ impl HqContext {
                 _ = ticker.tick() => {
                     if let Ok(s) = store::read_state().await {
                         if s.state == TaskState::Executing {
-                            self.display.info("Task created — stopping supervisor…");
+                            self.display.muted("Task created — stopping supervisor…");
                             let _ = child.kill().await;
                             let _ = child.wait().await;
                             break;

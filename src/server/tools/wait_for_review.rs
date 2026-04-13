@@ -19,7 +19,8 @@ pub const DESCRIPTION: &str =
      Returns a JSON object: {\"status\":\"claimed\", \"claimed_by\":\"...\", \"lease_until\":\"...\", \
      \"state\":\"Reviewing\", \"task\":\"...\", \"submission\":\"...\", \"feedback\":\"...\", \"review\":\"...\"} \
      when a submission is ready, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \
-     Times out after `wait_timeout_secs` (see ferrus.toml). \
+     Each call waits up to `wait_timeout_secs` (see ferrus.toml), then returns timeout so the \
+     agent can poll again. \
      Returns immediately if a submission is already pending — safe to call on restart.";
 
 pub async fn handler(agent_id: &str) -> Result<String, Error> {

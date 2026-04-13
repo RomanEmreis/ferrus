@@ -121,6 +121,7 @@ struct ConfirmationState {
 struct TranscriptLine {
     text: String,
     kind: TranscriptKind,
+    continuation: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -496,6 +497,7 @@ pub async fn run_tui(
                             vec![TranscriptLine {
                                 text: format!("Event error: {err}"),
                                 kind: TranscriptKind::Error,
+                                continuation: false,
                             }],
                         )?;
                     }
@@ -695,6 +697,7 @@ fn handle_message(
                     None => format!("  • {to}"),
                 },
                 kind: TranscriptKind::Transition,
+                continuation: false,
             };
             app.messages.push(line.clone());
             print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
@@ -972,22 +975,30 @@ fn print_transcript_line(stdout: &mut Stdout, line: &TranscriptLine) -> Result<(
             crlf(stdout)?;
         }
         TranscriptKind::Muted => {
+            let text = if !line.text.is_empty()
+                && !line.text.chars().next().is_some_and(char::is_whitespace)
+            {
+                format!("  • {}", line.text)
+            } else {
+                line.text.clone()
+            };
             queue!(
                 stdout,
                 MoveToColumn(0),
-                PrintStyledContent(style(&line.text).with(Color::DarkGrey))
+                PrintStyledContent(style(text).with(Color::DarkGrey))
             )?;
             crlf(stdout)?;
         }
         TranscriptKind::Error => {
+            let text = if line.continuation {
+                format!("    {}", line.text)
+            } else {
+                format!("  • {}", line.text)
+            };
             queue!(
                 stdout,
                 MoveToColumn(0),
-                PrintStyledContent(
-                    style(&line.text)
-                        .with(Color::Red)
-                        .attribute(Attribute::Bold)
-                ),
+                PrintStyledContent(style(text).with(Color::Red).attribute(Attribute::Bold)),
             )?;
             crlf(stdout)?;
         }
@@ -1005,6 +1016,7 @@ fn print_transcript_line(stdout: &mut Stdout, line: &TranscriptLine) -> Result<(
                         .attribute(Attribute::Bold)
                 ),
             )?;
+            crlf(stdout)?;
             crlf(stdout)?;
         }
     }
@@ -1166,6 +1178,7 @@ fn startup_metadata_lines(startup: &StartupHeader) -> Vec<TranscriptLine> {
         TranscriptLine {
             text: format!("version: {}", startup.version),
             kind: TranscriptKind::Info,
+            continuation: false,
         },
         TranscriptLine {
             text: startup_agent_line(
@@ -1174,6 +1187,7 @@ fn startup_metadata_lines(startup: &StartupHeader) -> Vec<TranscriptLine> {
                 &startup.supervisor_version,
             ),
             kind: TranscriptKind::Info,
+            continuation: false,
         },
         TranscriptLine {
             text: startup_agent_line(
@@ -1182,6 +1196,7 @@ fn startup_metadata_lines(startup: &StartupHeader) -> Vec<TranscriptLine> {
                 &startup.executor_version,
             ),
             kind: TranscriptKind::Info,
+            continuation: false,
         },
     ]
 }
@@ -1493,16 +1508,18 @@ fn task_state_color(task_state: &str) -> Color {
 
 fn split_transcript(text: &str, kind: TranscriptKind) -> Vec<TranscriptLine> {
     let mut lines = Vec::new();
-    for line in text.lines() {
+    for (idx, line) in text.lines().enumerate() {
         lines.push(TranscriptLine {
             text: line.to_string(),
             kind,
+            continuation: idx > 0,
         });
     }
     if lines.is_empty() {
         lines.push(TranscriptLine {
             text: String::new(),
             kind,
+            continuation: false,
         });
     }
     lines

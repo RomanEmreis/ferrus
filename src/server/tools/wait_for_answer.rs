@@ -14,7 +14,7 @@ pub const DESCRIPTION: &str =
      Polls .ferrus/ANSWER.md until it has content, then restores the paused state and \
      returns the answer. \
      Returns {\"status\":\"answered\", \"answer\":\"...\", \"resumed_state\":\"...\"} on success, \
-     or {\"status\":\"timeout\"} if wait_timeout_secs elapses. On timeout, call this tool again \
+     or {\"status\":\"timeout\"} if `wait_timeout_secs` elapses for this call. On timeout, call this tool again \
      to keep waiting. \
      Must only be called immediately after /ask_human while state is AwaitingHuman.";
 

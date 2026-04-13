@@ -13,7 +13,8 @@ use super::tool_err;
 
 pub const DESCRIPTION: &str =
     "Block until CONSULT_RESPONSE.md exists, then restore the pre-consult state and \
-     return the consultant's response text. Must only be called while state is Consultation.";
+     return the consultant's response text. Each call waits up to `wait_timeout_secs` and then \
+     returns an error telling the agent to call /wait_for_consult again. Must only be called while state is Consultation.";
 
 pub async fn handler() -> Result<String, Error> {
     run().await.map_err(tool_err)

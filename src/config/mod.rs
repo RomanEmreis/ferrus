@@ -28,7 +28,8 @@ pub struct LimitsConfig {
     /// The full output is always written to .ferrus/logs/.
     #[serde(default = "default_max_feedback_lines")]
     pub max_feedback_lines: usize,
-    /// How long (in seconds) /wait_for_task and /wait_for_review will poll before timing out.
+    /// Maximum duration (in seconds) of a single wait_* MCP tool call before it
+    /// returns timeout so the agent can poll again.
     #[serde(default = "default_wait_timeout_secs")]
     pub wait_timeout_secs: u64,
 }
@@ -179,7 +180,7 @@ const fn default_max_feedback_lines() -> usize {
     30
 }
 const fn default_wait_timeout_secs() -> u64 {
-    3600
+    60
 }
 const fn default_ttl_secs() -> u64 {
     90
@@ -336,7 +337,7 @@ commands = ["cargo test"]
         assert_eq!(config.limits.max_check_retries, 5);
         assert_eq!(config.limits.max_review_cycles, 3);
         assert_eq!(config.limits.max_feedback_lines, 30);
-        assert_eq!(config.limits.wait_timeout_secs, 3600);
+        assert_eq!(config.limits.wait_timeout_secs, 60);
     }
 
     #[test]

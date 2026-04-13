@@ -82,7 +82,7 @@ Escalation rules:
   - Before /consult, read ferrus://consult_template and follow it exactly
   - If a required Ferrus tool is cancelled, unavailable, or appears missing, retry that exact tool
   - Do NOT ask the Supervisor how to handle Ferrus tool availability or Ferrus workflow mechanics
-  - If retrying the required tool and /consult still do not unblock a real dead end, call /ask_human and then /wait_for_answer
+  - If retrying the required tool and /consult still do not unblock a real dead end and you are genuinely stuck, call /ask_human and then /wait_for_answer
 
 Hard rules:
   - NEVER run tests/builds manually — always use /check

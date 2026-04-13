@@ -140,7 +140,7 @@ commands = ["cargo clippy -- -D warnings", "cargo fmt --check", "cargo test"]
 max_check_retries = 5    # check failures before Failed
 max_review_cycles = 3    # reject→fix cycles before Failed
 max_feedback_lines = 30  # lines per command in FEEDBACK.md
-wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
+wait_timeout_secs = 60   # max duration of one wait_* tool call; agents should call again after timeout
 
 [lease]
 ttl_secs = 90            # lease validity without renewal

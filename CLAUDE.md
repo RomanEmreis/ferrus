@@ -78,7 +78,7 @@ commands = [
 max_check_retries = 5    # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
 max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
-wait_timeout_secs = 3600 # /wait_for_task and /wait_for_review poll timeout
+wait_timeout_secs = 60   # max duration of one wait_* MCP call; agent should call again after timeout
 
 [lease]
 ttl_secs = 90            # how long a claimed lease is valid without renewal
