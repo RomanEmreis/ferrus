@@ -7,6 +7,15 @@ license = "Apache-2.0"
 repository = "https://github.com/RomanEmreis/ferrus"
 readme = "README.md"
 description = "AI agent orchestrator - drives a Supervisor–Executor workflow for autonomous software development"
+exclude = [
+    ".agents/**",
+    ".github/**",
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/**",
+    "ferrus.toml",
+]
 
 [[bin]]
 name = "ferrus" 
