@@ -244,11 +244,29 @@ impl App {
         self.cursor_pos = self.input.chars().count();
     }
 
-    fn history_up(&mut self) {
+    fn move_up_or_history(&mut self) {
         if self.completion_popup_visible() {
             self.previous_completion();
             return;
         }
+        if self.move_cursor_up() {
+            return;
+        }
+        self.history_up();
+    }
+
+    fn move_down_or_history(&mut self) {
+        if self.completion_popup_visible() {
+            self.next_completion();
+            return;
+        }
+        if self.move_cursor_down() {
+            return;
+        }
+        self.history_down();
+    }
+
+    fn history_up(&mut self) {
         if self.history.is_empty() {
             return;
         }
@@ -268,10 +286,6 @@ impl App {
     }
 
     fn history_down(&mut self) {
-        if self.completion_popup_visible() {
-            self.next_completion();
-            return;
-        }
         match self.history_idx {
             None => {}
             Some(idx) if idx + 1 < self.history.len() => {
@@ -286,6 +300,37 @@ impl App {
             }
         }
         self.update_command_context();
+    }
+
+    fn move_cursor_up(&mut self) -> bool {
+        let chars: Vec<char> = self.input.chars().collect();
+        let current_start = line_start(&chars, self.cursor_pos);
+        if current_start == 0 {
+            return false;
+        }
+
+        let current_col = self.cursor_pos - current_start;
+        let previous_end = current_start - 1;
+        let previous_start = line_start(&chars, previous_end);
+        let previous_len = previous_end - previous_start;
+        self.cursor_pos = previous_start + current_col.min(previous_len);
+        true
+    }
+
+    fn move_cursor_down(&mut self) -> bool {
+        let chars: Vec<char> = self.input.chars().collect();
+        let current_end = line_end(&chars, self.cursor_pos);
+        if current_end == chars.len() {
+            return false;
+        }
+
+        let current_start = line_start(&chars, self.cursor_pos);
+        let current_col = self.cursor_pos - current_start;
+        let next_start = current_end + 1;
+        let next_end = line_end(&chars, next_start);
+        let next_len = next_end - next_start;
+        self.cursor_pos = next_start + current_col.min(next_len);
+        true
     }
 
     fn completion_prefix(&self) -> &str {
@@ -608,8 +653,8 @@ fn handle_event(
                     }
                     (KeyCode::Left, _) => app.move_left(),
                     (KeyCode::Right, _) => app.move_right(),
-                    (KeyCode::Up, _) => app.history_up(),
-                    (KeyCode::Down, _) => app.history_down(),
+                    (KeyCode::Up, _) => app.move_up_or_history(),
+                    (KeyCode::Down, _) => app.move_down_or_history(),
                     (KeyCode::Backspace, _) => app.delete_before_cursor(),
                     (KeyCode::Delete, _) => app.delete_after_cursor(),
                     (KeyCode::Esc, _) => {
@@ -1278,6 +1323,22 @@ fn render_prompt(app: &App, width: usize) -> PromptLine {
     }
 }
 
+fn line_start(chars: &[char], pos: usize) -> usize {
+    let mut idx = pos.min(chars.len());
+    while idx > 0 && chars[idx - 1] != '\n' {
+        idx -= 1;
+    }
+    idx
+}
+
+fn line_end(chars: &[char], pos: usize) -> usize {
+    let mut idx = pos.min(chars.len());
+    while idx < chars.len() && chars[idx] != '\n' {
+        idx += 1;
+    }
+    idx
+}
+
 fn print_status_line(
     stdout: &mut Stdout,
     status: &StatusSnapshot,
@@ -1760,6 +1821,71 @@ mod tui_tests {
 
         assert_eq!(cmd_rx.try_recv().unwrap(), "first\nsecond");
         assert_eq!(app.history.len(), original_history_len);
+    }
+
+    #[test]
+    fn up_moves_within_multiline_before_history() {
+        let mut app = App::new();
+        app.history = vec!["/status".into()];
+        app.input = "one\ntwo\nthree".into();
+        app.cursor_pos = app.input.chars().count();
+
+        app.move_up_or_history();
+        assert_eq!(
+            app.cursor_pos,
+            "one\n".chars().count() + "two".chars().count()
+        );
+        assert_eq!(app.input, "one\ntwo\nthree");
+        assert_eq!(app.history_idx, None);
+
+        app.move_up_or_history();
+        assert_eq!(app.cursor_pos, "one".chars().count());
+        assert_eq!(app.input, "one\ntwo\nthree");
+        assert_eq!(app.history_idx, None);
+
+        app.move_up_or_history();
+        assert_eq!(app.input, "/status");
+        assert_eq!(app.history_idx, Some(0));
+    }
+
+    #[test]
+    fn down_moves_within_multiline_before_history() {
+        let mut app = App::new();
+        app.input = "one\ntwo\nthree".into();
+        app.cursor_pos = 0;
+
+        app.move_down_or_history();
+        assert_eq!(app.cursor_pos, "one\n".chars().count());
+        assert_eq!(app.input, "one\ntwo\nthree");
+        assert_eq!(app.history_idx, None);
+
+        app.move_down_or_history();
+        assert_eq!(app.cursor_pos, "one\ntwo\n".chars().count());
+        assert_eq!(app.input, "one\ntwo\nthree");
+        assert_eq!(app.history_idx, None);
+
+        app.move_down_or_history();
+        assert_eq!(app.cursor_pos, "one\ntwo\n".chars().count());
+        assert_eq!(app.input, "one\ntwo\nthree");
+        assert_eq!(app.history_idx, None);
+
+        app.move_down_or_history();
+        assert_eq!(app.cursor_pos, "one\ntwo\n".chars().count());
+        assert_eq!(app.input, "one\ntwo\nthree");
+        assert_eq!(app.history_idx, None);
+    }
+
+    #[test]
+    fn up_uses_history_immediately_for_single_line_input() {
+        let mut app = App::new();
+        app.history = vec!["/status".into()];
+        app.input = "draft".into();
+        app.cursor_pos = app.input.chars().count();
+
+        app.move_up_or_history();
+
+        assert_eq!(app.input, "/status");
+        assert_eq!(app.history_idx, Some(0));
     }
 
     #[test]
