@@ -17,8 +17,8 @@ use super::tool_err;
 
 pub const DESCRIPTION: &str =
     "Run all configured checks (clippy, fmt, tests, etc.) against the current \
-     codebase. Can be called from state Executing or Addressing. \
-     On pass: state → Checking. On fail: state → Addressing (or Failed if the \
+     codebase. Can be called from state Executing, Fixing, or Addressing. \
+     On pass: state → Checking. On fail: state → Fixing (or Failed if the \
      retry limit is exhausted).";
 
 pub async fn handler() -> Result<String, Error> {
@@ -30,13 +30,13 @@ async fn run() -> Result<String> {
     let mut state = store::read_state().await?;
 
     match state.state {
-        TaskState::Executing | TaskState::Addressing => {}
+        TaskState::Executing | TaskState::Fixing | TaskState::Addressing => {}
         TaskState::Checking => anyhow::bail!(
             "Checks already passed (state: Checking). Call /submit to submit your work for review."
         ),
         ref other => anyhow::bail!(
             "Cannot run checks from state {other:?}. \
-             Checks are only valid in Executing or Addressing state."
+             Checks are only valid in Executing, Fixing, or Addressing state."
         ),
     }
 
@@ -82,7 +82,7 @@ async fn run() -> Result<String> {
                 store::write_state(&state).await?;
                 warn!(
                     retries = state.check_retries,
-                    "Checks failed, state → Addressing"
+                    "Checks failed, state → Fixing"
                 );
                 Ok(format!(
                     "Checks failed (retry {}/{}).\n\n{summary}\n\nFix the issues and call \

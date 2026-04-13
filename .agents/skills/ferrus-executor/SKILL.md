@@ -11,7 +11,7 @@ Each Executor session is a single worker pass:
 
 1. Call `/wait_for_task` first
    - `"claimed"`: use the returned task / feedback / review context
-   - `"timeout"`: retry only while the reported state is `Executing` or `Addressing`
+   - `"timeout"`: retry only while the reported state is `Executing`, `Fixing`, or `Addressing`
 
 2. Understand the task
    - inspect the relevant repository files

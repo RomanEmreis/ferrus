@@ -461,7 +461,7 @@ impl HqContext {
                 .await
             }
             TransitionAction::PauseForHuman => self.handle_pause_for_human().await,
-            // (AwaitingHuman, Executing|Addressing|...) → NoOp: the executor either
+            // (AwaitingHuman, Executing|Fixing|Addressing|...) → NoOp: the executor either
             // resumed via /wait_for_answer (alive path) or was relaunched by answer()
             // (dead path). No further action needed from the state watcher.
             TransitionAction::NoOp => Ok(()),
@@ -1119,14 +1119,16 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
 
     match (from, to) {
         (Idle, Executing) => TransitionAction::SpawnExecutor,
-        (Executing | Addressing | Checking, Reviewing) => TransitionAction::SpawnReviewer,
-        (Executing | Addressing | Checking, Consultation) => TransitionAction::SpawnConsultant,
+        (Executing | Fixing | Addressing | Checking, Reviewing) => TransitionAction::SpawnReviewer,
+        (Executing | Fixing | Addressing | Checking, Consultation) => {
+            TransitionAction::SpawnConsultant
+        }
         (Reviewing, Addressing) => TransitionAction::KillReviewerSpawnExecutor,
         (Reviewing, Complete) => TransitionAction::TaskComplete,
         (_, Failed) => TransitionAction::TaskFailed,
-        (Consultation, Executing | Addressing | Checking) => TransitionAction::NoOp,
+        (Consultation, Executing | Fixing | Addressing | Checking) => TransitionAction::NoOp,
         // Executor paused to ask the human a question.
-        (Executing | Addressing | Checking | Reviewing, AwaitingHuman) => {
+        (Executing | Fixing | Addressing | Checking | Reviewing, AwaitingHuman) => {
             TransitionAction::PauseForHuman
         }
         // State restored after human answered:
@@ -1224,6 +1226,14 @@ mod tests {
     fn addressing_to_awaiting_human_pauses() {
         assert_eq!(
             transition_action(&Addressing, &AwaitingHuman),
+            TransitionAction::PauseForHuman
+        );
+    }
+
+    #[test]
+    fn fixing_to_awaiting_human_pauses() {
+        assert_eq!(
+            transition_action(&Fixing, &AwaitingHuman),
             TransitionAction::PauseForHuman
         );
     }

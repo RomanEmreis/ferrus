@@ -31,6 +31,7 @@ pub const INPUT_SCHEMA: &str = r#"{
 
 const LEASABLE_STATES: &[TaskState] = &[
     TaskState::Executing,
+    TaskState::Fixing,
     TaskState::Addressing,
     TaskState::Checking,
     TaskState::Consultation,

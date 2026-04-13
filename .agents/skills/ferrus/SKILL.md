@@ -27,14 +27,17 @@ Under HQ, agents are usually **one-shot sessions**:
 ```
 Idle
  └─► Executing      ← /create_task (Supervisor)
+       ├─► Fixing   ← /check (Executor, fail; retries < max)
+       │     ├─► Fixing   ← /check (Executor, fail again)
+       │     └─► Checking ← /check (Executor, pass)
        └─► Checking ← /check (Executor, pass)
-             ├─► [FAIL, retries < max] Addressing → /check again
              ├─► [FAIL, retries ≥ max] Failed
              ├─► Consultation ← /consult (Executor)
              │     └─► (restore previous state) ← /wait_for_consult
              └─► Reviewing ← /submit (Executor)
-                   ├─► [REJECT] Addressing → /check loop (retries reset)
-                   │     └─► [cycles ≥ max] Failed
+                   ├─► [REJECT] Addressing → /check (retries reset)
+                   │     ├─► [FAIL, retries < max] Fixing → /check loop
+                   │     └─► [FAIL, retries ≥ max] Failed
                    └─► Complete ← /approve (Supervisor)
 ```
 
@@ -87,12 +90,12 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 ### Executor
 | Tool | From state | Description |
 |---|---|---|
-| `wait_for_task` | — | Long-poll until Executing or Addressing |
-| `check` | Executing, Addressing | Run all configured checks |
-| `consult` | Executing, Addressing, Checking | Ask the Supervisor for guidance; moves to Consultation |
+| `wait_for_task` | — | Long-poll until Executing, Fixing, or Addressing |
+| `check` | Executing, Fixing, Addressing | Run all configured checks |
+| `consult` | Executing, Fixing, Addressing, Checking | Ask the Supervisor for guidance; moves to Consultation |
 | `wait_for_consult` | Consultation | Block until the Supervisor responds; restores previous state |
 | `submit` | Checking | Write submission notes; moves to Reviewing |
-| `ask_human` | Executing, Addressing, Checking, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
+| `ask_human` | Executing, Fixing, Addressing, Checking, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
 | `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 
 ### Shared

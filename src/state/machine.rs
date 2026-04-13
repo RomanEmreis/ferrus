@@ -6,6 +6,7 @@ use thiserror::Error;
 pub enum TaskState {
     Idle,
     Executing,
+    Fixing,
     Checking,
     Consultation,
     Reviewing,
@@ -142,13 +143,13 @@ impl StateData {
         Ok(())
     }
 
-    /// `Executing | Addressing → Checking`. Called when `/check` passes.
+    /// `Executing | Fixing | Addressing → Checking`. Called when `/check` passes.
     ///
     /// Clears consecutive check-failure metadata because the current code now
     /// satisfies the configured checks.
     pub fn check_passed(&mut self) -> Result<(), TransitionError> {
         match self.state {
-            TaskState::Executing | TaskState::Addressing => {
+            TaskState::Executing | TaskState::Fixing | TaskState::Addressing => {
                 self.state = TaskState::Checking;
                 self.check_retries = 0;
                 self.failure_reason = None;
@@ -161,7 +162,7 @@ impl StateData {
         }
     }
 
-    /// `Executing | Addressing → Addressing | Failed`. Called when `/check` fails.
+    /// `Executing | Fixing | Addressing → Fixing | Failed`. Called when `/check` fails.
     ///
     /// Returns `Err(CheckLimitExceeded)` when the limit is hit (state is already set to `Failed`).
     pub fn check_failed(
@@ -170,7 +171,7 @@ impl StateData {
         max_retries: u32,
     ) -> Result<(), TransitionError> {
         match self.state {
-            TaskState::Executing | TaskState::Addressing => {
+            TaskState::Executing | TaskState::Fixing | TaskState::Addressing => {
                 self.check_retries += 1;
                 if self.check_retries >= max_retries {
                     self.state = TaskState::Failed;
@@ -181,7 +182,7 @@ impl StateData {
                         retries: self.check_retries,
                     })
                 } else {
-                    self.state = TaskState::Addressing;
+                    self.state = TaskState::Fixing;
                     self.failure_reason = Some(reason);
                     Ok(())
                 }
@@ -206,12 +207,15 @@ impl StateData {
         Ok(())
     }
 
-    /// `Executing | Addressing | Checking → Consultation`. Called by `/consult`.
+    /// `Executing | Fixing | Addressing | Checking → Consultation`. Called by `/consult`.
     ///
     /// Returns the paused state so the caller can log it.
     pub fn consult(&mut self) -> Result<TaskState, TransitionError> {
         match self.state {
-            TaskState::Executing | TaskState::Addressing | TaskState::Checking => {
+            TaskState::Executing
+            | TaskState::Fixing
+            | TaskState::Addressing
+            | TaskState::Checking => {
                 let paused = self.state.clone();
                 self.paused_state = Some(paused.clone());
                 self.state = TaskState::Consultation;
@@ -287,6 +291,7 @@ impl StateData {
     pub fn ask_human(&mut self) -> Result<TaskState, TransitionError> {
         match self.state {
             TaskState::Executing
+            | TaskState::Fixing
             | TaskState::Addressing
             | TaskState::Checking
             | TaskState::Consultation
@@ -378,7 +383,7 @@ mod tests {
         s.create_task().unwrap();
         s.check_failed("oops".into(), 5).unwrap();
         assert_eq!(s.check_retries, 1);
-        assert_eq!(s.state, TaskState::Addressing);
+        assert_eq!(s.state, TaskState::Fixing);
     }
 
     #[test]
@@ -403,6 +408,16 @@ mod tests {
         s.reject(3).unwrap();
         assert_eq!(s.check_retries, 0);
         assert_eq!(s.state, TaskState::Addressing);
+    }
+
+    #[test]
+    fn check_from_addressing_failure_moves_to_fixing() {
+        let mut s = state_in(TaskState::Addressing);
+
+        s.check_failed("still broken".into(), 5).unwrap();
+
+        assert_eq!(s.state, TaskState::Fixing);
+        assert_eq!(s.check_retries, 1);
     }
 
     #[test]
@@ -584,6 +599,7 @@ mod tests {
     fn ask_human_from_valid_states_transitions_to_awaiting_human() {
         for state in [
             TaskState::Executing,
+            TaskState::Fixing,
             TaskState::Addressing,
             TaskState::Checking,
             TaskState::Consultation,
@@ -623,6 +639,7 @@ mod tests {
     fn answer_restores_paused_state_and_clears_paused_state() {
         for paused in [
             TaskState::Executing,
+            TaskState::Fixing,
             TaskState::Addressing,
             TaskState::Checking,
             TaskState::Consultation,
@@ -644,6 +661,7 @@ mod tests {
         for state in [
             TaskState::Idle,
             TaskState::Executing,
+            TaskState::Fixing,
             TaskState::Checking,
             TaskState::Reviewing,
             TaskState::Addressing,

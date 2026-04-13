@@ -121,9 +121,9 @@ model = ""             # optional override; empty = agent default
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
-| `/wait_for_task` | Executing, Addressing | — | Long-poll until a task is ready, then return full task context |
-| `/check` | Executing, Addressing | Checking / Addressing / Failed | Run all configured checks |
-| `/consult` | Executing, Addressing, Checking | Consultation | Ask the Supervisor for guidance; Executor should prefer this before `/ask_human` |
+| `/wait_for_task` | Executing, Fixing, Addressing | — | Long-poll until a task is ready, then return full task context |
+| `/check` | Executing, Fixing, Addressing | Checking / Fixing / Failed | Run all configured checks |
+| `/consult` | Executing, Fixing, Addressing, Checking | Consultation | Ask the Supervisor for guidance; Executor should prefer this before `/ask_human` |
 | `/wait_for_consult` | Consultation | (previous state) | Block until the Supervisor responds; restores paused state and returns the answer |
 | `/submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
 | `/wait_for_answer` | AwaitingHuman | (previous state) | Block until the human answers; restores paused state and returns the answer |
@@ -132,7 +132,7 @@ model = ""             # optional override; empty = agent default
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
-| `/ask_human` | Executing, Addressing, Checking, Consultation, Reviewing | AwaitingHuman | Last-resort human fallback. Write question to QUESTION.md; agent must immediately call `/wait_for_answer` (executor) or wait for HQ to answer |
+| `/ask_human` | Executing, Fixing, Addressing, Checking, Consultation, Reviewing | AwaitingHuman | Last-resort human fallback. Write question to QUESTION.md; agent must immediately call `/wait_for_answer` (executor) or wait for HQ to answer |
 | `/respond_consult` | Consultation | — | Record the Supervisor consultation response in `CONSULT_RESPONSE.md` |
 | `/answer` | AwaitingHuman | (previous state) | Provide answer to a pending question; restores previous state |
 | `/heartbeat` | any claimed | — | Renew lease; call every ~30s while working |
@@ -168,18 +168,21 @@ Resources are read-only. All ten are listed via `resources/list` and readable vi
 ```
 Idle
  └─► Executing      ← /create_task
+       ├─► Fixing   ← /check (fail, retries < max)
+       │     ├─► Fixing   ← /check fail again
+       │     ├─► Checking ← /check pass
+       │     └─► Failed   ← /check fail at retry limit
        └─► Checking ← /check (pass)
              ├─► Consultation ← /consult
              │     └─► (restore previous state) ← /wait_for_consult
-             ├─► [FAIL, retries < max] Addressing → /check again (loop)
-             ├─► [FAIL, retries ≥ max] Failed
              └─► Reviewing ← /submit
-                   ├─► [REJECT] Addressing → /check loop (retries reset)
+                   ├─► [REJECT] Addressing → /check (retries reset)
+                   │     ├─► [FAIL, retries < max] Fixing → /check loop
                    │     └─► [cycles ≥ max] Failed
                    └─► Complete ← /approve
 ```
 
-Any active Executor work state (Executing, Addressing, Checking) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`, which writes `CONSULT_RESPONSE.md`. The previous state is then restored.
+Any active Executor work state (Executing, Fixing, Addressing, Checking) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`, which writes `CONSULT_RESPONSE.md`. The previous state is then restored.
 
 Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human`. The executor should prefer `/consult` first and use `/ask_human` only as a last resort. The agent immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 

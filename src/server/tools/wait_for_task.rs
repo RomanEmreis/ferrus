@@ -19,7 +19,7 @@ pub const DESCRIPTION: &str =
      \"state\":\"...\", \"task\":\"...\", \"feedback\":\"...\", \"review\":\"...\"} when a task is \
      claimed, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \
      On timeout, inspect the state field — call wait_for_task again only if the state is \
-     Executing or Addressing. \
+     Executing, Fixing, or Addressing. \
      Times out after `wait_timeout_secs` (see ferrus.toml). \
      Call this at the start of each Executor session; after a rejection, the next Executor \
      session should call it again to claim the Addressing work.";
@@ -47,7 +47,10 @@ async fn run(agent_id: &str) -> Result<String> {
 
             let mut state = store::read_state().await?;
 
-            let claimable = matches!(state.state, TaskState::Executing | TaskState::Addressing);
+            let claimable = matches!(
+                state.state,
+                TaskState::Executing | TaskState::Fixing | TaskState::Addressing
+            );
             let claimed = if claimable && !state.is_claimed() {
                 store::claim_state(agent_id, ttl_secs, &mut state).await?;
                 true
