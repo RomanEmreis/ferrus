@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use neva::types::ToolSchema;
 use neva::App;
+use neva::types::ToolSchema;
 
-use crate::agent_id::{agent_id, ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
 
 mod prompts;
 mod resources;

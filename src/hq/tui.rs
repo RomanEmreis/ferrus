@@ -14,13 +14,13 @@ use crossterm::{
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     queue,
-    style::{style, Attribute, Color, Print, PrintStyledContent, Stylize},
-    terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType},
+    style::{Attribute, Color, Print, PrintStyledContent, Stylize, style},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use super::state_watcher::{format_elapsed, WatchedState};
+use super::state_watcher::{WatchedState, format_elapsed};
 
 const MAX_HISTORY: usize = 100;
 const MAX_COMPLETIONS: usize = 8;
@@ -532,22 +532,21 @@ pub async fn run_tui(
                 }
             }
             changed = state_rx.changed() => {
-                if changed.is_ok() {
-                    if let Some(watched) = state_rx.borrow_and_update().clone() {
-                        let supervisor_status = app.status.supervisor_status.clone();
-                        let executor_status = app.status.executor_status.clone();
-                        let directory = app.status.directory.clone();
-                        let branch = app.status.branch.clone();
-                        let mut next = StatusSnapshot::from_watched_state(&watched);
-                        next.supervisor_status = supervisor_status;
-                        next.executor_status = executor_status;
-                        next.directory = directory;
-                        next.branch = branch;
-                        app.status = next;
-                        if !app.suspended {
-                            clear_live_area(&mut stdout, &ui)?;
-                            redraw_live_area(&mut stdout, &app, &mut ui)?;
-                        }
+                if changed.is_ok()
+                    && let Some(watched) = state_rx.borrow_and_update().clone() {
+                    let supervisor_status = app.status.supervisor_status.clone();
+                    let executor_status = app.status.executor_status.clone();
+                    let directory = app.status.directory.clone();
+                    let branch = app.status.branch.clone();
+                    let mut next = StatusSnapshot::from_watched_state(&watched);
+                    next.supervisor_status = supervisor_status;
+                    next.executor_status = executor_status;
+                    next.directory = directory;
+                    next.branch = branch;
+                    app.status = next;
+                    if !app.suspended {
+                        clear_live_area(&mut stdout, &ui)?;
+                        redraw_live_area(&mut stdout, &app, &mut ui)?;
                     }
                 }
             }
@@ -1687,8 +1686,9 @@ mod tui_tests {
 
     #[test]
     fn abbreviate_home_replaces_home_prefix() {
-        let path = Path::new("/home/user/Repos/ferrus");
-        assert_eq!(abbreviate_home(path), "~/Repos/ferrus");
+        let home = dirs::home_dir().expect("test environment should have a home directory");
+        let path = home.join("Repos").join("ferrus");
+        assert_eq!(abbreviate_home(&path), "~/Repos/ferrus");
     }
 
     #[test]

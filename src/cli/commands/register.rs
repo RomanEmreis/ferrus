@@ -1,8 +1,8 @@
 use anyhow::Result;
 
-use crate::agent_id::{agent_id, ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use crate::agents::{parse_executor_agent, parse_supervisor_agent, McpConfigEntry};
-use crate::config::{update_hq_agent_config, HqRole};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
+use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
+use crate::config::{HqRole, update_hq_agent_config};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {

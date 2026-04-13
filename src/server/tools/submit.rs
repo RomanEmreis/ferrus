@@ -85,8 +85,7 @@ async fn run(content: String) -> Result<String> {
                     store::write_state(&state).await?;
                     Ok(format!(
                         "Final review gate failed during /submit and hit the retry limit ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
-                        config.limits.max_check_retries,
-                        failure.report,
+                        config.limits.max_check_retries, failure.report,
                     ))
                 }
                 Err(e) => anyhow::bail!(e),

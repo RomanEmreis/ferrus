@@ -3,7 +3,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::state::agents::{AgentStatus, AgentsRegistry};
 
 use super::{
-    state_watcher::{format_elapsed, TransitionSnapshot, WatchedState},
+    state_watcher::{TransitionSnapshot, WatchedState, format_elapsed},
     tui::{StatusSnapshot, UiMessage},
 };
 
@@ -133,7 +133,7 @@ mod tests {
 
     use crate::state::machine::TaskState;
 
-    use super::{format_transition_parts, TransitionSnapshot};
+    use super::{TransitionSnapshot, format_transition_parts};
 
     #[test]
     fn hides_elapsed_when_transition_starts_from_idle() {

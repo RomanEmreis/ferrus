@@ -6,8 +6,7 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Human escape hatch: reset a Failed task back to Idle. Clears REVIEW.md, \
+pub const DESCRIPTION: &str = "Human escape hatch: reset a Failed task back to Idle. Clears REVIEW.md, \
      SUBMISSION.md, and consultation files. Only valid in state Failed.";
 
 pub async fn handler() -> Result<String, Error> {

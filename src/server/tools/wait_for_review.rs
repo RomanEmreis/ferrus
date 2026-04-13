@@ -13,8 +13,7 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Block until the Executor submits work for review, then atomically claim the review and \
+pub const DESCRIPTION: &str = "Block until the Executor submits work for review, then atomically claim the review and \
      return the full submission context. \
      Returns a JSON object: {\"status\":\"claimed\", \"claimed_by\":\"...\", \"lease_until\":\"...\", \
      \"state\":\"Reviewing\", \"task\":\"...\", \"submission\":\"...\", \"review\":\"...\"} \

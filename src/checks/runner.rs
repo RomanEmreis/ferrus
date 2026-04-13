@@ -44,7 +44,7 @@ async fn run_command(cmd: &str) -> Result<CommandResult> {
                 passed: true,
                 stdout: String::new(),
                 stderr: String::new(),
-            })
+            });
         }
     };
 

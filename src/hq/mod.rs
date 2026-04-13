@@ -8,15 +8,15 @@ use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::watch;
 
-use crate::agent_id::{agent_id, DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
-use crate::config::{update_hq_agent_config, Config, HqConfig, HqRole};
+use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
     store,
 };
-use commands::{parse_command, ModelTarget, ShellCommand};
+use commands::{ModelTarget, ShellCommand, parse_command};
 use display::Display;
 use state_watcher::WatchedState;
 
@@ -280,7 +280,9 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             let model = match (model, clear) {
                 (Some(model), false) => Some(model),
                 (None, true) => None,
-                _ => anyhow::bail!("Usage: /model <supervisor|executor> <model> | /model <supervisor|executor> --clear"),
+                _ => anyhow::bail!(
+                    "Usage: /model <supervisor|executor> <model> | /model <supervisor|executor> --clear"
+                ),
             };
             ctx.update_model(target, model.as_deref()).await?;
         }
@@ -560,7 +562,7 @@ impl HqContext {
         name: &str,
         pid: Option<u32>,
     ) -> Result<()> {
-        use agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+        use agents::{AgentEntry, AgentStatus, read_agents, write_agents};
 
         let mut reg = read_agents().await?;
         reg.upsert(AgentEntry {
@@ -575,7 +577,7 @@ impl HqContext {
     }
 
     async fn mark_agent_suspended(&self, name: &str) -> Result<()> {
-        use agents::{read_agents, write_agents, AgentStatus};
+        use agents::{AgentStatus, read_agents, write_agents};
 
         let mut reg = read_agents().await?;
         if let Some(entry) = reg.by_name_mut(name) {
@@ -935,13 +937,12 @@ impl HqContext {
             tokio::select! {
                 _ = child.wait() => break,
                 _ = ticker.tick() => {
-                    if let Ok(s) = store::read_state().await {
-                        if s.state == TaskState::Executing {
-                            self.display.muted("Task created — stopping supervisor…");
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
-                            break;
-                        }
+                    if let Ok(s) = store::read_state().await
+                        && s.state == TaskState::Executing {
+                        self.display.muted("Task created — stopping supervisor…");
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        break;
                     }
                 }
             }
@@ -1086,7 +1087,7 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
 }
 
 async fn reconcile_agent_pids() {
-    use crate::state::agents::{read_agents, write_agents, AgentStatus};
+    use crate::state::agents::{AgentStatus, read_agents, write_agents};
 
     if let Ok(mut reg) = read_agents().await {
         let mut changed = false;

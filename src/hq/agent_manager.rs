@@ -1,6 +1,6 @@
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
-use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -186,15 +186,15 @@ If any conflict occurs, follow this prompt and the Ferrus MCP tools.
 /// Unix-only; no-op on other platforms.
 pub async fn kill_role(role: &str) -> Result<()> {
     let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_role_mut(role) {
-        if let Some(pid) = e.pid {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-            e.pid = None;
-            e.status = AgentStatus::Suspended;
+    if let Some(e) = reg.by_role_mut(role)
+        && let Some(pid) = e.pid
+    {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
         }
+        e.pid = None;
+        e.status = AgentStatus::Suspended;
     }
     write_agents(&reg).await?;
     Ok(())
@@ -646,7 +646,9 @@ mod tests {
     fn executor_prompt_forbids_consulting_about_tool_availability() {
         let prompt = executor_prompt();
         assert!(prompt.contains("ferrus://consult_template"));
-        assert!(prompt.contains("Do NOT ask the Supervisor how to handle Ferrus tool availability"));
+        assert!(
+            prompt.contains("Do NOT ask the Supervisor how to handle Ferrus tool availability")
+        );
     }
 
     #[test]

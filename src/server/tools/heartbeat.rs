@@ -11,8 +11,7 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Renew the lease for the calling agent. Validates that the agent holds the current lease, \
+pub const DESCRIPTION: &str = "Renew the lease for the calling agent. Validates that the agent holds the current lease, \
      then extends lease_until by ttl_secs and updates last_heartbeat. \
      Returns a JSON object: {\"status\":\"renewed\", \"claimed_by\":\"...\", \"lease_until\":\"...\"} \
      on success, or {\"status\":\"error\", \"code\":\"...\", \"message\":\"...\"} on failure. \
