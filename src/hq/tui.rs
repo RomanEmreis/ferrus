@@ -48,6 +48,7 @@ const COMMANDS: &[(&str, &str)] = &[
 
 pub enum UiMessage {
     Info(String),
+    Tip(String),
     Muted(String),
     Error(String),
     Transition {
@@ -126,6 +127,7 @@ struct TranscriptLine {
 #[derive(Clone, Copy)]
 enum TranscriptKind {
     Info,
+    Tip,
     Muted,
     Error,
     Transition,
@@ -679,6 +681,15 @@ fn handle_message(
             app.messages.extend(lines.clone());
             print_message_and_restore_prompt(stdout, app, ui, lines)?;
         }
+        UiMessage::Tip(text) => {
+            let line = TranscriptLine {
+                text,
+                kind: TranscriptKind::Tip,
+                continuation: false,
+            };
+            app.messages.push(line.clone());
+            print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
+        }
         UiMessage::Muted(text) => {
             let lines = split_transcript(&text, TranscriptKind::Muted);
             app.messages.extend(lines.clone());
@@ -971,6 +982,10 @@ fn print_transcript_line(stdout: &mut Stdout, line: &TranscriptLine) -> Result<(
     match line.kind {
         TranscriptKind::Info => {
             queue!(stdout, MoveToColumn(0), Print(&line.text))?;
+            crlf(stdout)?;
+        }
+        TranscriptKind::Tip => {
+            print_tip_line(stdout, &line.text, terminal_width() as usize)?;
             crlf(stdout)?;
         }
         TranscriptKind::Muted => {

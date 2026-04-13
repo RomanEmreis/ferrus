@@ -453,14 +453,12 @@ impl HqContext {
                 self.handle_restart_executor_transition().await
             }
             TransitionAction::TaskComplete => {
-                self.handle_terminal_transition("Task complete! Use /plan to start a new task.")
+                self.handle_terminal_tip("Tip: Use /task to start a new task.")
                     .await
             }
             TransitionAction::TaskFailed => {
-                self.handle_terminal_transition(
-                    "Task failed. Use /status for details, /reset to try again.",
-                )
-                .await
+                self.handle_terminal_tip("Tip: Use /status for details, /reset to try again.")
+                    .await
             }
             TransitionAction::PauseForHuman => self.handle_pause_for_human().await,
             // (AwaitingHuman, Executing|Addressing|...) → NoOp: the executor either
@@ -518,7 +516,7 @@ impl HqContext {
             .context("Failed to spawn executor")
     }
 
-    async fn handle_terminal_transition(&mut self, message: &str) -> Result<()> {
+    async fn handle_terminal_tip(&mut self, message: &str) -> Result<()> {
         let agent_ids = [
             self.executor_agent_id().ok(),
             self.supervisor_agent_id().ok(),
@@ -526,7 +524,7 @@ impl HqContext {
         for name in agent_ids.into_iter().flatten() {
             self.shutdown_headless(&name).await;
         }
-        self.display.info(message);
+        self.display.tip(message);
         Ok(())
     }
 
@@ -691,7 +689,7 @@ impl HqContext {
         match state.state {
             TaskState::Complete => {
                 self.display
-                    .info("Task is already complete. Use /plan to start a new task.");
+                    .info("Task is already complete. Use /task to start a new task.");
                 return Ok(());
             }
             TaskState::Reviewing => {
