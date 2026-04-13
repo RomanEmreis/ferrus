@@ -1,8 +1,11 @@
 [package]
 name = "ferrus"
 version = "0.2.4-alpha.2"
-edition = "2021"
+edition = "2024"
+rust-version = "1.93.0"
 license = "Apache-2.0"
+repository = "https://github.com/RomanEmreis/ferrus"
+readme = "README.md"
 description = "AI agent orchestrator - drives a Supervisor–Executor workflow for autonomous software development"
 
 [[bin]]
