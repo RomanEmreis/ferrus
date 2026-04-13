@@ -45,30 +45,30 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
         let state_elapsed = elapsed_since(state.updated_at, now);
         let mut transition = None;
 
-        if let Some(previous) = last_state.as_ref() {
-            if previous.state != state.state {
-                if previous.state == TaskState::Idle && state.state == TaskState::Executing {
-                    task_started_at = Some(Instant::now());
-                }
+        if let Some(previous) = last_state.as_ref()
+            && previous.state != state.state
+        {
+            if previous.state == TaskState::Idle && state.state == TaskState::Executing {
+                task_started_at = Some(Instant::now());
+            }
 
-                let task_elapsed = task_started_at.map(|started| started.elapsed());
-                let is_terminal = matches!(state.state, TaskState::Complete | TaskState::Failed);
-                let elapsed = if is_terminal {
-                    task_elapsed.unwrap_or_else(|| elapsed_since(previous.updated_at, now))
-                } else {
-                    elapsed_since(previous.updated_at, now)
-                };
+            let task_elapsed = task_started_at.map(|started| started.elapsed());
+            let is_terminal = matches!(state.state, TaskState::Complete | TaskState::Failed);
+            let elapsed = if is_terminal {
+                task_elapsed.unwrap_or_else(|| elapsed_since(previous.updated_at, now))
+            } else {
+                elapsed_since(previous.updated_at, now)
+            };
 
-                transition = Some(TransitionSnapshot {
-                    from: previous.state.clone(),
-                    to: state.state.clone(),
-                    elapsed,
-                    used_total: is_terminal && task_elapsed.is_some(),
-                });
+            transition = Some(TransitionSnapshot {
+                from: previous.state.clone(),
+                to: state.state.clone(),
+                elapsed,
+                used_total: is_terminal && task_elapsed.is_some(),
+            });
 
-                if state.state == TaskState::Idle {
-                    task_started_at = None;
-                }
+            if state.state == TaskState::Idle {
+                task_started_at = None;
             }
         }
 

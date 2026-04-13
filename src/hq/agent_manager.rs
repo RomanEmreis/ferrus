@@ -186,15 +186,15 @@ If any conflict occurs, follow this prompt and the Ferrus MCP tools.
 /// Unix-only; no-op on other platforms.
 pub async fn kill_role(role: &str) -> Result<()> {
     let mut reg = read_agents().await?;
-    if let Some(e) = reg.by_role_mut(role) {
-        if let Some(pid) = e.pid {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-            e.pid = None;
-            e.status = AgentStatus::Suspended;
+    if let Some(e) = reg.by_role_mut(role)
+        && let Some(pid) = e.pid
+    {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
         }
+        e.pid = None;
+        e.status = AgentStatus::Suspended;
     }
     write_agents(&reg).await?;
     Ok(())

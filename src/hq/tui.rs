@@ -532,22 +532,21 @@ pub async fn run_tui(
                 }
             }
             changed = state_rx.changed() => {
-                if changed.is_ok() {
-                    if let Some(watched) = state_rx.borrow_and_update().clone() {
-                        let supervisor_status = app.status.supervisor_status.clone();
-                        let executor_status = app.status.executor_status.clone();
-                        let directory = app.status.directory.clone();
-                        let branch = app.status.branch.clone();
-                        let mut next = StatusSnapshot::from_watched_state(&watched);
-                        next.supervisor_status = supervisor_status;
-                        next.executor_status = executor_status;
-                        next.directory = directory;
-                        next.branch = branch;
-                        app.status = next;
-                        if !app.suspended {
-                            clear_live_area(&mut stdout, &ui)?;
-                            redraw_live_area(&mut stdout, &app, &mut ui)?;
-                        }
+                if changed.is_ok()
+                    && let Some(watched) = state_rx.borrow_and_update().clone() {
+                    let supervisor_status = app.status.supervisor_status.clone();
+                    let executor_status = app.status.executor_status.clone();
+                    let directory = app.status.directory.clone();
+                    let branch = app.status.branch.clone();
+                    let mut next = StatusSnapshot::from_watched_state(&watched);
+                    next.supervisor_status = supervisor_status;
+                    next.executor_status = executor_status;
+                    next.directory = directory;
+                    next.branch = branch;
+                    app.status = next;
+                    if !app.suspended {
+                        clear_live_area(&mut stdout, &ui)?;
+                        redraw_live_area(&mut stdout, &app, &mut ui)?;
                     }
                 }
             }

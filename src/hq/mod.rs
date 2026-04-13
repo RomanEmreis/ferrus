@@ -937,13 +937,12 @@ impl HqContext {
             tokio::select! {
                 _ = child.wait() => break,
                 _ = ticker.tick() => {
-                    if let Ok(s) = store::read_state().await {
-                        if s.state == TaskState::Executing {
-                            self.display.muted("Task created — stopping supervisor…");
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
-                            break;
-                        }
+                    if let Ok(s) = store::read_state().await
+                        && s.state == TaskState::Executing {
+                        self.display.muted("Task created — stopping supervisor…");
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        break;
                     }
                 }
             }
