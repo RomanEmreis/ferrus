@@ -4,11 +4,7 @@ use std::path::Path;
 use crate::state::{machine::StateData, store};
 
 const DEFAULT_FERRUS_TOML: &str = r#"[checks]
-commands = [
-    "cargo clippy -- -D warnings",
-    "cargo fmt --check",
-    "cargo test",
-]
+commands = []
 
 [limits]
 max_check_retries = 20  # consecutive check failures before state → Failed
