@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
@@ -74,7 +74,7 @@ fn build_full_log(commands: &[CommandResult]) -> String {
     out
 }
 
-fn build_report(commands: &[CommandResult], max_lines: usize, log_path: &PathBuf) -> String {
+fn build_report(commands: &[CommandResult], max_lines: usize, log_path: &Path) -> String {
     let failed: Vec<&CommandResult> = commands.iter().filter(|c| !c.passed).collect();
 
     let mut out = String::from("Checks failed.\n\nFailed commands:\n");

@@ -5,6 +5,7 @@
 
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod qwen;
 
 use anyhow::{bail, Context, Result};
 use std::process::Command;
@@ -106,8 +107,9 @@ pub fn parse_supervisor_agent(
     match agent_type {
         claude::NAME => Ok(Arc::new(claude::Supervisor::new(model))),
         codex::NAME => Ok(Arc::new(codex::Supervisor::new(model))),
+        qwen::NAME => Ok(Arc::new(qwen::Supervisor::new(model))),
         other => bail!(
-            "Unknown supervisor agent '{other}'. Supported values: \"claude-code\", \"codex\"."
+            "Unknown supervisor agent '{other}'. Supported values: \"claude-code\", \"codex\", \"qwen-code\"."
         ),
     }
 }
@@ -125,9 +127,10 @@ pub fn parse_executor_agent(
     match agent_type {
         claude::NAME => Ok(Arc::new(claude::Executor::new(model))),
         codex::NAME => Ok(Arc::new(codex::Executor::new(model))),
-        other => {
-            bail!("Unknown executor agent '{other}'. Supported values: \"claude-code\", \"codex\".")
-        }
+        qwen::NAME => Ok(Arc::new(qwen::Executor::new(model))),
+        other => bail!(
+            "Unknown executor agent '{other}'. Supported values: \"claude-code\", \"codex\", \"qwen-code\"."
+        ),
     }
 }
 
@@ -191,6 +194,7 @@ mod tests {
         assert!(err.contains("Unknown supervisor agent 'unknown'"));
         assert!(err.contains("claude-code"));
         assert!(err.contains("codex"));
+        assert!(err.contains("qwen-code"));
     }
 
     #[test]
@@ -202,6 +206,7 @@ mod tests {
         assert!(err.contains("Unknown executor agent 'unknown'"));
         assert!(err.contains("claude-code"));
         assert!(err.contains("codex"));
+        assert!(err.contains("qwen-code"));
     }
 
     #[test]

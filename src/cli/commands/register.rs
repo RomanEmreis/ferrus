@@ -9,6 +9,8 @@ pub enum Agent {
     #[value(name = crate::agents::claude::NAME)]
     ClaudeCode,
     Codex,
+    #[value(name = crate::agents::qwen::NAME)]
+    QwenCode,
 }
 
 impl Agent {
@@ -17,6 +19,7 @@ impl Agent {
         match self {
             Agent::ClaudeCode => crate::agents::claude::NAME,
             Agent::Codex => crate::agents::codex::NAME,
+            Agent::QwenCode => crate::agents::qwen::NAME,
         }
     }
 }
@@ -70,6 +73,7 @@ async fn register_role(role: &str, agent: &Agent, model: Option<&str>) -> Result
     match agent {
         Agent::ClaudeCode => register_claude_code(role, agent_name, model).await,
         Agent::Codex => register_codex(role, agent_name, model).await,
+        Agent::QwenCode => register_qwen_code(role, agent_name, model).await,
     }
 }
 
@@ -208,6 +212,56 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
     Ok(())
 }
 
+async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
+    let dir = std::path::Path::new(".qwen");
+    tokio::fs::create_dir_all(dir).await?;
+    let path = dir.join("settings.json");
+
+    let mut root: serde_json::Value = if path.exists() {
+        let content = tokio::fs::read_to_string(&path).await?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let servers = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(".qwen/settings.json root is not a JSON object"))?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+
+    let servers_obj = servers
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(".qwen/settings.json mcpServers is not a JSON object"))?;
+
+    let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
+    let key = format!("ferrus-{role}-{index}");
+    let McpConfigEntry {
+        command,
+        args,
+        model,
+    } = config_entry(role, agent_name, index, model)?;
+
+    let mut server_entry = serde_json::json!({
+        "command": command,
+        "args": args,
+    });
+    if let Some(model) = model {
+        server_entry["model"] = serde_json::Value::String(model);
+    }
+    servers_obj.insert(key.clone(), server_entry);
+    println!(
+        "Registered {key} in .qwen/settings.json (agent_id will be \"{}\")",
+        agent_id(role, agent_name, index)
+    );
+
+    let content = serde_json::to_string_pretty(&root)?;
+    tokio::fs::write(path, content).await?;
+
+    append_to_qwen_md(role).await?;
+    Ok(())
+}
+
 fn apply_codex_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
     let tools = entry
         .entry("tools")
@@ -326,6 +380,28 @@ async fn append_to_claude_md(role: &str) -> Result<()> {
     content.push_str(&section);
     tokio::fs::write(path, content).await?;
     println!("Appended {role} instructions to CLAUDE.md");
+    Ok(())
+}
+
+async fn append_to_qwen_md(role: &str) -> Result<()> {
+    let path = std::path::Path::new("QWEN.md");
+    let marker = format!("<!-- ferrus-{role}-instructions -->");
+
+    let existing = if path.exists() {
+        tokio::fs::read_to_string(path).await?
+    } else {
+        String::new()
+    };
+
+    if existing.contains(&marker) {
+        return Ok(());
+    }
+
+    let section = claude_md_section(role, &marker);
+    let mut content = existing;
+    content.push_str(&section);
+    tokio::fs::write(path, content).await?;
+    println!("Appended {role} instructions to QWEN.md");
     Ok(())
 }
 
