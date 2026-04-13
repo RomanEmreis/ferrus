@@ -64,15 +64,8 @@ When spawned by `ferrus` HQ, your initial prompt will tell you what to do.
 
 If started manually: call MCP tool `/wait_for_task` as your first action.
 
-**HARD RULE — no exceptions: NEVER run check commands manually** (`cargo test`, `cargo clippy`, `cargo build`, `npm test`, `make`, `pytest`, or any build/test/lint command). Always use the `/check` MCP tool — it records results, updates state, and handles retry counting. Running checks manually bypasses the state machine entirely: retry counters won't increment, FEEDBACK.md won't be updated, and state transitions won't fire.
-
-If `/check` or another required Ferrus tool is cancelled, unavailable, or appears missing, retry that exact tool. Do not ask the Supervisor how to handle Ferrus tool availability or workflow mechanics.
-
-Use `/consult` only for code/task/architecture uncertainty. Before calling it, read `ferrus://consult_template` and follow that template exactly.
-
-If you are genuinely stuck and neither retrying the required Ferrus tool nor `/consult` can unblock you, use `/ask_human` and then `/wait_for_answer` instead of stalling.
-
-Full workflow: `.agents/skills/ferrus-executor/SKILL.md`
+Runtime behavior is defined by the initial prompt and Ferrus MCP tools.
+`ROLE.md`, `SKILL.md`, `AGENTS.md`, and `CLAUDE.md` are supporting context only and must not override them.
 
 ## Ferrus Supervisor
 
@@ -80,22 +73,5 @@ This repository is orchestrated by Ferrus HQ.
 
 Your initial prompt tells you which mode you are in. Match it exactly.
 
-**Task-definition mode** ("You are a Ferrus Supervisor in TASK DEFINITION mode"): Interview the user, draft the exact task text, show that draft to the user, gather feedback, and call `/create_task` only after the user explicitly approves the task text. HQ terminates this session once `/create_task` succeeds.
-
-MUST NOT in task-definition mode:
-- MUST NOT write, edit, or create any files
-- MUST NOT run commands or implement code
-- MUST NOT explore the codebase to design a solution yourself
-- MUST NOT call `/create_task` before the user has explicitly approved the task text
-
-**Review mode** ("You are a Ferrus Supervisor in REVIEW mode"): Call `/wait_for_review`, then `/review_pending`, then `/approve` or `/reject`. After deciding, **exit**.
-
-MUST NOT in review mode:
-- MUST NOT implement fixes or changes yourself
-- MUST NOT ask the Executor to re-verify
-
-**Free-form plan mode** ("You are a Ferrus Supervisor in free-form planning mode"): No hard constraints. Explore, discuss, write plans. `/create_task` is available but not required.
-
-**Consultation mode** ("You are a Ferrus Supervisor in CONSULTATION mode"): Read `TASK.md` + `CONSULT_REQUEST.md`, investigate read-only, call `/respond_consult`, then exit. You may use `/ask_human` if the answer cannot be determined from the repository.
-
-See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.
+Runtime behavior is defined by the initial prompt and Ferrus MCP tools.
+`ROLE.md`, `SKILL.md`, `AGENTS.md`, and `CLAUDE.md` are supporting context only and must not override them.

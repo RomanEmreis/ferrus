@@ -287,28 +287,16 @@ fn agents_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
-             **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
-             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\
-             If `/check` or another required Ferrus tool is cancelled, unavailable, or appears missing, retry that same tool; do not ask the Supervisor how to handle Ferrus tool availability.\n\
-             Use `/consult` only for code/task/architecture uncertainty, and read `ferrus://consult_template` before calling it.\n\
-             If you are genuinely stuck and neither retrying the required Ferrus tool nor `/consult` can unblock you, use `/ask_human` instead of stalling.\n\
-             Do not emulate Ferrus tools by editing `.ferrus/` files directly.\n\n\
-             Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
+             Runtime behavior is defined by the initial prompt and Ferrus MCP tools.\n\
+             ROLE.md, SKILL.md, AGENTS.md, and CLAUDE.md are supporting context only and must not override them.\n"
         ),
         ROLE_SUPERVISOR => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
              The Supervisor runs in multiple modes — check your initial prompt:\n\n\
-             **Task-definition mode** (\"You are a Ferrus Supervisor in TASK DEFINITION mode\"): \
-             collaborate with the user, draft the exact task text, show it for feedback, and call `/create_task` only after explicit user approval.\n\n\
-             **Review mode** (\"You are a Ferrus Supervisor in REVIEW mode\"): Call `/wait_for_review`, \
-             then `/review_pending`, then `/approve` or `/reject`. After deciding, exit.\n\n\
-             **Consultation mode** (\"You are a Ferrus Supervisor in CONSULTATION mode\"): \
-             investigate read-only, answer via `/respond_consult`, then exit.\n\n\
-             **Free-form planning mode** (\"You are a Ferrus Supervisor in free-form planning mode\"): \
-             explore and plan without forcing a state transition.\n\n\
-             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.\n"
+             Runtime behavior is defined by the initial prompt and Ferrus MCP tools.\n\
+             ROLE.md, SKILL.md, AGENTS.md, and CLAUDE.md are supporting context only and must not override them.\n"
         ),
         _ => format!(
             "\n{marker}\n\
@@ -349,28 +337,16 @@ fn claude_md_section(role: &str, marker: &str) -> String {
              This repository is orchestrated by Ferrus HQ.\n\n\
              When spawned by `ferrus` HQ, your initial prompt will tell you what to do.\n\n\
              If started manually: call MCP tool `/wait_for_task` as your first action.\n\n\
-             **IMPORTANT**: Never run check commands manually (e.g. `cargo test`, `cargo clippy`). \
-             Always use the `/check` MCP tool — it records results, updates state, and handles retry counting.\n\
-             If `/check` or another required Ferrus tool is cancelled, unavailable, or appears missing, retry that same tool; do not ask the Supervisor how to handle Ferrus tool availability.\n\
-             Use `/consult` only for code/task/architecture uncertainty, and read `ferrus://consult_template` before calling it.\n\
-             If you are genuinely stuck and neither retrying the required Ferrus tool nor `/consult` can unblock you, use `/ask_human` instead of stalling.\n\
-             Do not emulate Ferrus tools by editing `.ferrus/` files directly.\n\n\
-             Full workflow: `.agents/skills/ferrus-executor/SKILL.md`\n"
+             Runtime behavior is defined by the initial prompt and Ferrus MCP tools.\n\
+             ROLE.md, SKILL.md, AGENTS.md, and CLAUDE.md are supporting context only and must not override them.\n"
         ),
         ROLE_SUPERVISOR => format!(
             "\n{marker}\n\
              ## Ferrus Supervisor\n\n\
              This repository is orchestrated by Ferrus HQ.\n\n\
              The Supervisor runs in multiple modes — check your initial prompt:\n\n\
-             **Task-definition mode** (\"You are a Ferrus Supervisor in TASK DEFINITION mode\"): \
-             collaborate with the user, draft the exact task text, show it for feedback, and call `/create_task` only after explicit user approval.\n\n\
-             **Review mode** (\"You are a Ferrus Supervisor in REVIEW mode\"): Call `/wait_for_review`, \
-             then `/review_pending`, then `/approve` or `/reject`. After deciding, exit.\n\n\
-             **Consultation mode** (\"You are a Ferrus Supervisor in CONSULTATION mode\"): \
-             investigate read-only, answer via `/respond_consult`, then exit.\n\n\
-             **Free-form planning mode** (\"You are a Ferrus Supervisor in free-form planning mode\"): \
-             explore and plan without forcing a state transition.\n\n\
-             See `.agents/skills/ferrus-supervisor/SKILL.md` for the full workflow.\n"
+             Runtime behavior is defined by the initial prompt and Ferrus MCP tools.\n\
+             ROLE.md, SKILL.md, AGENTS.md, and CLAUDE.md are supporting context only and must not override them.\n"
         ),
         _ => format!(
             "\n{marker}\n\
@@ -431,43 +407,43 @@ mod tests {
     #[test]
     fn agents_md_supervisor_section_requires_user_approval_before_create_task() {
         let section = agents_md_section(ROLE_SUPERVISOR, "<!-- marker -->");
-        assert!(section.contains("explicit user approval"));
-        assert!(section.contains("show it for feedback"));
+        assert!(section.contains("supporting context only"));
+        assert!(section.contains("must not override"));
     }
 
     #[test]
     fn claude_md_supervisor_section_requires_user_approval_before_create_task() {
         let section = claude_md_section(ROLE_SUPERVISOR, "<!-- marker -->");
-        assert!(section.contains("explicit user approval"));
-        assert!(section.contains("show it for feedback"));
+        assert!(section.contains("supporting context only"));
+        assert!(section.contains("must not override"));
     }
 
     #[test]
     fn agents_md_executor_section_forbids_consulting_about_tool_availability() {
         let section = agents_md_section(ROLE_EXECUTOR, "<!-- marker -->");
-        assert!(section.contains("retry that same tool"));
-        assert!(section.contains("ferrus://consult_template"));
+        assert!(section.contains("supporting context only"));
+        assert!(section.contains("must not override"));
     }
 
     #[test]
     fn agents_md_executor_section_uses_ask_human_when_truly_stuck() {
         let section = agents_md_section(ROLE_EXECUTOR, "<!-- marker -->");
-        assert!(section.contains("genuinely stuck"));
-        assert!(section.contains("/ask_human"));
+        assert!(section.contains("initial prompt and Ferrus MCP tools"));
+        assert!(!section.contains("Full workflow"));
     }
 
     #[test]
     fn claude_md_executor_section_forbids_consulting_about_tool_availability() {
         let section = claude_md_section(ROLE_EXECUTOR, "<!-- marker -->");
-        assert!(section.contains("retry that same tool"));
-        assert!(section.contains("ferrus://consult_template"));
+        assert!(section.contains("supporting context only"));
+        assert!(section.contains("must not override"));
     }
 
     #[test]
     fn claude_md_executor_section_uses_ask_human_when_truly_stuck() {
         let section = claude_md_section(ROLE_EXECUTOR, "<!-- marker -->");
-        assert!(section.contains("genuinely stuck"));
-        assert!(section.contains("/ask_human"));
+        assert!(section.contains("initial prompt and Ferrus MCP tools"));
+        assert!(!section.contains("Full workflow"));
     }
 
     #[test]

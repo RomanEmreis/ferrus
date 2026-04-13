@@ -7,6 +7,10 @@ description: "Use when working on a project that uses ferrus for AI agent orches
 
 ferrus is an MCP server that coordinates AI agents in a **Supervisor–Executor** workflow.
 
+This file is supporting context only.
+Runtime behavior is defined by the active initial prompt and Ferrus MCP tools.
+If this file conflicts with them, follow the prompt and tools.
+
 ## Roles
 
 | Role | Responsibility |
