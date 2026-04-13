@@ -15,8 +15,7 @@ use super::{
     tool_err,
 };
 
-pub const DESCRIPTION: &str =
-    "Run all configured checks (clippy, fmt, tests, etc.) against the current \
+pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, etc.) against the current \
      codebase. Can be called from state Executing or Addressing. \
      On pass: stay in the current work state and clear check-failure metadata. \
      On fail: stay in the current work state (or state → Failed if the retry \
@@ -71,8 +70,7 @@ async fn run() -> Result<String> {
                     warn!(retries, "Check retry limit reached, state → Failed");
                     Ok(format!(
                         "Check retry limit reached ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
-                        config.limits.max_check_retries,
-                        failure.report,
+                        config.limits.max_check_retries, failure.report,
                     ))
                 }
                 Err(e) => anyhow::bail!(e),

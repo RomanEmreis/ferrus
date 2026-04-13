@@ -9,8 +9,7 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Retrieve the pending submission for review. Returns the task description, \
+pub const DESCRIPTION: &str = "Retrieve the pending submission for review. Returns the task description, \
      the Executor's submission notes (summary, verification steps, known limitations), \
      and any prior review notes. Only valid in state Reviewing.";
 

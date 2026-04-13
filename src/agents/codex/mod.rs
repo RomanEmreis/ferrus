@@ -3,7 +3,7 @@
 //! These wrappers isolate the CLI details needed to launch Codex in the shapes
 //! Ferrus expects for interactive and headless sessions.
 
-use super::{normalized_model, AgentRunMode, ExecutorAgent, SupervisorAgent};
+use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.

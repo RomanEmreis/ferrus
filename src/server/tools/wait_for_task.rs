@@ -13,8 +13,7 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Block until a task is ready to work on, then atomically claim it and return its full context. \
+pub const DESCRIPTION: &str = "Block until a task is ready to work on, then atomically claim it and return its full context. \
      Returns a JSON object: {\"status\":\"claimed\", \"claimed_by\":\"...\", \"lease_until\":\"...\", \
      \"state\":\"...\", \"task\":\"...\", \"review\":\"...\"} when a task is \
      claimed, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \

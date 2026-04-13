@@ -83,10 +83,14 @@ pub enum TransitionError {
         state: TaskState,
     },
 
-    #[error("check retry limit reached ({retries} consecutive failures) — state is now Failed; use /reset to recover")]
+    #[error(
+        "check retry limit reached ({retries} consecutive failures) — state is now Failed; use /reset to recover"
+    )]
     CheckLimitExceeded { retries: u32 },
 
-    #[error("review cycle limit reached ({cycles} reject→fix cycles) — state is now Failed; use /reset to recover")]
+    #[error(
+        "review cycle limit reached ({cycles} reject→fix cycles) — state is now Failed; use /reset to recover"
+    )]
     ReviewLimitExceeded { cycles: u32 },
 }
 

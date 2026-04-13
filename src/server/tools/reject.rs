@@ -12,8 +12,7 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Reject the current submission with review notes. Writes notes to REVIEW.md and \
+pub const DESCRIPTION: &str = "Reject the current submission with review notes. Writes notes to REVIEW.md and \
      transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
      exhausted). The Executor's check retry counter is reset for the new cycle.";
 

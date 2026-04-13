@@ -1,6 +1,6 @@
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
-use crate::state::agents::{read_agents, write_agents, AgentEntry, AgentStatus};
+use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -646,7 +646,9 @@ mod tests {
     fn executor_prompt_forbids_consulting_about_tool_availability() {
         let prompt = executor_prompt();
         assert!(prompt.contains("ferrus://consult_template"));
-        assert!(prompt.contains("Do NOT ask the Supervisor how to handle Ferrus tool availability"));
+        assert!(
+            prompt.contains("Do NOT ask the Supervisor how to handle Ferrus tool availability")
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::agents::{parse_executor_agent, parse_supervisor_agent, ExecutorAgent, SupervisorAgent};
+use crate::agents::{ExecutorAgent, SupervisorAgent, parse_executor_agent, parse_supervisor_agent};
 
 #[derive(Debug)]
 #[allow(dead_code)]

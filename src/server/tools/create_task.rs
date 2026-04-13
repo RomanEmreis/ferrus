@@ -6,8 +6,7 @@ use crate::state::{machine::TaskState, store};
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Create a new task for the Executor. Transitions state Idle → Executing and writes \
+pub const DESCRIPTION: &str = "Create a new task for the Executor. Transitions state Idle → Executing and writes \
      the task description to TASK.md. Must be called from state Idle.";
 
 pub const INPUT_SCHEMA: &str = r#"{

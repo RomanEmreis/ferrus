@@ -3,7 +3,7 @@
 //! Ferrus uses this module to normalize Qwen's CLI conventions so the rest of
 //! the orchestration layer can treat it like any other agent backend.
 
-use super::{normalized_model, AgentRunMode, ExecutorAgent, SupervisorAgent};
+use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.

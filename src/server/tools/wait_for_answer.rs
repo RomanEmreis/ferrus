@@ -9,8 +9,7 @@ use crate::{config::Config, state::store};
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Block until the human provides an answer to the question you asked via /ask_human. \
+pub const DESCRIPTION: &str = "Block until the human provides an answer to the question you asked via /ask_human. \
      Polls .ferrus/ANSWER.md until it has content, then restores the paused state and \
      returns the answer. \
      Returns {\"status\":\"answered\", \"answer\":\"...\", \"resumed_state\":\"...\"} on success, \

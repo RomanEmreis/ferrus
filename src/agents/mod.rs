@@ -7,7 +7,7 @@ pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod qwen;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::process::Command;
 use std::sync::Arc;
 

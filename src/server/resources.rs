@@ -53,7 +53,7 @@ pub async fn read(file: String) -> Result<ReadResourceResult, Error> {
             return Err(Error::new(
                 ErrorCode::InvalidRequest,
                 std::io::Error::other(format!("Unknown ferrus resource: {file}")),
-            ))
+            ));
         }
     };
 

@@ -5,8 +5,7 @@ use crate::state::store;
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str =
-    "Query the current state of the ferrus orchestration system. Returns state, \
+pub const DESCRIPTION: &str = "Query the current state of the ferrus orchestration system. Returns state, \
      retry counters, and any failure reason. Safe to call from any state.";
 
 pub async fn handler() -> Result<String, Error> {
