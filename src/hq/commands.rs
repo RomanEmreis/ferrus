@@ -22,6 +22,8 @@ pub enum ModelTarget {
 pub enum ShellCommand {
     /// Show task state and agent list.
     Status,
+    /// Run the Ferrus /check gate deterministically from HQ.
+    Check,
     /// Reset all task files and set state to Idle (prompts for confirmation if state is Executing or Reviewing).
     Reset,
     /// Stop all running executor and supervisor/reviewer sessions (prompts for confirmation).
@@ -99,6 +101,13 @@ mod tests {
         assert!(matches!(
             parse_command("/status").unwrap(),
             ShellCommand::Status
+        ));
+    }
+    #[test]
+    fn parse_check() {
+        assert!(matches!(
+            parse_command("/check").unwrap(),
+            ShellCommand::Check
         ));
     }
     #[test]

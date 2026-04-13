@@ -204,11 +204,13 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 }
             }
         }
+        ShellCommand::Check => ctx.check().await?,
         ShellCommand::Help => {
             ctx.display.info(concat!(
                 "ferrus HQ commands:\n",
                 "  /plan              Free-form planning session with the supervisor\n",
                 "  /task              Define a task with the supervisor, then run executor→review loop\n",
+                "  /check             Run the Ferrus check gate deterministically from HQ\n",
                 "  /supervisor        Open an interactive supervisor session\n",
                 "  /executor          Open an interactive executor session\n",
                 "  /resume            Resume the executor headlessly; recovers Consultation too\n",
@@ -745,6 +747,14 @@ impl HqContext {
         let supervisor_id = self.supervisor_agent_id()?;
         self.spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
             .await
+    }
+
+    async fn check(&mut self) -> Result<()> {
+        let result = crate::server::tools::check::handler()
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        self.display.info(result);
+        Ok(())
     }
 
     async fn reset(&mut self) -> Result<()> {

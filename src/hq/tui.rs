@@ -27,6 +27,7 @@ const MAX_COMPLETIONS: usize = 8;
 const COMMANDS: &[(&str, &str)] = &[
     ("/plan", "spawn supervisor, plan a task"),
     ("/task", "define a task and run executor then review"),
+    ("/check", "run the Ferrus check gate from HQ"),
     ("/supervisor", "open an interactive supervisor session"),
     ("/executor", "open an interactive executor session"),
     (
@@ -1698,6 +1699,7 @@ mod tui_tests {
         let commands: Vec<&str> = COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
 
         assert!(commands.contains(&"/task"));
+        assert!(commands.contains(&"/check"));
         assert!(commands.contains(&"/model"));
         assert!(commands.contains(&"/resume"));
         assert!(commands.contains(&"/supervisor"));

@@ -8,7 +8,7 @@ use crate::agent_id::{agent_id, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 
 mod prompts;
 mod resources;
-mod tools;
+pub(crate) mod tools;
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Role {
