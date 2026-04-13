@@ -15,6 +15,7 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct ChecksConfig {
+    #[serde(default)]
     pub commands: Vec<String>,
 }
 
@@ -371,6 +372,18 @@ heartbeat_interval_secs = 45
         assert_eq!(config.limits.wait_timeout_secs, 900);
         assert_eq!(config.lease.ttl_secs, 120);
         assert_eq!(config.lease.heartbeat_interval_secs, 45);
+    }
+
+    #[test]
+    fn checks_commands_default_to_empty_when_omitted() {
+        let toml = r#"
+[checks]
+
+[limits]
+"#;
+        let config = Config::from_toml(toml).unwrap();
+
+        assert!(config.checks.commands.is_empty());
     }
 
     #[test]

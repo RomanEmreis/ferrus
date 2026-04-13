@@ -10,6 +10,7 @@ use tokio::sync::watch;
 
 use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
+use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::state::{
     agents,
@@ -204,13 +205,14 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 }
             }
         }
-        ShellCommand::Check => ctx.check().await?,
+        ShellCommand::Check { force } => ctx.check(force).await?,
         ShellCommand::Help => {
             ctx.display.info(concat!(
                 "ferrus HQ commands:\n",
                 "  /plan              Free-form planning session with the supervisor\n",
                 "  /task              Define a task with the supervisor, then run executor→review loop\n",
                 "  /check             Run the Ferrus check gate deterministically from HQ\n",
+                "  /check --force     Run configured checks from HQ without state requirements\n",
                 "  /supervisor        Open an interactive supervisor session\n",
                 "  /executor          Open an interactive executor session\n",
                 "  /resume            Resume the executor headlessly; recovers Consultation too\n",
@@ -749,7 +751,35 @@ impl HqContext {
             .await
     }
 
-    async fn check(&mut self) -> Result<()> {
+    async fn check(&mut self, force: bool) -> Result<()> {
+        if force {
+            let config = Config::load().await?;
+            if config.checks.commands.is_empty() {
+                self.display.info(
+                    "Checks passed. Warning: no check commands are configured in ferrus.toml.",
+                );
+                return Ok(());
+            }
+
+            let result = runner::run_checks(&config.checks.commands).await?;
+            if result.passed {
+                self.display
+                    .info("All configured checks passed. State was not modified.");
+            } else {
+                let failed = result
+                    .commands
+                    .iter()
+                    .filter(|cmd| !cmd.passed)
+                    .map(|cmd| format!("- `{}`", cmd.command))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.display.error(format!(
+                    "Forced HQ checks failed. State was not modified.\n\nFailed commands:\n{failed}"
+                ));
+            }
+            return Ok(());
+        }
+
         let result = crate::server::tools::check::handler()
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;

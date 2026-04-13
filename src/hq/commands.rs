@@ -23,7 +23,11 @@ pub enum ShellCommand {
     /// Show task state and agent list.
     Status,
     /// Run the Ferrus /check gate deterministically from HQ.
-    Check,
+    Check {
+        /// Run checks directly from HQ without requiring Executing or Addressing state.
+        #[arg(long)]
+        force: bool,
+    },
     /// Reset all task files and set state to Idle (prompts for confirmation if state is Executing or Reviewing).
     Reset,
     /// Stop all running executor and supervisor/reviewer sessions (prompts for confirmation).
@@ -107,7 +111,14 @@ mod tests {
     fn parse_check() {
         assert!(matches!(
             parse_command("/check").unwrap(),
-            ShellCommand::Check
+            ShellCommand::Check { force: false }
+        ));
+    }
+    #[test]
+    fn parse_check_force() {
+        assert!(matches!(
+            parse_command("/check --force").unwrap(),
+            ShellCommand::Check { force: true }
         ));
     }
     #[test]

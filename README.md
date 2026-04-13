@@ -1,6 +1,29 @@
 # ferrus
 
-An AI agent orchestrator for software projects. You run `ferrus` in your project directory and it drives a **Supervisor–Executor** workflow: the Supervisor plans tasks and reviews submissions, the Executor implements and checks its own work. You watch from HQ, attach to any agent's terminal, and let the loop run.
+**Deterministic orchestration of AI agents for real software work.**
+
+Ferrus turns coding agents into controlled, repeatable workers.
+
+It runs a Supervisor → Executor → Reviewer loop over your repository — not as a chat, but as a **state machine**.  
+Tasks are planned, implemented, checked, and reviewed in a structured, restart-safe flow. Unlike chat-based agents, ferrus enforces structure and lifecycle.
+
+Everything is explicit:
+- State lives on disk (`.ferrus/`)
+- Agents are stateless between runs
+- Crashes are recoverable
+- No hidden context
+
+## Supported agents
+
+Ferrus works with existing coding agents:
+
+- **Codex**
+- **Claude Code**
+- **Qwen Code** (experimental)
+
+Agents are treated as interchangeable workers — ferrus provides the runtime, coordination, and state.
+
+> 💡 **Status**: ferrus is currently in alpha and not ready for production.
 
 Licensed under Apache 2.0.
 
@@ -34,9 +57,9 @@ State is shared through `.ferrus/` on disk — plain text files agents read and 
 ```sh
 cargo install --path .
 
-ferrus init                                              # scaffold ferrus.toml + .ferrus/
+ferrus init                                                # scaffold ferrus.toml + .ferrus/
 ferrus register --supervisor claude-code --executor codex  # write agent configs
-ferrus                                                   # enter HQ
+ferrus                                                     # enter HQ
 ```
 
 Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.

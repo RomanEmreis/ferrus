@@ -55,6 +55,19 @@ async fn run(content: String) -> Result<String> {
         );
     }
 
+    if config.checks.commands.is_empty() {
+        info!("No check commands configured; treating final check gate as pass");
+        state.check_passed()?;
+        state.submit()?;
+        store::write_submission(&content).await?;
+        store::write_state(&state).await?;
+
+        return Ok(
+            "Submitted for review. Warning: no check commands are configured in ferrus.toml, so the final check gate was treated as a pass. State: Reviewing."
+                .to_string(),
+        );
+    }
+
     info!("Running final check gate before review submission");
     match check_gate::run(&config, state.check_retries + 1).await? {
         CheckGateResult::Passed => {
