@@ -1686,8 +1686,9 @@ mod tui_tests {
 
     #[test]
     fn abbreviate_home_replaces_home_prefix() {
-        let path = Path::new("/home/user/Repos/ferrus");
-        assert_eq!(abbreviate_home(path), "~/Repos/ferrus");
+        let home = dirs::home_dir().expect("test environment should have a home directory");
+        let path = home.join("Repos").join("ferrus");
+        assert_eq!(abbreviate_home(&path), "~/Repos/ferrus");
     }
 
     #[test]
