@@ -24,7 +24,7 @@ pub struct LimitsConfig {
     pub max_check_retries: u32,
     #[serde(default = "default_max_review_cycles")]
     pub max_review_cycles: u32,
-    /// Maximum number of trailing lines shown per failing command in FEEDBACK.md.
+    /// Maximum number of trailing lines shown per failing command in /check and /submit output.
     /// The full output is always written to .ferrus/logs/.
     #[serde(default = "default_max_feedback_lines")]
     pub max_feedback_lines: usize,

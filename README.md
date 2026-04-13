@@ -157,8 +157,8 @@ commands = [
 [limits]
 max_check_retries = 5    # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
-max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
-wait_timeout_secs = 3600 # poll timeout for wait_for_task / wait_for_review
+max_feedback_lines = 30  # trailing lines per failing command shown in /check and /submit output
+wait_timeout_secs = 60   # max duration of one wait_* tool call before it returns timeout so the agent can poll again
 
 [lease]
 ttl_secs = 90                  # how long a claimed lease is valid without renewal
@@ -173,7 +173,7 @@ agent = "codex"        # agent for executor role: claude-code | codex
 model = ""             # optional override; empty = agent default
 ```
 
-Check commands run in the directory where `ferrus serve` was started. Full output is written to `.ferrus/logs/check_<attempt>_<ts>.txt`. `FEEDBACK.md` contains a short summary so the Executor gets the signal without noise.
+Check commands run in the directory where `ferrus serve` was started. Full output is written to `.ferrus/logs/check_<attempt>_<ts>.txt`. `/check` and `/submit` return a short failure summary inline so the Executor gets the signal without persisting technical noise into task context.
 
 ---
 
@@ -184,7 +184,6 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 | `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `TASK.md` | Task description written by Supervisor |
-| `FEEDBACK.md` | Short check-failure summary (failed commands + last N lines each + log path) |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor submission notes |
 | `QUESTION.md` | Pending human question (written by `/ask_human`) |

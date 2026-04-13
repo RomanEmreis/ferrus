@@ -16,10 +16,10 @@ use super::tool_err;
 pub const DESCRIPTION: &str =
     "Block until a task is ready to work on, then atomically claim it and return its full context. \
      Returns a JSON object: {\"status\":\"claimed\", \"claimed_by\":\"...\", \"lease_until\":\"...\", \
-     \"state\":\"...\", \"task\":\"...\", \"feedback\":\"...\", \"review\":\"...\"} when a task is \
+     \"state\":\"...\", \"task\":\"...\", \"review\":\"...\"} when a task is \
      claimed, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \
      On timeout, inspect the state field — call wait_for_task again only if the state is \
-     Executing, Fixing, or Addressing. \
+     Executing or Addressing. \
      Each call waits up to `wait_timeout_secs` (see ferrus.toml), then returns timeout so the \
      agent can poll again. \
      Call this at the start of each Executor session; after a rejection, the next Executor \
@@ -48,10 +48,7 @@ async fn run(agent_id: &str) -> Result<String> {
 
             let mut state = store::read_state().await?;
 
-            let claimable = matches!(
-                state.state,
-                TaskState::Executing | TaskState::Fixing | TaskState::Addressing
-            );
+            let claimable = matches!(state.state, TaskState::Executing | TaskState::Addressing);
             let claimed = if claimable && !state.is_claimed() {
                 store::claim_state(agent_id, ttl_secs, &mut state).await?;
                 true
@@ -69,7 +66,6 @@ async fn run(agent_id: &str) -> Result<String> {
 
         if claimed {
             let task = store::read_task().await?;
-            let feedback = store::read_feedback().await?;
             let review = store::read_review().await?;
 
             // Re-read state to get the stamped lease_until.
@@ -82,7 +78,6 @@ async fn run(agent_id: &str) -> Result<String> {
                 "lease_until": state.lease_until,
                 "state": format!("{:?}", state.state),
                 "task": task,
-                "feedback": feedback,
                 "review": review,
             });
             return Ok(response.to_string());

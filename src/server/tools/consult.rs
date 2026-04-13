@@ -27,10 +27,7 @@ pub async fn handler(mut ctx: Context, question: String) -> Result<String, Error
 
 async fn run(_ctx: &mut Context, question: String) -> Result<String> {
     let mut state = store::read_state().await?;
-    if !matches!(
-        state.state,
-        TaskState::Executing | TaskState::Fixing | TaskState::Addressing | TaskState::Checking
-    ) {
+    if !matches!(state.state, TaskState::Executing | TaskState::Addressing) {
         anyhow::bail!(
             "Cannot consult from state {:?}. Consultation is only available while executing work.",
             state.state

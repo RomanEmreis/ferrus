@@ -17,7 +17,7 @@ pub const DESCRIPTION: &str =
     "Block until the Executor submits work for review, then atomically claim the review and \
      return the full submission context. \
      Returns a JSON object: {\"status\":\"claimed\", \"claimed_by\":\"...\", \"lease_until\":\"...\", \
-     \"state\":\"Reviewing\", \"task\":\"...\", \"submission\":\"...\", \"feedback\":\"...\", \"review\":\"...\"} \
+     \"state\":\"Reviewing\", \"task\":\"...\", \"submission\":\"...\", \"review\":\"...\"} \
      when a submission is ready, or {\"status\":\"timeout\", \"state\":\"...\"} on timeout. \
      Each call waits up to `wait_timeout_secs` (see ferrus.toml), then returns timeout so the \
      agent can poll again. \
@@ -59,7 +59,6 @@ async fn run(agent_id: &str) -> Result<String> {
         if claimed {
             let task = store::read_task().await?;
             let submission = store::read_submission().await?;
-            let feedback = store::read_feedback().await?;
             let review = store::read_review().await?;
             let state = store::read_state().await?;
 
@@ -71,7 +70,6 @@ async fn run(agent_id: &str) -> Result<String> {
                 "state": format!("{:?}", state.state),
                 "task": task,
                 "submission": submission,
-                "feedback": feedback,
                 "review": review,
                 "review_cycles_used": state.review_cycles,
                 "check_retries_used": state.check_retries,

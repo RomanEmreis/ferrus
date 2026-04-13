@@ -461,7 +461,7 @@ impl HqContext {
                 .await
             }
             TransitionAction::PauseForHuman => self.handle_pause_for_human().await,
-            // (AwaitingHuman, Executing|Fixing|Addressing|...) → NoOp: the executor either
+            // (AwaitingHuman, Executing|Addressing|...) → NoOp: the executor either
             // resumed via /wait_for_answer (alive path) or was relaunched by answer()
             // (dead path). No further action needed from the state watcher.
             TransitionAction::NoOp => Ok(()),
@@ -779,7 +779,6 @@ impl HqContext {
         store::clear_answer().await?;
         store::clear_consult_request().await?;
         store::clear_consult_response().await?;
-        store::clear_feedback().await?;
         store::clear_question().await?;
         store::clear_review().await?;
 
@@ -1119,18 +1118,14 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
 
     match (from, to) {
         (Idle, Executing) => TransitionAction::SpawnExecutor,
-        (Executing | Fixing | Addressing | Checking, Reviewing) => TransitionAction::SpawnReviewer,
-        (Executing | Fixing | Addressing | Checking, Consultation) => {
-            TransitionAction::SpawnConsultant
-        }
+        (Executing | Addressing, Reviewing) => TransitionAction::SpawnReviewer,
+        (Executing | Addressing, Consultation) => TransitionAction::SpawnConsultant,
         (Reviewing, Addressing) => TransitionAction::KillReviewerSpawnExecutor,
         (Reviewing, Complete) => TransitionAction::TaskComplete,
         (_, Failed) => TransitionAction::TaskFailed,
-        (Consultation, Executing | Fixing | Addressing | Checking) => TransitionAction::NoOp,
+        (Consultation, Executing | Addressing) => TransitionAction::NoOp,
         // Executor paused to ask the human a question.
-        (Executing | Fixing | Addressing | Checking | Reviewing, AwaitingHuman) => {
-            TransitionAction::PauseForHuman
-        }
+        (Executing | Addressing | Reviewing, AwaitingHuman) => TransitionAction::PauseForHuman,
         // State restored after human answered:
         //   - alive path: /wait_for_answer unblocked the still-running executor
         //   - dead path: answer() in HqContext restored state; user will /execute
@@ -1185,9 +1180,9 @@ mod tests {
     }
 
     #[test]
-    fn executing_to_checking_is_noop() {
+    fn executing_to_addressing_is_noop() {
         assert_eq!(
-            transition_action(&Executing, &Checking),
+            transition_action(&Executing, &Addressing),
             TransitionAction::NoOp
         );
     }
@@ -1233,7 +1228,7 @@ mod tests {
     #[test]
     fn fixing_to_awaiting_human_pauses() {
         assert_eq!(
-            transition_action(&Fixing, &AwaitingHuman),
+            transition_action(&Addressing, &AwaitingHuman),
             TransitionAction::PauseForHuman
         );
     }

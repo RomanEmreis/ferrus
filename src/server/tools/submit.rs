@@ -2,14 +2,21 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::state::{machine::TaskState, store};
+use crate::{
+    config::Config,
+    state::{machine::TaskState, machine::TransitionError, store},
+};
 
-use super::tool_err;
+use super::{
+    check_gate::{self, CheckGateResult},
+    tool_err,
+};
 
 pub const DESCRIPTION: &str = "\
-Signal that checks have passed and submit work for Supervisor review. \
-Transitions state Checking → Reviewing. Must be called after /check returns \
-a passing result.
+Run the final check gate and, if it passes, submit work for Supervisor review. \
+Can be called from Executing or Addressing. \
+On pass: state → Reviewing. On fail: stay in the current work state (or state \
+→ Failed if the retry limit is exhausted).
 
 The `content` parameter must be a Markdown document with the following sections:
 
@@ -38,22 +45,52 @@ pub async fn handler(content: String) -> Result<String, Error> {
 }
 
 async fn run(content: String) -> Result<String> {
+    let config = Config::load().await?;
     let mut state = store::read_state().await?;
 
-    if state.state != TaskState::Checking {
+    if !matches!(state.state, TaskState::Executing | TaskState::Addressing) {
         anyhow::bail!(
-            "Cannot submit from state {:?}. Call /check first and ensure all checks pass.",
+            "Cannot submit from state {:?}. Submit is only valid from Executing or Addressing after the implementation is ready.",
             state.state
         );
     }
 
-    state.submit()?;
-    store::write_submission(&content).await?;
-    store::write_state(&state).await?;
+    info!("Running final check gate before review submission");
+    match check_gate::run(&config, state.check_retries + 1).await? {
+        CheckGateResult::Passed => {
+            state.check_passed()?;
+            state.submit()?;
+            store::write_submission(&content).await?;
+            store::write_state(&state).await?;
 
-    info!("Work submitted for review, state → Reviewing");
-    Ok(
-        "Submitted for review. State: Reviewing. The Supervisor can now call /review_pending."
-            .to_string(),
-    )
+            info!("Work submitted for review, state → Reviewing");
+            Ok(
+                "Submitted for review. State: Reviewing. The Supervisor can now call /review_pending."
+                    .to_string(),
+            )
+        }
+        CheckGateResult::Failed(failure) => {
+            match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
+                Ok(()) => {
+                    store::write_state(&state).await?;
+                    Ok(format!(
+                        "Final review gate failed during /submit (retry {}/{}).\n\n{}\n\nState remains {:?}. Fix the issues and run /check or /submit again.",
+                        state.check_retries,
+                        config.limits.max_check_retries,
+                        failure.report,
+                        state.state,
+                    ))
+                }
+                Err(TransitionError::CheckLimitExceeded { retries }) => {
+                    store::write_state(&state).await?;
+                    Ok(format!(
+                        "Final review gate failed during /submit and hit the retry limit ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
+                        config.limits.max_check_retries,
+                        failure.report,
+                    ))
+                }
+                Err(e) => anyhow::bail!(e),
+            }
+        }
+    }
 }

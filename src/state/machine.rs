@@ -6,8 +6,6 @@ use thiserror::Error;
 pub enum TaskState {
     Idle,
     Executing,
-    Fixing,
-    Checking,
     Consultation,
     Reviewing,
     Addressing,
@@ -143,14 +141,14 @@ impl StateData {
         Ok(())
     }
 
-    /// `Executing | Fixing | Addressing → Checking`. Called when `/check` passes.
+    /// `/check` passed while the task remains in its current work state.
     ///
     /// Clears consecutive check-failure metadata because the current code now
-    /// satisfies the configured checks.
+    /// satisfies the configured checks. Does not move the task into a separate
+    /// state; a green check is diagnostic until `/submit` performs the final gate.
     pub fn check_passed(&mut self) -> Result<(), TransitionError> {
         match self.state {
-            TaskState::Executing | TaskState::Fixing | TaskState::Addressing => {
-                self.state = TaskState::Checking;
+            TaskState::Executing | TaskState::Addressing => {
                 self.check_retries = 0;
                 self.failure_reason = None;
                 Ok(())
@@ -162,7 +160,7 @@ impl StateData {
         }
     }
 
-    /// `Executing | Fixing | Addressing → Fixing | Failed`. Called when `/check` fails.
+    /// `Executing | Addressing → same state | Failed`. Called when `/check` fails.
     ///
     /// Returns `Err(CheckLimitExceeded)` when the limit is hit (state is already set to `Failed`).
     pub fn check_failed(
@@ -171,7 +169,7 @@ impl StateData {
         max_retries: u32,
     ) -> Result<(), TransitionError> {
         match self.state {
-            TaskState::Executing | TaskState::Fixing | TaskState::Addressing => {
+            TaskState::Executing | TaskState::Addressing => {
                 self.check_retries += 1;
                 if self.check_retries >= max_retries {
                     self.state = TaskState::Failed;
@@ -182,7 +180,6 @@ impl StateData {
                         retries: self.check_retries,
                     })
                 } else {
-                    self.state = TaskState::Fixing;
                     self.failure_reason = Some(reason);
                     Ok(())
                 }
@@ -194,28 +191,28 @@ impl StateData {
         }
     }
 
-    /// `Checking → Reviewing`. Called by Executor via `/submit`.
+    /// `Executing | Addressing → Reviewing`. Called by Executor via `/submit`
+    /// after the tool has run a final successful check gate.
     pub fn submit(&mut self) -> Result<(), TransitionError> {
-        if self.state != TaskState::Checking {
-            return Err(TransitionError::InvalidTransition {
+        match self.state {
+            TaskState::Executing | TaskState::Addressing => {
+                self.clear_lease();
+                self.state = TaskState::Reviewing;
+                Ok(())
+            }
+            _ => Err(TransitionError::InvalidTransition {
                 action: "submit",
                 state: self.state.clone(),
-            });
+            }),
         }
-        self.clear_lease();
-        self.state = TaskState::Reviewing;
-        Ok(())
     }
 
-    /// `Executing | Fixing | Addressing | Checking → Consultation`. Called by `/consult`.
+    /// `Executing | Addressing → Consultation`. Called by `/consult`.
     ///
     /// Returns the paused state so the caller can log it.
     pub fn consult(&mut self) -> Result<TaskState, TransitionError> {
         match self.state {
-            TaskState::Executing
-            | TaskState::Fixing
-            | TaskState::Addressing
-            | TaskState::Checking => {
+            TaskState::Executing | TaskState::Addressing => {
                 let paused = self.state.clone();
                 self.paused_state = Some(paused.clone());
                 self.state = TaskState::Consultation;
@@ -291,9 +288,7 @@ impl StateData {
     pub fn ask_human(&mut self) -> Result<TaskState, TransitionError> {
         match self.state {
             TaskState::Executing
-            | TaskState::Fixing
             | TaskState::Addressing
-            | TaskState::Checking
             | TaskState::Consultation
             | TaskState::Reviewing => {
                 let paused = self.state.clone();
@@ -370,7 +365,7 @@ mod tests {
         let mut s = idle();
         s.create_task().unwrap();
         s.check_passed().unwrap();
-        assert_eq!(s.state, TaskState::Checking);
+        assert_eq!(s.state, TaskState::Executing);
         s.submit().unwrap();
         assert_eq!(s.state, TaskState::Reviewing);
         s.approve().unwrap();
@@ -383,7 +378,7 @@ mod tests {
         s.create_task().unwrap();
         s.check_failed("oops".into(), 5).unwrap();
         assert_eq!(s.check_retries, 1);
-        assert_eq!(s.state, TaskState::Fixing);
+        assert_eq!(s.state, TaskState::Executing);
     }
 
     #[test]
@@ -411,12 +406,12 @@ mod tests {
     }
 
     #[test]
-    fn check_from_addressing_failure_moves_to_fixing() {
+    fn check_from_addressing_failure_stays_in_addressing() {
         let mut s = state_in(TaskState::Addressing);
 
         s.check_failed("still broken".into(), 5).unwrap();
 
-        assert_eq!(s.state, TaskState::Fixing);
+        assert_eq!(s.state, TaskState::Addressing);
         assert_eq!(s.check_retries, 1);
     }
 
@@ -428,9 +423,20 @@ mod tests {
 
         s.check_passed().unwrap();
 
-        assert_eq!(s.state, TaskState::Checking);
+        assert_eq!(s.state, TaskState::Executing);
         assert_eq!(s.check_retries, 0);
         assert!(s.failure_reason.is_none());
+    }
+
+    #[test]
+    fn check_pass_in_addressing_keeps_state_until_submit() {
+        let mut s = state_in(TaskState::Addressing);
+
+        s.check_passed().unwrap();
+        assert_eq!(s.state, TaskState::Addressing);
+
+        s.submit().unwrap();
+        assert_eq!(s.state, TaskState::Reviewing);
     }
 
     #[test]
@@ -472,16 +478,16 @@ mod tests {
 
     #[test]
     fn consult_round_trip_restores_previous_state() {
-        let mut s = state_in(TaskState::Checking);
+        let mut s = state_in(TaskState::Addressing);
 
         let paused = s.consult().unwrap();
-        assert_eq!(paused, TaskState::Checking);
+        assert_eq!(paused, TaskState::Addressing);
         assert_eq!(s.state, TaskState::Consultation);
-        assert_eq!(s.paused_state, Some(TaskState::Checking));
+        assert_eq!(s.paused_state, Some(TaskState::Addressing));
 
         let resumed = s.finish_consult().unwrap();
-        assert_eq!(resumed, TaskState::Checking);
-        assert_eq!(s.state, TaskState::Checking);
+        assert_eq!(resumed, TaskState::Addressing);
+        assert_eq!(s.state, TaskState::Addressing);
         assert!(s.paused_state.is_none());
     }
 
@@ -599,9 +605,7 @@ mod tests {
     fn ask_human_from_valid_states_transitions_to_awaiting_human() {
         for state in [
             TaskState::Executing,
-            TaskState::Fixing,
             TaskState::Addressing,
-            TaskState::Checking,
             TaskState::Consultation,
             TaskState::Reviewing,
         ] {
@@ -639,9 +643,7 @@ mod tests {
     fn answer_restores_paused_state_and_clears_paused_state() {
         for paused in [
             TaskState::Executing,
-            TaskState::Fixing,
             TaskState::Addressing,
-            TaskState::Checking,
             TaskState::Consultation,
             TaskState::Reviewing,
         ] {
@@ -661,8 +663,6 @@ mod tests {
         for state in [
             TaskState::Idle,
             TaskState::Executing,
-            TaskState::Fixing,
-            TaskState::Checking,
             TaskState::Reviewing,
             TaskState::Addressing,
             TaskState::Complete,

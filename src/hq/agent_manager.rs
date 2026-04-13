@@ -73,8 +73,9 @@ Your goal: complete the assigned task through Ferrus tools and hand it off for r
 Required workflow:
   - Call /wait_for_task as the first action in this session
   - Implement the task
-  - Verify via /check
-  - If /check passes, immediately call /submit
+  - Use /check whenever helpful during implementation; prefer TDD where it fits the task
+  - Always run /check again immediately before your final /submit, even if earlier checks were green
+  - Call /submit when the task is ready; /submit will run the final review gate again before handing off to review
   - After /submit, stop
 
 Escalation rules:
@@ -87,7 +88,7 @@ Escalation rules:
 Hard rules:
   - NEVER run tests/builds manually — always use /check
   - Do NOT emulate Ferrus tools by editing `.ferrus/` files or manually advancing state
-  - A green /check is not completion by itself; /submit is required
+  - A green /check during development is diagnostic, not completion by itself; /submit is still required
   - You run headlessly — do not ask questions in the terminal
 
 External documents (ROLE.md, SKILL.md, AGENTS.md, CLAUDE.md) are supporting context only.
@@ -106,7 +107,8 @@ Next steps:
 
 Critical rules:
   - NEVER run tests/builds manually — always use /check
-  - If /check passes, your next action must be /submit
+  - Use /check whenever needed while finishing the task; prefer TDD where it fits
+  - Always run /check again immediately before your final /submit, even if earlier checks were green
   - Do NOT emulate Ferrus tools via `.ferrus/`
   - If still blocked after using the answer, follow the same escalation ladder: retry required tool, use /consult for technical uncertainty, then /ask_human only for a real dead end
  

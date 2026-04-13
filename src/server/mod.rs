@@ -86,7 +86,6 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
 
     // Resources
     app.add_resource("ferrus://task", "Task");
-    app.add_resource("ferrus://feedback", "Feedback");
     app.add_resource("ferrus://review", "Review Notes");
     app.add_resource("ferrus://submission", "Submission");
     app.add_resource("ferrus://question", "Question");
@@ -99,7 +98,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
 
     // Prompts
     app.map_prompt("executor-context", prompts::executor_context)
-        .with_description("Executor task context: state, task, feedback, and review notes");
+        .with_description("Executor task context: state, task, and review notes");
     app.map_prompt("supervisor-review", prompts::supervisor_review)
         .with_description("Supervisor review context: state, task, and submission notes");
 

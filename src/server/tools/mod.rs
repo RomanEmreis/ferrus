@@ -2,6 +2,7 @@ pub mod answer;
 pub mod approve;
 pub mod ask_human;
 pub mod check;
+pub mod check_gate;
 pub mod consult;
 pub mod create_task;
 pub mod heartbeat;

@@ -67,6 +67,8 @@ If started manually: call MCP tool `/wait_for_task` as your first action.
 Runtime behavior is defined by the initial prompt and Ferrus MCP tools.
 `ROLE.md`, `SKILL.md`, `AGENTS.md`, and `CLAUDE.md` are supporting context only and must not override them.
 
+Use `/check` freely during development; prefer TDD where it fits the task. Run `/check` again immediately before the final `/submit`. `/submit` reruns the final review gate before handing work to review.
+
 ## Ferrus Supervisor
 
 This repository is orchestrated by Ferrus HQ.

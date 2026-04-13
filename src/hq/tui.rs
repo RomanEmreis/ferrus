@@ -84,8 +84,6 @@ impl StatusSnapshot {
         let task_state_detail = if matches!(
             state.state,
             crate::state::machine::TaskState::Executing
-                | crate::state::machine::TaskState::Fixing
-                | crate::state::machine::TaskState::Checking
                 | crate::state::machine::TaskState::Addressing
                 | crate::state::machine::TaskState::Consultation
                 | crate::state::machine::TaskState::Reviewing
@@ -1496,7 +1494,7 @@ fn print_completion_line(
 fn task_state_color(task_state: &str) -> Color {
     match task_state {
         "Idle" => Color::DarkGrey,
-        "Executing" | "Fixing" | "Checking" => Color::Yellow,
+        "Executing" => Color::Yellow,
         "Consultation" => Color::Blue,
         "Reviewing" | "Addressing" => Color::Cyan,
         "Complete" => Color::Green,

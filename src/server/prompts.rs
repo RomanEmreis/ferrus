@@ -9,7 +9,7 @@ fn to_err(e: impl std::fmt::Display) -> Error {
     )
 }
 
-/// Bundles state + task + feedback + review notes for the Executor.
+/// Bundles state + task + review notes for the Executor.
 pub async fn executor_context() -> Result<GetPromptResult, Error> {
     let state = store::read_state().await.map_err(to_err)?;
     let task = store::read_task().await.map_err(to_err)?;
@@ -22,20 +22,13 @@ pub async fn executor_context() -> Result<GetPromptResult, Error> {
         format!("## Task\n\n{task}"),
     ];
 
-    let feedback = store::read_feedback().await.unwrap_or_default();
-    if !feedback.trim().is_empty() {
-        sections.push(format!("## Check Feedback\n\n{feedback}"));
-    }
-
     let review = store::read_review().await.unwrap_or_default();
     if !review.trim().is_empty() {
         sections.push(format!("## Review Notes (Re-address)\n\n{review}"));
     }
 
     Ok(GetPromptResult::new()
-        .with_descr(
-            "Executor task context: state, task description, check feedback, and review notes",
-        )
+        .with_descr("Executor task context: state, task description, and review notes")
         .with_message(PromptMessage::user().with(sections.join("\n\n---\n\n"))))
 }
 

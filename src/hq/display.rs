@@ -165,7 +165,7 @@ mod tests {
     fn keeps_elapsed_for_other_transitions() {
         let transition = TransitionSnapshot {
             from: TaskState::Executing,
-            to: TaskState::Checking,
+            to: TaskState::Addressing,
             elapsed: Duration::from_secs(84),
             used_total: false,
         };
@@ -173,6 +173,6 @@ mod tests {
         let (from, to) = format_transition_parts(&transition);
 
         assert_eq!(from, Some("Executing (1m 24s)".to_string()));
-        assert_eq!(to, "Checking");
+        assert_eq!(to, "Addressing");
     }
 }

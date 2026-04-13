@@ -30,6 +30,8 @@ Runtime workflow is defined by the initial prompt and Ferrus MCP tools.
 ## Ferrus guidance
 
 - Use Ferrus tools rather than reconstructing state from `.ferrus/`
+- Use `/check` freely during development; prefer TDD where it fits the task
+- Run `/check` again immediately before the final `/submit`
 - Read Ferrus resources when they help clarify task context
 - Use the consultation template when escalating technical uncertainty
 
@@ -52,7 +54,6 @@ Runtime workflow is defined by the initial prompt and Ferrus MCP tools.
 ## Useful Ferrus resources
 
 - `ferrus://task`
-- `ferrus://feedback`
 - `ferrus://review`
 - `ferrus://consult_template`
 - `ferrus://question`

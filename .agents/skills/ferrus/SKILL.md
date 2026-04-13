@@ -16,33 +16,28 @@ If this file conflicts with them, follow the prompt and tools.
 | Role | Responsibility |
 |---|---|
 | Supervisor | Writes tasks, reviews Executor submissions, approves or rejects |
-| Executor | Implements tasks, runs checks, submits when all checks pass |
+| Executor | Implements tasks, runs checks during development, and submits when ready |
 
 Two separate `ferrus serve` processes run side-by-side (one per role), coordinating through `.ferrus/` on disk.
 
 Under HQ, agents are usually **one-shot sessions**:
-- Executor starts on `Idle → Executing`, claims work via `wait_for_task`, implements, runs `/check`, then `/submit`
+- Executor starts on `Idle → Executing`, claims work via `wait_for_task`, implements, uses `/check` as needed during development, runs `/check` again immediately before final handoff, then calls `/submit` for the final review gate
 - HQ then terminates that Executor session and starts the Supervisor in review mode
 - If review is rejected, HQ terminates the reviewer and starts a fresh Executor session for `Addressing`
-- That new Executor begins again with `wait_for_task` and receives the latest feedback/review context
+- That new Executor begins again with `wait_for_task` and receives the latest review context
 
 ## State machine
 
 ```
 Idle
  └─► Executing      ← /create_task (Supervisor)
-       ├─► Fixing   ← /check (Executor, fail; retries < max)
-       │     ├─► Fixing   ← /check (Executor, fail again)
-       │     └─► Checking ← /check (Executor, pass)
-       └─► Checking ← /check (Executor, pass)
-             ├─► [FAIL, retries ≥ max] Failed
-             ├─► Consultation ← /consult (Executor)
-             │     └─► (restore previous state) ← /wait_for_consult
-             └─► Reviewing ← /submit (Executor)
-                   ├─► [REJECT] Addressing → /check (retries reset)
-                   │     ├─► [FAIL, retries < max] Fixing → /check loop
-                   │     └─► [FAIL, retries ≥ max] Failed
-                   └─► Complete ← /approve (Supervisor)
+       ├─► Addressing ← /reject (Supervisor) → work loop
+       ├─► Consultation ← /consult (Executor)
+       │     └─► (restore previous state) ← /wait_for_consult
+       ├─► Reviewing ← /submit final gate pass (Executor)
+       │     ├─► [REJECT] Addressing → work loop
+       │     └─► Complete ← /approve (Supervisor)
+       └─► Failed   ← /check or /submit hits retry limit
 ```
 
 Any active Executor work state can pause to `Consultation` via `/consult` (executor then calls `/wait_for_consult`
@@ -94,12 +89,12 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 ### Executor
 | Tool | From state | Description |
 |---|---|---|
-| `wait_for_task` | — | Long-poll until Executing, Fixing, or Addressing |
-| `check` | Executing, Fixing, Addressing | Run all configured checks |
-| `consult` | Executing, Fixing, Addressing, Checking | Ask the Supervisor for guidance; moves to Consultation |
+| `wait_for_task` | — | Long-poll until Executing or Addressing |
+| `check` | Executing, Addressing | Run all configured checks; use it freely during development and again immediately before final `/submit` |
+| `consult` | Executing, Addressing | Ask the Supervisor for guidance; moves to Consultation |
 | `wait_for_consult` | Consultation | Block until the Supervisor responds; restores previous state |
-| `submit` | Checking | Write submission notes; moves to Reviewing |
-| `ask_human` | Executing, Fixing, Addressing, Checking, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
+| `submit` | Executing, Addressing | Run the final review gate and, on success, write submission notes; moves to Reviewing |
+| `ask_human` | Executing, Addressing, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
 | `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 
 ### Shared
@@ -114,7 +109,6 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | URI | Contents |
 |---|---|
 | `ferrus://task` | Current task description (`TASK.md`) |
-| `ferrus://feedback` | Check failure summary (`FEEDBACK.md`) |
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
@@ -127,7 +121,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
 | Prompt | Description |
 |---|---|
-| `executor-context` | State + task + feedback + review notes bundled for the Executor |
+| `executor-context` | State + task + review notes bundled for the Executor |
 | `supervisor-review` | State + task + submission notes bundled for the Supervisor |
 
 ## ferrus.toml
@@ -139,7 +133,7 @@ commands = ["cargo clippy -- -D warnings", "cargo fmt --check", "cargo test"]
 [limits]
 max_check_retries = 5    # check failures before Failed
 max_review_cycles = 3    # reject→fix cycles before Failed
-max_feedback_lines = 30  # lines per command in FEEDBACK.md
+max_feedback_lines = 30  # lines per command shown in /check and /submit output
 wait_timeout_secs = 60   # max duration of one wait_* tool call; agents should call again after timeout
 
 [lease]
@@ -154,7 +148,6 @@ heartbeat_interval_secs = 30  # how often to call /heartbeat
 | `STATE.json` | State, counters, schema version, timestamp, PID |
 | `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Task description |
-| `FEEDBACK.md` | Check failure summary |
 | `REVIEW.md` | Rejection notes |
 | `SUBMISSION.md` | Submission notes |
 | `QUESTION.md` | Pending human question |

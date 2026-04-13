@@ -10,7 +10,7 @@ pub const DESCRIPTION: &str = "Ask the human a question. \
      Writes the question to QUESTION.md, transitions state to AwaitingHuman, \
      and returns immediately. You MUST call /wait_for_answer immediately after \
      to block until the human responds — do not call any other tools in between. \
-     Can be called from Executing, Fixing, Addressing, Checking, Consultation, or Reviewing state.";
+     Can be called from Executing, Addressing, Consultation, or Reviewing state.";
 
 pub const INPUT_SCHEMA: &str = r#"{
     "properties": {

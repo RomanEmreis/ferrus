@@ -77,7 +77,7 @@ commands = [
 [limits]
 max_check_retries = 5    # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
-max_feedback_lines = 30  # trailing lines per failing command shown in FEEDBACK.md
+max_feedback_lines = 30  # trailing lines per failing command shown in /check and /submit output
 wait_timeout_secs = 60   # max duration of one wait_* MCP call; agent should call again after timeout
 
 [lease]
@@ -102,7 +102,7 @@ model = ""             # optional override; empty = agent default
 | `ferrus/SKILL.md` | General overview: full tool reference, state machine, resources, prompts, config |
 | `ferrus-supervisor/SKILL.md` | Supervisor how-to: step-by-step workflow |
 | `ferrus-supervisor/ROLE.md` | Supervisor role definition and boundaries |
-| `ferrus-executor/SKILL.md` | Executor how-to: autonomous loop |
+| `ferrus-executor/SKILL.md` | Executor how-to: implementation playbook and submission quality |
 | `ferrus-executor/ROLE.md` | Executor role definition and boundaries |
 
 ## MCP Tool Reference
@@ -121,30 +121,29 @@ model = ""             # optional override; empty = agent default
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
-| `/wait_for_task` | Executing, Fixing, Addressing | — | Long-poll until a task is ready, then return full task context |
-| `/check` | Executing, Fixing, Addressing | Checking / Fixing / Failed | Run all configured checks |
-| `/consult` | Executing, Fixing, Addressing, Checking | Consultation | Ask the Supervisor for guidance; Executor should prefer this before `/ask_human` |
+| `/wait_for_task` | Executing, Addressing | — | Long-poll until a task is ready, then return full task context |
+| `/check` | Executing, Addressing | Executing / Addressing / Failed | Run all configured checks; use it freely during development and again immediately before final `/submit` |
+| `/consult` | Executing, Addressing | Consultation | Ask the Supervisor for guidance; Executor should prefer this before `/ask_human` |
 | `/wait_for_consult` | Consultation | (previous state) | Block until the Supervisor responds; restores paused state and returns the answer |
-| `/submit` | Checking | Reviewing | Write submission notes + signal ready for Supervisor review |
+| `/submit` | Executing, Addressing | Reviewing / Addressing / Failed | Run the final review gate and, on success, write submission notes + signal ready for Supervisor review |
 | `/wait_for_answer` | AwaitingHuman | (previous state) | Block until the human answers; restores paused state and returns the answer |
 
 ### Shared tools
 
 | Tool | From state | To state | Description |
 |---|---|---|---|
-| `/ask_human` | Executing, Fixing, Addressing, Checking, Consultation, Reviewing | AwaitingHuman | Last-resort human fallback. Write question to QUESTION.md; agent must immediately call `/wait_for_answer` (executor) or wait for HQ to answer |
+| `/ask_human` | Executing, Addressing, Consultation, Reviewing | AwaitingHuman | Last-resort human fallback. Write question to QUESTION.md; agent must immediately call `/wait_for_answer` (executor) or wait for HQ to answer |
 | `/respond_consult` | Consultation | — | Record the Supervisor consultation response in `CONSULT_RESPONSE.md` |
 | `/answer` | AwaitingHuman | (previous state) | Provide answer to a pending question; restores previous state |
 | `/heartbeat` | any claimed | — | Renew lease; call every ~30s while working |
 | `/status` | any | — | Print current state + retry counters |
-| `/reset` | Failed | Idle | MCP escape hatch; clears feedback, review, and submission files. HQ `/reset` command works from any state. |
+| `/reset` | Failed | Idle | MCP escape hatch; clears review, submission, and consultation files. HQ `/reset` command works from any state. |
 
 ## MCP Resources
 
 | URI | Contents |
 |---|---|
 | `ferrus://task` | Current task description (`TASK.md`) |
-| `ferrus://feedback` | Check failure summary (`FEEDBACK.md`) |
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
@@ -154,13 +153,13 @@ model = ""             # optional override; empty = agent default
 | `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
 
-Resources are read-only. All ten are listed via `resources/list` and readable via `resources/read`.
+Resources are read-only. All listed resources are available via `resources/list` and readable via `resources/read`.
 
 ## MCP Prompts
 
 | Prompt | Description |
 |---|---|
-| `executor-context` | State + task + feedback + review notes bundled for the Executor |
+| `executor-context` | State + task + review notes bundled for the Executor |
 | `supervisor-review` | State + task + submission notes bundled for the Supervisor |
 
 ## State Machine
@@ -168,23 +167,20 @@ Resources are read-only. All ten are listed via `resources/list` and readable vi
 ```
 Idle
  └─► Executing      ← /create_task
-       ├─► Fixing   ← /check (fail, retries < max)
-       │     ├─► Fixing   ← /check fail again
-       │     ├─► Checking ← /check pass
-       │     └─► Failed   ← /check fail at retry limit
-       └─► Checking ← /check (pass)
-             ├─► Consultation ← /consult
-             │     └─► (restore previous state) ← /wait_for_consult
-             └─► Reviewing ← /submit
-                   ├─► [REJECT] Addressing → /check (retries reset)
-                   │     ├─► [FAIL, retries < max] Fixing → /check loop
-                   │     └─► [cycles ≥ max] Failed
-                   └─► Complete ← /approve
+       ├─► Addressing ← /reject → work loop
+       ├─► Consultation ← /consult
+       │     └─► (restore previous state) ← /wait_for_consult
+       ├─► Reviewing ← /submit final gate pass
+       │     ├─► [REJECT] Addressing → work loop
+       │     └─► Complete ← /approve
+       └─► Failed   ← /check or /submit hits retry limit
 ```
 
-Any active Executor work state (Executing, Fixing, Addressing, Checking) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`, which writes `CONSULT_RESPONSE.md`. The previous state is then restored.
+Any active Executor work state (Executing, Addressing) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`, which writes `CONSULT_RESPONSE.md`. The previous state is then restored.
 
 Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human`. The executor should prefer `/consult` first and use `/ask_human` only as a last resort. The agent immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
+
+Executor verification is TDD-friendly: `/check` can be run as often as needed during implementation. A passing `/check` does not move the task into a separate "ready" state. The executor should still run `/check` immediately before the final `/submit`, and `/submit` reruns the final review gate before transitioning to `Reviewing`.
 
 - `/task` from `Complete` → silently resets to Idle and starts the next task.
 - HQ `/reset` command: works from any state; prompts for confirmation if an agent is actively working. The MCP `/reset` tool is only valid from `Failed`.
@@ -196,7 +192,6 @@ Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/a
 | `STATE.json` | Current `TaskState`, lease fields (`claimed_by`, `lease_until`, `last_heartbeat`), retry/cycle counters, failure reason, schema version, last-write timestamp and PID |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `TASK.md` | Task description written by Supervisor |
-| `FEEDBACK.md` | Short check-failure summary (failed commands, last N lines each, log path) |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
 | `QUESTION.md` | Question written by `/ask_human` |

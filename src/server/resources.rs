@@ -13,10 +13,6 @@ fn to_err(e: impl std::fmt::Display) -> Error {
 pub async fn read(file: String) -> Result<ReadResourceResult, Error> {
     let (mime, content) = match file.as_str() {
         "task" => ("text/markdown", store::read_task().await.map_err(to_err)?),
-        "feedback" => (
-            "text/markdown",
-            store::read_feedback().await.map_err(to_err)?,
-        ),
         "review" => ("text/markdown", store::read_review().await.map_err(to_err)?),
         "submission" => (
             "text/markdown",

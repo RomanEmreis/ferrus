@@ -73,14 +73,6 @@ pub async fn clear_task() -> Result<()> {
     write_task("").await
 }
 
-pub async fn read_feedback() -> Result<String> {
-    read_file("FEEDBACK.md").await
-}
-
-pub async fn write_feedback(content: &str) -> Result<()> {
-    write_file("FEEDBACK.md", content).await
-}
-
 pub async fn read_review() -> Result<String> {
     read_file("REVIEW.md").await
 }
@@ -95,10 +87,6 @@ pub async fn read_submission() -> Result<String> {
 
 pub async fn write_submission(content: &str) -> Result<()> {
     write_file("SUBMISSION.md", content).await
-}
-
-pub async fn clear_feedback() -> Result<()> {
-    write_feedback("").await
 }
 
 /// Write a full check log to `.ferrus/logs/check_{attempt}_{ts}.txt`.
