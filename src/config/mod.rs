@@ -171,7 +171,7 @@ impl Default for LeaseConfig {
 }
 
 const fn default_max_check_retries() -> u32 {
-    5
+    20
 }
 const fn default_max_review_cycles() -> u32 {
     3
@@ -334,7 +334,7 @@ commands = ["cargo test"]
 "#;
         let config = Config::from_toml(toml).unwrap();
 
-        assert_eq!(config.limits.max_check_retries, 5);
+        assert_eq!(config.limits.max_check_retries, 20);
         assert_eq!(config.limits.max_review_cycles, 3);
         assert_eq!(config.limits.max_feedback_lines, 30);
         assert_eq!(config.limits.wait_timeout_secs, 60);

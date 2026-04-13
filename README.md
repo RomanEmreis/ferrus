@@ -155,7 +155,7 @@ commands = [
 ]
 
 [limits]
-max_check_retries = 5    # consecutive check failures before state → Failed
+max_check_retries = 20   # consecutive check failures before state → Failed
 max_review_cycles = 3    # reject→fix cycles before state → Failed
 max_feedback_lines = 30  # trailing lines per failing command shown in /check and /submit output
 wait_timeout_secs = 60   # max duration of one wait_* tool call before it returns timeout so the agent can poll again

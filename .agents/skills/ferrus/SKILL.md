@@ -131,7 +131,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 commands = ["cargo clippy -- -D warnings", "cargo fmt --check", "cargo test"]
 
 [limits]
-max_check_retries = 5    # check failures before Failed
+max_check_retries = 20   # check failures before Failed
 max_review_cycles = 3    # reject→fix cycles before Failed
 max_feedback_lines = 30  # lines per command shown in /check and /submit output
 wait_timeout_secs = 60   # max duration of one wait_* tool call; agents should call again after timeout
