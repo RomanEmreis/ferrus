@@ -1,5 +1,11 @@
 # ferrus
 
+![Ferrus version](https://img.shields.io/badge/ferrus-0.2.5--alpha.2-orange)
+[![Rust version](https://img.shields.io/badge/rustc-1.93+-964B00)](https://releases.rs/docs/1.93.0/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/RomanEmreis/ferrus/blob/main/LICENSE)
+[![Rust](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml)
+[![Publish](https://github.com/RomanEmreis/ferrus/actions/workflows/publish.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/publish.yml)
+
 **Deterministic orchestration of AI agents for real software work.**
 
 Ferrus turns coding agents into controlled, repeatable workers.
@@ -25,7 +31,7 @@ Agents are treated as interchangeable workers — ferrus provides the runtime, c
 
 > 💡 **Status**: ferrus is currently in alpha and not ready for production.
 
-Licensed under Apache 2.0.
+[Tutorial](https://romanemreis.github.io/ferrus-docs/) | [Roadmap](https://github.com/RomanEmreis/ferrus/blob/main/docs/milestones.md)
 
 ---
 
@@ -216,3 +222,29 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.
+
+---
+
+## Dogfooding
+
+Ferrus is partially developed using its own orchestration workflow.
+
+This repository is used to validate the Supervisor → Executor → Reviewer loop in real development scenarios.
+
+---
+
+## Getting involved
+
+If you're interested in Ferrus:
+
+- Try running it on your project
+- Share feedback on the workflow (what breaks, what feels unnatural)
+- Open issues with observations or ideas
+
+At this stage, feedback on the model is more valuable than code contributions.
+
+---
+
+## Licence
+
+Licensed under Apache 2.0.
