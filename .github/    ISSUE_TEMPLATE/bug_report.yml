@@ -1,0 +1,32 @@
+name: Bug report
+description: Something is not working as expected
+title: "[bug] "
+labels: ["bug"]
+
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the issue
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+
+  - type: input
+    id: state
+    attributes:
+      label: Ferrus state (if known)
+      placeholder: e.g. Executing/Reviewing
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs/output
