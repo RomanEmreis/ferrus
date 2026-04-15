@@ -1,0 +1,21 @@
+name: Idea/Proposal
+description: Suggest an improvement or new capability
+title: "[idea] "
+labels: ["idea"]
+
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact on workflow (if any)
+      description: Does this affect the agent lifecycle or state machine?
