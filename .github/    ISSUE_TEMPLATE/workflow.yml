@@ -1,0 +1,30 @@
+name: Workflow feedback
+description: Share experience using Ferrus workflow
+title: "[workflow] "
+labels: ["workflow"]
+
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: What were you trying to do?
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+
+  - type: textarea
+    id: friction
+    attributes:
+      label: What felt unnatural or difficult?
+
+  - type: textarea
+    id: expectations
+    attributes:
+      label: What did you expect instead?
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes
