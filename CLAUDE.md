@@ -166,14 +166,20 @@ Resources are read-only. All listed resources are available via `resources/list`
 
 ```
 Idle
- └─► Executing      ← /create_task
-       ├─► Addressing ← /reject → work loop
-       ├─► Consultation ← /consult
-       │     └─► (restore previous state) ← /wait_for_consult
-       ├─► Reviewing ← /submit final gate pass
-       │     ├─► [REJECT] Addressing → work loop
-       │     └─► Complete ← /approve
-       └─► Failed   ← /check or /submit hits retry limit
+ └─► Executing                              ← create_task
+       ├─► Consultation                     ← consult
+       │     └─► Executing                  ← wait_for_consult
+       ├─► Executing                        ← check / submit (final check failed, retries < max)
+       ├─► Failed                           ← check / submit (final check failed, retries ≥ max)
+       └─► Reviewing                        ← submit (final check passed)
+             ├─► Complete                   ← approve
+             ├─► Failed                     ← reject (cycles ≥ max)
+             └─► Addressing                 ← reject (cycles < max)
+                   ├─► Consultation         ← consult
+                   │     └─► Addressing     ← wait_for_consult
+                   ├─► Addressing           ← check / submit (final check failed, retries < max)
+                   ├─► Failed               ← check / submit (final check failed, retries ≥ max)
+                   └─► Reviewing            ← submit (final check passed)
 ```
 
 Any active Executor work state (Executing, Addressing) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`, which writes `CONSULT_RESPONSE.md`. The previous state is then restored.
