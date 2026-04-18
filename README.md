@@ -61,7 +61,9 @@ State is shared through `.ferrus/` on disk — plain text files agents read and 
 ## Quick start
 
 ```sh
-cargo install --path .
+cargo install ferrus
+# or:
+curl -fsSL https://github.com/RomanEmreis/ferrus/releases/latest/download/install.sh | sh
 
 ferrus init                                                # scaffold ferrus.toml + .ferrus/
 ferrus register --supervisor claude-code --executor codex  # write agent configs
@@ -69,6 +71,8 @@ ferrus                                                     # enter HQ
 ```
 
 Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
+
+On Linux `x86_64`, the installer downloads the latest release binary into `~/.local/bin` by default. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
 
 ---
 
