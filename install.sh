@@ -3,8 +3,8 @@ set -eu
 
 REPO="${FERRUS_INSTALL_REPO:-RomanEmreis/ferrus}"
 VERSION="${FERRUS_INSTALL_VERSION:-latest}"
-TARGET="x86_64-unknown-linux-gnu"
-ARCHIVE="ferrus-${TARGET}.tar.gz"
+TARGET=""
+ARCHIVE=""
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -22,10 +22,20 @@ detect_platform() {
         exit 1
     fi
 
-    if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then
-        echo "error: this installer currently supports x86_64 only (detected ${arch})" >&2
-        exit 1
-    fi
+    case "$arch" in
+        x86_64|amd64)
+            TARGET="x86_64-unknown-linux-gnu"
+            ;;
+        aarch64|arm64)
+            TARGET="aarch64-unknown-linux-gnu"
+            ;;
+        *)
+            echo "error: this installer currently supports x86_64 and aarch64 Linux only (detected ${arch})" >&2
+            exit 1
+            ;;
+    esac
+
+    ARCHIVE="ferrus-${TARGET}.tar.gz"
 }
 
 resolve_url() {
