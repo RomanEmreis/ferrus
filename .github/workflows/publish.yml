@@ -76,7 +76,7 @@ jobs:
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
-        run: cargo build --locked --release --target "${{ matrix.target }}"
+        run: cargo build --locked --profile dist --target "${{ matrix.target }}"
 
       - name: Package release archive
         env:
@@ -86,9 +86,10 @@ jobs:
           mkdir -p dist
           staging="dist/ferrus-${TARGET}"
           mkdir -p "${staging}"
-          cp "target/${TARGET}/release/ferrus" "${staging}/ferrus"
+          cp "target/${TARGET}/dist/ferrus" "${staging}/ferrus"
           cp README.md LICENSE NOTICE "${staging}/"
           tar -C dist -czf "dist/${ARCHIVE}" "ferrus-${TARGET}"
+          sha256sum "dist/${ARCHIVE}" > "dist/${ARCHIVE}.sha256"
 
       - name: Upload release assets
         env:
@@ -96,6 +97,7 @@ jobs:
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             "dist/${{ matrix.archive }}" \
+            "dist/${{ matrix.archive }}.sha256" \
             --clobber
 
       - name: Upload installer

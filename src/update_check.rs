@@ -52,22 +52,28 @@ pub async fn notification_message() -> Option<String> {
 }
 
 async fn fetch_latest_version() -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .user_agent(format!("ferrus/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("failed to build HTTP client")?;
+    let url = sparse_index_url(CRATE_NAME);
+    let user_agent = format!("ferrus/{}", env!("CARGO_PKG_VERSION"));
 
-    let body = client
-        .get(sparse_index_url(CRATE_NAME))
-        .send()
-        .await
-        .context("failed to fetch crates.io sparse index")?
-        .error_for_status()
-        .context("crates.io sparse index request failed")?
-        .text()
-        .await
-        .context("failed to read crates.io sparse index response")?;
+    let body = tokio::task::spawn_blocking(move || -> Result<String> {
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+            .user_agent(user_agent)
+            .build();
+        let agent: ureq::Agent = config.into();
+
+        let mut response = agent
+            .get(&url)
+            .call()
+            .context("failed to fetch crates.io sparse index")?;
+
+        response
+            .body_mut()
+            .read_to_string()
+            .context("failed to read crates.io sparse index response")
+    })
+    .await
+    .context("update check task failed to join")??;
 
     newest_non_yanked_version(&body).context("no non-yanked version found in crates.io index")
 }

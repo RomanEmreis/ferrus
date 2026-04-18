@@ -1,6 +1,6 @@
 # ferrus
 
-[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.5--alpha.2-orange)](https://crates.io/crates/ferrus)
+[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.5--alpha.5-orange)](https://crates.io/crates/ferrus)
 [![Rust version](https://img.shields.io/badge/rustc-1.93+-964B00)](https://releases.rs/docs/1.93.0/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/RomanEmreis/ferrus/blob/main/LICENSE)
 [![Rust](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml)
@@ -72,7 +72,7 @@ ferrus                                                     # enter HQ
 
 Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
 
-On Linux `x86_64` and `aarch64`, the installer downloads the latest release binary into `~/.local/bin` by default. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
+On Linux `x86_64` and `aarch64`, the installer downloads the latest release binary into `~/.local/bin` by default. Release archives are verified with published SHA-256 checksums before installation. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
 
 ---
 

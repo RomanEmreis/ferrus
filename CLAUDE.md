@@ -15,8 +15,9 @@ cargo build            # compile
 cargo build --release  # optimized build
 cargo test             # run all tests
 cargo test <name>      # run a single test by name
-cargo clippy           # lint
+cargo clippy -- -D warnings  # lint (warnings are errors)
 cargo fmt              # format
+cargo fmt --check      # check formatting without writing
 cargo check            # fast type-check without producing a binary
 ```
 
@@ -219,13 +220,14 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
+  update_check.rs            # HQ startup version-check helper (crates.io sparse index + local cache)
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, sends on watch channel
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (headless for both executor and reviewer); HeadlessHandle; agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (headless for executor, reviewer, consultant); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool
     heartbeat.rs             # /heartbeat — lease renewal
