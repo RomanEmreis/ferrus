@@ -85,39 +85,47 @@ download_file() {
     allow_missing="${5:-false}"
 
     if command -v curl >/dev/null 2>&1; then
-        if curl -fsSL "$url" -o "$output"; then
-            return
-        else
-            status=$?
-            if [ "$status" -eq 22 ]; then
-                if [ "$allow_missing" = "true" ]; then
-                    return 2
-                fi
-                echo "error: ${label} was not found: ${url}" >&2
-                echo "hint: the requested release may not include asset ${asset_name} for version ${VERSION}" >&2
-            else
-                echo "error: failed to download ${label} from ${url}" >&2
-            fi
+        http_code="$(curl -sSL -o "$output" -w '%{http_code}' "$url")" || {
+            echo "error: failed to download ${label} from ${url}" >&2
             exit 1
+        }
+
+        if [ "$http_code" = "200" ]; then
+            return
         fi
+
+        if [ "$http_code" = "404" ] && [ "$allow_missing" = "true" ]; then
+            return 2
+        fi
+
+        if [ "$http_code" = "404" ]; then
+            echo "error: ${label} was not found: ${url}" >&2
+            echo "hint: the requested release may not include asset ${asset_name} for version ${VERSION}" >&2
+        else
+            echo "error: failed to download ${label} from ${url} (HTTP ${http_code})" >&2
+        fi
+        exit 1
     fi
 
     if command -v wget >/dev/null 2>&1; then
         if wget -qO "$output" "$url"; then
             return
-        else
-            status=$?
-            if [ "$status" -eq 8 ]; then
-                if [ "$allow_missing" = "true" ]; then
-                    return 2
-                fi
-                echo "error: ${label} was not found: ${url}" >&2
-                echo "hint: the requested release may not include asset ${asset_name} for version ${VERSION}" >&2
-            else
-                echo "error: failed to download ${label} from ${url}" >&2
-            fi
-            exit 1
         fi
+
+        http_code="$(wget -S --spider "$url" 2>&1 | awk '/^  HTTP\// { code=$2 } END { print code }')"
+        if [ "$http_code" = "404" ] && [ "$allow_missing" = "true" ]; then
+            return 2
+        fi
+
+        if [ "$http_code" = "404" ]; then
+            echo "error: ${label} was not found: ${url}" >&2
+            echo "hint: the requested release may not include asset ${asset_name} for version ${VERSION}" >&2
+        elif [ -n "$http_code" ]; then
+            echo "error: failed to download ${label} from ${url} (HTTP ${http_code})" >&2
+        else
+            echo "error: failed to download ${label} from ${url}" >&2
+        fi
+        exit 1
     fi
 
     echo "error: either curl or wget is required" >&2
