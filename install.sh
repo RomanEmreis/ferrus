@@ -10,6 +10,7 @@ RELEASE_URL=""
 CHECKSUM_URL=""
 INSTALL_DIR=""
 TMP_DIR=""
+HAS_CHECKSUM=0
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -81,6 +82,7 @@ download_file() {
     output="$2"
     label="$3"
     asset_name="$4"
+    allow_missing="${5:-false}"
 
     if command -v curl >/dev/null 2>&1; then
         if curl -fsSL "$url" -o "$output"; then
@@ -88,6 +90,9 @@ download_file() {
         else
             status=$?
             if [ "$status" -eq 22 ]; then
+                if [ "$allow_missing" = "true" ]; then
+                    return 2
+                fi
                 echo "error: ${label} was not found: ${url}" >&2
                 echo "hint: the requested release may not include asset ${asset_name} for version ${VERSION}" >&2
             else
@@ -103,6 +108,9 @@ download_file() {
         else
             status=$?
             if [ "$status" -eq 8 ]; then
+                if [ "$allow_missing" = "true" ]; then
+                    return 2
+                fi
                 echo "error: ${label} was not found: ${url}" >&2
                 echo "hint: the requested release may not include asset ${asset_name} for version ${VERSION}" >&2
             else
@@ -121,7 +129,19 @@ download_archive() {
 }
 
 download_checksum() {
-    download_file "$CHECKSUM_URL" "$TMP_DIR/$CHECKSUM_FILE" "checksum file" "$CHECKSUM_FILE"
+    if download_file "$CHECKSUM_URL" "$TMP_DIR/$CHECKSUM_FILE" "checksum file" "$CHECKSUM_FILE" "true"; then
+        HAS_CHECKSUM=1
+        return
+    fi
+
+    if [ "$VERSION" = "latest" ]; then
+        echo "error: checksum file was not found: ${CHECKSUM_URL}" >&2
+        echo "hint: the latest release is expected to publish asset ${CHECKSUM_FILE}" >&2
+        exit 1
+    fi
+
+    HAS_CHECKSUM=0
+    echo "warning: checksum file ${CHECKSUM_FILE} is not available for ${VERSION}; proceeding without checksum verification for this pinned install" >&2
 }
 
 compute_sha256() {
@@ -142,6 +162,10 @@ compute_sha256() {
 }
 
 verify_checksum() {
+    if [ "$HAS_CHECKSUM" -ne 1 ]; then
+        return
+    fi
+
     checksum="$(awk '{print $1}' "$TMP_DIR/$CHECKSUM_FILE")"
     if [ -z "$checksum" ]; then
         echo "error: checksum file is empty or malformed: $CHECKSUM_FILE" >&2
@@ -167,16 +191,7 @@ verify_archive_layout() {
 
 warn_existing_install() {
     if [ -e "$INSTALL_DIR/ferrus" ]; then
-        current_version=""
-        if [ -x "$INSTALL_DIR/ferrus" ]; then
-            current_version="$("$INSTALL_DIR/ferrus" --version 2>/dev/null || true)"
-        fi
-
-        if [ -n "$current_version" ]; then
-            echo "warning: overwriting existing installation at $INSTALL_DIR/ferrus ($current_version)" >&2
-        else
-            echo "warning: overwriting existing installation at $INSTALL_DIR/ferrus" >&2
-        fi
+        echo "warning: overwriting existing installation at $INSTALL_DIR/ferrus" >&2
     fi
 }
 
