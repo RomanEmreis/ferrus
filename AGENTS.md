@@ -33,13 +33,14 @@ src/
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
+  update_check.rs            # HQ startup version-check helper (crates.io sparse index + local cache)
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs; double-Ctrl+C-to-quit (2-second window)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
-  hq/agent_manager.rs        # agent spawn helpers (headless for executor and supervisor); HeadlessHandle; agents.json updates
+  hq/agent_manager.rs        # agent spawn helpers (headless for executor, reviewer, consultant); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
   server/tools/              # One file per MCP tool (one module = one tool)
   server/resources.rs        # MCP resource handler (ferrus://{file})
