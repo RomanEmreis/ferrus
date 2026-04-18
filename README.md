@@ -72,7 +72,7 @@ ferrus                                                     # enter HQ
 
 Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
 
-On Linux `x86_64`, the installer downloads the latest release binary into `~/.local/bin` by default. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
+On Linux `x86_64` and `aarch64`, the installer downloads the latest release binary into `~/.local/bin` by default. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
 
 ---
 

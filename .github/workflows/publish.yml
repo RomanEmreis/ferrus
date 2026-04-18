@@ -43,38 +43,66 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            archive: ferrus-x86_64-unknown-linux-gnu.tar.gz
+            linker: ""
+            upload_installer: true
+          - target: aarch64-unknown-linux-gnu
+            archive: ferrus-aarch64-unknown-linux-gnu.tar.gz
+            linker: aarch64-linux-gnu-gcc
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Linux cross toolchain
+        if: ${{ matrix.linker != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: cargo build --locked --release --target "${{ matrix.target }}"
 
       - name: Package release archive
         env:
-          TARGET: x86_64-unknown-linux-gnu
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
         run: |
           mkdir -p dist
           staging="dist/ferrus-${TARGET}"
           mkdir -p "${staging}"
           cp "target/${TARGET}/release/ferrus" "${staging}/ferrus"
           cp README.md LICENSE NOTICE "${staging}/"
-          tar -C dist -czf "dist/ferrus-${TARGET}.tar.gz" "ferrus-${TARGET}"
+          tar -C dist -czf "dist/${ARCHIVE}" "ferrus-${TARGET}"
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            dist/ferrus-x86_64-unknown-linux-gnu.tar.gz \
+            "dist/${{ matrix.archive }}" \
+            --clobber
+
+      - name: Upload installer
+        if: ${{ matrix.upload_installer }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
             install.sh \
             --clobber

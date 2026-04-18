@@ -17,6 +17,7 @@ use crate::state::{
     machine::{StateData, TaskState},
     store,
 };
+use crate::update_check;
 use commands::{ModelTarget, ShellCommand, parse_command};
 use display::Display;
 use state_watcher::WatchedState;
@@ -46,6 +47,13 @@ pub async fn run(debug: bool) -> Result<()> {
     if let Some(hq) = hq_config {
         ctx.set_hq_config(&hq);
     }
+
+    let update_display = display.clone();
+    tokio::spawn(async move {
+        if let Some(message) = update_check::notification_message().await {
+            update_display.tip(message);
+        }
+    });
 
     let mut tui_task = tokio::spawn(tui::run_tui(
         msg_rx,

@@ -6,6 +6,7 @@ mod config;
 mod hq;
 mod server;
 mod state;
+mod update_check;
 
 use clap::Parser;
 
