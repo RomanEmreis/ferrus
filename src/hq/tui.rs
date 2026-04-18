@@ -17,7 +17,7 @@ use crossterm::{
     style::{Attribute, Color, Print, PrintStyledContent, Stylize, style},
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::state_watcher::{WatchedState, format_elapsed};
