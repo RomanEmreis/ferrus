@@ -214,11 +214,6 @@ install_binary() {
         exit 1
     fi
 
-    if [ ! -x "$BIN_PATH" ]; then
-        echo "error: ferrus binary in archive is not executable" >&2
-        exit 1
-    fi
-
     warn_existing_install
     install "$BIN_PATH" "$INSTALL_DIR/ferrus"
 }
