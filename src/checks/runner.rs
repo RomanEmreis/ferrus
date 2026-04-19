@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use tokio::process::Command;
+
+use crate::platform;
 
 pub struct CommandResult {
     pub command: String,
@@ -35,24 +36,19 @@ pub async fn run_checks(commands: &[String]) -> Result<CheckResult> {
 }
 
 async fn run_command(cmd: &str) -> Result<CommandResult> {
-    let parts: Vec<&str> = cmd.split_whitespace().collect();
-    let (program, args) = match parts.split_first() {
-        Some(pair) => pair,
-        None => {
-            return Ok(CommandResult {
-                command: cmd.to_string(),
-                passed: true,
-                stdout: String::new(),
-                stderr: String::new(),
-            });
-        }
-    };
+    if cmd.trim().is_empty() {
+        return Ok(CommandResult {
+            command: cmd.to_string(),
+            passed: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
 
-    let output = Command::new(program)
-        .args(args)
+    let output = platform::shell_command(cmd)
         .output()
         .await
-        .with_context(|| format!("Failed to run `{program}`"))?;
+        .with_context(|| format!("Failed to run check command `{cmd}`"))?;
 
     Ok(CommandResult {
         command: cmd.to_string(),
@@ -122,5 +118,16 @@ mod tests {
 
         assert!(result.passed);
         assert!(result.commands.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_checks_uses_shell_parsing_for_quoted_arguments() {
+        let commands = vec!["printf '%s' 'hello world'".to_string()];
+
+        let result = run_checks(&commands).await.unwrap();
+
+        assert!(result.passed);
+        assert_eq!(result.commands[0].stdout, "hello world");
     }
 }

@@ -20,6 +20,8 @@ use crossterm::{
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::platform;
+
 use super::state_watcher::{WatchedState, format_elapsed};
 
 const MAX_HISTORY: usize = 100;
@@ -988,12 +990,7 @@ fn leave_tui() -> Result<()> {
 }
 
 fn flush_stdin_input_buffer() {
-    #[cfg(unix)]
-    // SAFETY: tcflush is a libc call that discards bytes queued on stdin. We ignore
-    // errors because some environments do not expose a flushable TTY.
-    unsafe {
-        let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
-    }
+    platform::flush_stdin_input_buffer();
 
     // Some agents restore the terminal by writing ANSI sequences as they exit.
     // Those bytes can already be decoded into crossterm events, or arrive just

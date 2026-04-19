@@ -4,6 +4,7 @@ mod checks;
 mod cli;
 mod config;
 mod hq;
+mod platform;
 mod server;
 mod state;
 mod update_check;

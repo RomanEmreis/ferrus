@@ -12,6 +12,7 @@ use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
+use crate::platform;
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
@@ -1107,23 +1108,6 @@ impl HqContext {
     }
 }
 
-pub(crate) fn pid_is_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        let ret = unsafe { libc::kill(pid as i32, 0) };
-        if ret == 0 {
-            return true;
-        }
-        let errno = unsafe { *libc::__errno_location() };
-        errno == libc::EPERM
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
-}
-
 async fn reconcile_agent_pids() {
     use crate::state::agents::{AgentStatus, read_agents, write_agents};
 
@@ -1131,7 +1115,7 @@ async fn reconcile_agent_pids() {
         let mut changed = false;
         for entry in &mut reg.agents {
             if entry.status == AgentStatus::Running {
-                let alive = entry.pid.map(pid_is_alive).unwrap_or(false);
+                let alive = entry.pid.map(platform::pid_is_alive).unwrap_or(false);
                 if !alive {
                     entry.pid = None;
                     entry.status = AgentStatus::Suspended;
@@ -1252,8 +1236,8 @@ mod tests {
 
     #[test]
     fn stale_pid_detection() {
-        assert!(pid_is_alive(std::process::id()));
-        assert!(!pid_is_alive(999999));
+        assert!(platform::pid_is_alive(std::process::id()));
+        assert!(!platform::pid_is_alive(999999));
     }
 
     #[test]
