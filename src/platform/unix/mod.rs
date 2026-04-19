@@ -1,5 +1,7 @@
 use std::process::Command as StdCommand;
 
+use anyhow::Result;
+
 use super::ShutdownSignal;
 
 #[cfg(target_os = "linux")]
@@ -32,6 +34,12 @@ pub(crate) fn configure_headless_command(command: &mut StdCommand) {
             Ok(())
         });
     }
+}
+
+pub(crate) struct HeadlessProcessGuard;
+
+pub(crate) fn attach_headless_process(_pid: u32) -> Result<HeadlessProcessGuard> {
+    Ok(HeadlessProcessGuard)
 }
 
 pub(crate) fn signal_process(pid: u32, signal: ShutdownSignal) {

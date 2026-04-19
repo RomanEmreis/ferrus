@@ -1,7 +1,13 @@
 use std::process::Command as StdCommand;
 
 use super::ShutdownSignal;
+use anyhow::{Context, Result};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
+};
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
     STILL_ACTIVE, TerminateProcess,
@@ -12,6 +18,36 @@ pub(crate) fn set_serve_process_name() {}
 pub(crate) fn install_serve_parent_lifecycle_hooks() {}
 
 pub(crate) fn configure_headless_command(_command: &mut StdCommand) {}
+
+pub(crate) struct HeadlessProcessGuard(HANDLE);
+
+impl Drop for HeadlessProcessGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+pub(crate) fn attach_headless_process(pid: u32) -> Result<HeadlessProcessGuard> {
+    let job = create_kill_on_close_job()?;
+
+    let assigned = with_process_handle(
+        pid,
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+        |handle| unsafe { AssignProcessToJobObject(job, handle) != 0 },
+    )
+    .unwrap_or(false);
+
+    if assigned {
+        Ok(HeadlessProcessGuard(job))
+    } else {
+        unsafe {
+            let _ = CloseHandle(job);
+        }
+        anyhow::bail!("failed to assign process {pid} to Windows job object");
+    }
+}
 
 pub(crate) fn signal_process(pid: u32, _signal: ShutdownSignal) {
     with_process_handle(pid, PROCESS_TERMINATE, |handle| unsafe {
@@ -56,4 +92,33 @@ fn with_process_handle<T>(pid: u32, access: u32, f: impl FnOnce(HANDLE) -> T) ->
         let _ = CloseHandle(handle);
     }
     Some(result)
+}
+
+fn create_kill_on_close_job() -> Result<HANDLE> {
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() {
+        anyhow::bail!("failed to create Windows job object");
+    }
+
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+    let ok = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) != 0
+    };
+
+    if ok {
+        Ok(job)
+    } else {
+        unsafe {
+            let _ = CloseHandle(job);
+        }
+        Err(anyhow::anyhow!("failed to configure Windows job object"))
+            .context("job object setup for headless process")
+    }
 }

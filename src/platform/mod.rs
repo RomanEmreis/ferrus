@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::process::Command as StdCommand;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,12 @@ pub(crate) fn install_serve_parent_lifecycle_hooks() {
 
 pub(crate) fn configure_headless_command(command: &mut StdCommand) {
     imp::configure_headless_command(command);
+}
+
+pub(crate) struct HeadlessProcessGuard(imp::HeadlessProcessGuard);
+
+pub(crate) fn attach_headless_process(pid: u32) -> Result<HeadlessProcessGuard> {
+    imp::attach_headless_process(pid).map(HeadlessProcessGuard)
 }
 
 pub(crate) fn signal_process(pid: u32, signal: ShutdownSignal) {
