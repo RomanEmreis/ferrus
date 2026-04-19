@@ -62,33 +62,43 @@ async fn run_command(cmd: &str) -> Result<CommandResult> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    const PASSING_COMMAND: &str = "true";
+    #[cfg(unix)]
+    const FAILING_COMMAND: &str = "false";
+
+    #[cfg(windows)]
+    const PASSING_COMMAND: &str = "ver > nul";
+    #[cfg(windows)]
+    const FAILING_COMMAND: &str = "exit 1";
+
     #[tokio::test]
     async fn run_checks_with_single_passing_command() {
-        let commands = vec!["true".to_string()];
+        let commands = vec![PASSING_COMMAND.to_string()];
 
         let result = run_checks(&commands).await.unwrap();
 
         assert!(result.passed);
         assert_eq!(result.commands.len(), 1);
-        assert_eq!(result.commands[0].command, "true");
+        assert_eq!(result.commands[0].command, PASSING_COMMAND);
         assert!(result.commands[0].passed);
     }
 
     #[tokio::test]
     async fn run_checks_with_single_failing_command() {
-        let commands = vec!["false".to_string()];
+        let commands = vec![FAILING_COMMAND.to_string()];
 
         let result = run_checks(&commands).await.unwrap();
 
         assert!(!result.passed);
         assert_eq!(result.commands.len(), 1);
-        assert_eq!(result.commands[0].command, "false");
+        assert_eq!(result.commands[0].command, FAILING_COMMAND);
         assert!(!result.commands[0].passed);
     }
 
     #[tokio::test]
     async fn run_checks_with_mixed_commands_collects_all_results() {
-        let commands = vec!["true".to_string(), "false".to_string()];
+        let commands = vec![PASSING_COMMAND.to_string(), FAILING_COMMAND.to_string()];
 
         let result = run_checks(&commands).await.unwrap();
 
