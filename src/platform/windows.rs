@@ -9,8 +9,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    TerminateProcess,
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
+    PROCESS_TERMINATE, TerminateProcess,
 };
 
 pub(crate) fn set_serve_process_name() {}
@@ -38,7 +38,7 @@ pub(crate) fn attach_headless_process(pid: u32) -> Result<HeadlessProcessGuard> 
 
     let assigned = with_process_handle(
         pid,
-        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA | PROCESS_TERMINATE,
         |handle| unsafe { AssignProcessToJobObject(job, handle) != 0 },
     )
     .unwrap_or(false);
@@ -72,7 +72,7 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
             return false;
         }
 
-        exit_code == STILL_ACTIVE
+        exit_code == STILL_ACTIVE as u32
     })
     .unwrap_or(false)
 }
