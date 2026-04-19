@@ -29,10 +29,10 @@ pub(crate) fn configure_headless_command(command: &mut StdCommand) {
     imp::configure_headless_command(command);
 }
 
-pub(crate) struct HeadlessProcessGuard(imp::HeadlessProcessGuard);
+pub(crate) type HeadlessProcessGuard = imp::HeadlessProcessGuard;
 
 pub(crate) fn attach_headless_process(pid: u32) -> Result<HeadlessProcessGuard> {
-    imp::attach_headless_process(pid).map(HeadlessProcessGuard)
+    imp::attach_headless_process(pid)
 }
 
 pub(crate) fn signal_process(pid: u32, signal: ShutdownSignal) {
