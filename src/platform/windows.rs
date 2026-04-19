@@ -12,7 +12,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    TerminateProcess, WaitForSingleObject,
+    SYNCHRONIZE, TerminateProcess, WaitForSingleObject,
 };
 
 pub(crate) fn set_serve_process_name() {}
@@ -68,13 +68,17 @@ pub(crate) fn signal_process_group(pid: u32, signal: ShutdownSignal) {
 }
 
 pub(crate) fn pid_is_alive(pid: u32) -> bool {
-    with_process_handle(pid, PROCESS_QUERY_LIMITED_INFORMATION, |handle| unsafe {
-        match WaitForSingleObject(handle, 0) {
-            WAIT_TIMEOUT => true,
-            WAIT_OBJECT_0 | WAIT_FAILED => false,
-            _ => false,
-        }
-    })
+    with_process_handle(
+        pid,
+        PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+        |handle| unsafe {
+            match WaitForSingleObject(handle, 0) {
+                WAIT_TIMEOUT => true,
+                WAIT_OBJECT_0 | WAIT_FAILED => false,
+                _ => false,
+            }
+        },
+    )
     .unwrap_or(false)
 }
 
