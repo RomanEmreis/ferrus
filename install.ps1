@@ -53,7 +53,16 @@ function Download-File {
     )
 
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $Output
+        $requestParams = @{
+            Uri     = $Url
+            OutFile = $Output
+        }
+
+        if ($PSVersionTable.PSEdition -ne "Core") {
+            $requestParams.UseBasicParsing = $true
+        }
+
+        Invoke-WebRequest @requestParams
         return $true
     } catch {
         $statusCode = $null
