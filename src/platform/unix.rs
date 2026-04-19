@@ -1,10 +1,6 @@
 use std::process::Command as StdCommand;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ShutdownSignal {
-    Terminate,
-    Kill,
-}
+use super::ShutdownSignal;
 
 pub(crate) fn set_serve_process_name() {
     #[cfg(target_os = "linux")]
@@ -44,40 +40,36 @@ pub(crate) fn install_serve_parent_lifecycle_hooks() {
 }
 
 pub(crate) fn configure_headless_command(command: &mut StdCommand) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
+    use std::os::unix::process::CommandExt;
 
-        // SAFETY: these libc calls are async-signal-safe and operate only on the
-        // child process between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) != 0 {
+    // SAFETY: these libc calls are async-signal-safe and operate only on the
+    // child process between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                if libc::prctl(
+                    libc::PR_SET_PDEATHSIG,
+                    libc::SIGTERM as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                    0 as libc::c_ulong,
+                ) != 0
+                {
                     return Err(std::io::Error::last_os_error());
                 }
+            }
 
-                #[cfg(target_os = "linux")]
-                {
-                    if libc::prctl(
-                        libc::PR_SET_PDEATHSIG,
-                        libc::SIGTERM as libc::c_ulong,
-                        0 as libc::c_ulong,
-                        0 as libc::c_ulong,
-                        0 as libc::c_ulong,
-                    ) != 0
-                    {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-
-                Ok(())
-            });
-        }
+            Ok(())
+        });
     }
 }
 
 pub(crate) fn signal_process(pid: u32, signal: ShutdownSignal) {
-    #[cfg(unix)]
     unsafe {
         let signal = match signal {
             ShutdownSignal::Terminate => libc::SIGTERM,
@@ -85,15 +77,9 @@ pub(crate) fn signal_process(pid: u32, signal: ShutdownSignal) {
         };
         libc::kill(pid as libc::pid_t, signal);
     }
-
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, signal);
-    }
 }
 
 pub(crate) fn signal_process_group(pid: u32, signal: ShutdownSignal) {
-    #[cfg(unix)]
     unsafe {
         let signal = match signal {
             ShutdownSignal::Terminate => libc::SIGTERM,
@@ -101,30 +87,22 @@ pub(crate) fn signal_process_group(pid: u32, signal: ShutdownSignal) {
         };
         libc::kill(-(pid as libc::pid_t), signal);
     }
-
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, signal);
-    }
 }
 
 pub(crate) fn pid_is_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        let ret = unsafe { libc::kill(pid as i32, 0) };
-        if ret == 0 {
-            return true;
-        }
-
-        let err = std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or_default();
-        err == libc::EPERM
+    let ret = unsafe { libc::kill(pid as i32, 0) };
+    if ret == 0 {
+        return true;
     }
 
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
+    let err = std::io::Error::last_os_error()
+        .raw_os_error()
+        .unwrap_or_default();
+    err == libc::EPERM
+}
+
+pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("sh");
+    command.arg("-lc").arg(cmd);
+    command
 }
