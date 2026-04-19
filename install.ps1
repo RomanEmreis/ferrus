@@ -12,9 +12,13 @@ $TempDir = ""
 $HasChecksum = $false
 
 function Get-Target {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    switch ($arch) {
-        "X64" { return "x86_64-pc-windows-msvc" }
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if (-not $arch -and $env:PROCESSOR_ARCHITEW6432) {
+        $arch = $env:PROCESSOR_ARCHITEW6432
+    }
+
+    switch ($arch.ToUpperInvariant()) {
+        "AMD64" { return "x86_64-pc-windows-msvc" }
         default {
             throw "unsupported Windows architecture: $arch. Supported target: x86_64"
         }
