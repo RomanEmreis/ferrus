@@ -209,6 +209,16 @@ mod tests {
     }
 
     #[test]
+    fn build_message_detects_newer_prerelease() {
+        let current = Version::parse("0.2.5-alpha.5").expect("current version should parse");
+        let message = build_message(&current, "0.2.5-alpha.6")
+            .expect("newer prerelease should produce a message");
+
+        assert!(message.contains("0.2.5-alpha.6"));
+        assert!(message.contains("0.2.5-alpha.5"));
+    }
+
+    #[test]
     fn cache_staleness_uses_ttl_window() {
         let fresh = UpdateCache {
             checked_at: Utc::now() - Duration::hours(1),

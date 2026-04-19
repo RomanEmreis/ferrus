@@ -1234,6 +1234,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn stale_pid_detection() {
         assert!(platform::pid_is_alive(std::process::id()));
