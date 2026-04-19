@@ -30,7 +30,9 @@ pub async fn notification_message() -> Option<String> {
     if let Some(cache) = cached.as_ref()
         && !cache_is_stale(cache)
     {
-        return build_message(&current, &cache.latest_version);
+        if let Some(message) = build_message(&current, &cache.latest_version) {
+            return Some(message);
+        }
     }
 
     match fetch_latest_version().await {
@@ -206,6 +208,16 @@ mod tests {
         let current = Version::parse("0.2.5").expect("current version should parse");
         assert!(build_message(&current, "0.2.5").is_none());
         assert!(build_message(&current, "0.2.4").is_none());
+    }
+
+    #[test]
+    fn build_message_detects_newer_prerelease() {
+        let current = Version::parse("0.2.5-alpha.5").expect("current version should parse");
+        let message = build_message(&current, "0.2.5-alpha.6")
+            .expect("newer prerelease should produce a message");
+
+        assert!(message.contains("0.2.5-alpha.6"));
+        assert!(message.contains("0.2.5-alpha.5"));
     }
 
     #[test]
