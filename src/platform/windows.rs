@@ -9,8 +9,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-    PROCESS_TERMINATE, TerminateProcess,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    TerminateProcess, WaitForSingleObject, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 
 pub(crate) fn set_serve_process_name() {}
@@ -67,12 +67,11 @@ pub(crate) fn signal_process_group(pid: u32, signal: ShutdownSignal) {
 
 pub(crate) fn pid_is_alive(pid: u32) -> bool {
     with_process_handle(pid, PROCESS_QUERY_LIMITED_INFORMATION, |handle| unsafe {
-        let mut exit_code = 0;
-        if GetExitCodeProcess(handle, &mut exit_code) == 0 {
-            return false;
+        match WaitForSingleObject(handle, 0) {
+            WAIT_TIMEOUT => true,
+            WAIT_OBJECT_0 | WAIT_FAILED => false,
+            _ => false,
         }
-
-        exit_code == STILL_ACTIVE as u32
     })
     .unwrap_or(false)
 }
