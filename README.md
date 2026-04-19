@@ -70,9 +70,13 @@ ferrus register --supervisor claude-code --executor codex  # write agent configs
 ferrus                                                     # enter HQ
 ```
 
+```powershell
+iwr https://github.com/RomanEmreis/ferrus/releases/latest/download/install.ps1 -useb | iex
+```
+
 Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
 
-On Linux and macOS for `x86_64` and `aarch64`/`arm64`, the installer downloads the matching release binary into `~/.local/bin` by default. Release archives are verified with published SHA-256 checksums before installation. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
+On Linux and macOS for `x86_64` and `aarch64`/`arm64`, `install.sh` downloads the matching release binary into `~/.local/bin` by default. On Windows, `install.ps1` installs `ferrus.exe` into `%LOCALAPPDATA%\ferrus\bin` by default. Release archives are verified with published SHA-256 checksums before installation. Set `FERRUS_INSTALL_DIR` to override the destination, or `FERRUS_INSTALL_VERSION=vX.Y.Z` to install a specific release tag.
 
 ---
 

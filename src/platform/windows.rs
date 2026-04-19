@@ -122,3 +122,41 @@ fn create_kill_on_close_job() -> Result<HANDLE> {
             .context("job object setup for headless process")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn shell_command_uses_cmd_c() {
+        assert_program_and_args(
+            shell_command("echo ferrus").into_std(),
+            "cmd",
+            &["/C", "echo ferrus"],
+        );
+    }
+
+    #[test]
+    fn current_pid_is_alive() {
+        assert!(pid_is_alive(std::process::id()));
+    }
+
+    #[test]
+    fn obviously_invalid_pid_is_not_alive() {
+        assert!(!pid_is_alive(u32::MAX));
+    }
+
+    fn assert_program_and_args(command: Command, program: &str, args: &[&str]) {
+        assert_eq!(command.get_program().to_string_lossy(), program);
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            args.iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+}
