@@ -2,7 +2,9 @@ use std::process::Command as StdCommand;
 
 use super::ShutdownSignal;
 use anyhow::{Context, Result};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, STILL_ACTIVE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -10,7 +12,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    TerminateProcess, WaitForSingleObject, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    TerminateProcess, WaitForSingleObject,
 };
 
 pub(crate) fn set_serve_process_name() {}
