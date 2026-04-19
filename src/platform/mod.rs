@@ -43,3 +43,7 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
 pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
     imp::shell_command(cmd)
 }
+
+pub(crate) fn flush_stdin_input_buffer() {
+    imp::flush_stdin_input_buffer();
+}

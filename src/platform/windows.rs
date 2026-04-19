@@ -21,3 +21,5 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
     command.arg("/C").arg(cmd);
     command
 }
+
+pub(crate) fn flush_stdin_input_buffer() {}

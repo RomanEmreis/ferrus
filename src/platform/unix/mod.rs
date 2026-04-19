@@ -71,3 +71,11 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
     command.arg("-lc").arg(cmd);
     command
 }
+
+pub(crate) fn flush_stdin_input_buffer() {
+    // SAFETY: tcflush discards bytes queued on stdin. Errors are ignored because
+    // some environments do not expose a flushable TTY.
+    unsafe {
+        let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
+}

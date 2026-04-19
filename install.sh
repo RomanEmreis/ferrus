@@ -23,20 +23,40 @@ detect_platform() {
     os="$(uname -s)"
     arch="$(uname -m)"
 
-    if [ "$os" != "Linux" ]; then
-        echo "error: this installer currently supports Linux only (detected ${os})" >&2
-        exit 1
-    fi
-
-    case "$arch" in
-        x86_64|amd64)
-            TARGET="x86_64-unknown-linux-gnu"
+    case "$os" in
+        Linux)
+            case "$arch" in
+                x86_64|amd64)
+                    TARGET="x86_64-unknown-linux-gnu"
+                    ;;
+                aarch64|arm64)
+                    TARGET="aarch64-unknown-linux-gnu"
+                    ;;
+                *)
+                    echo "error: unsupported Linux architecture: ${arch}" >&2
+                    echo "supported Linux targets: x86_64, aarch64" >&2
+                    exit 1
+                    ;;
+            esac
             ;;
-        aarch64|arm64)
-            TARGET="aarch64-unknown-linux-gnu"
+        Darwin)
+            case "$arch" in
+                x86_64|amd64)
+                    TARGET="x86_64-apple-darwin"
+                    ;;
+                aarch64|arm64)
+                    TARGET="aarch64-apple-darwin"
+                    ;;
+                *)
+                    echo "error: unsupported macOS architecture: ${arch}" >&2
+                    echo "supported macOS targets: x86_64, arm64" >&2
+                    exit 1
+                    ;;
+            esac
             ;;
         *)
-            echo "error: this installer currently supports x86_64 and aarch64 Linux only (detected ${arch})" >&2
+            echo "error: unsupported platform: ${os}" >&2
+            echo "supported platforms: Linux, macOS" >&2
             exit 1
             ;;
     esac
