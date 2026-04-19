@@ -15,6 +15,7 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, WaitForSingleObject,
 };
 
+// Win32 SYNCHRONIZE access right used for WaitForSingleObject on process handles.
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 
 pub(crate) fn set_serve_process_name() {}
