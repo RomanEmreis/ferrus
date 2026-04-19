@@ -29,9 +29,8 @@ pub async fn notification_message() -> Option<String> {
 
     if let Some(cache) = cached.as_ref()
         && !cache_is_stale(cache)
-        && let Some(message) = build_message(&current, &cache.latest_version)
     {
-        return Some(message);
+        return build_message(&current, &cache.latest_version);
     }
 
     match fetch_latest_version().await {
