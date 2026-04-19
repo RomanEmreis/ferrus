@@ -2,7 +2,7 @@ use std::process::Command as StdCommand;
 
 use super::ShutdownSignal;
 use anyhow::{Context, Result};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, STILL_ACTIVE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -10,7 +10,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    STILL_ACTIVE, TerminateProcess,
+    TerminateProcess,
 };
 
 pub(crate) fn set_serve_process_name() {}
@@ -20,6 +20,10 @@ pub(crate) fn install_serve_parent_lifecycle_hooks() {}
 pub(crate) fn configure_headless_command(_command: &mut StdCommand) {}
 
 pub(crate) struct HeadlessProcessGuard(HANDLE);
+
+// SAFETY: the guard owns a Windows HANDLE and only closes it on drop.
+// Ownership can move across threads without violating handle semantics.
+unsafe impl Send for HeadlessProcessGuard {}
 
 impl Drop for HeadlessProcessGuard {
     fn drop(&mut self) {

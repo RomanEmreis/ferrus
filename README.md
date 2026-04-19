@@ -1,6 +1,6 @@
 # ferrus
 
-[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.5--alpha.5-orange)](https://crates.io/crates/ferrus)
+[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.5--alpha.7-orange)](https://crates.io/crates/ferrus)
 [![Rust version](https://img.shields.io/badge/rustc-1.95+-964B00)](https://releases.rs/docs/1.95.0/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/RomanEmreis/ferrus/blob/main/LICENSE)
 [![Rust](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml)
@@ -60,18 +60,25 @@ State is shared through `.ferrus/` on disk — plain text files agents read and 
 
 ## Quick start
 
+Install:
+
 ```sh
 cargo install ferrus
-# or:
+# or on Linux/macOS:
 curl -fsSL https://github.com/RomanEmreis/ferrus/releases/latest/download/install.sh | sh
-
-ferrus init                                                # scaffold ferrus.toml + .ferrus/
-ferrus register --supervisor claude-code --executor codex  # write agent configs
-ferrus                                                     # enter HQ
 ```
 
 ```powershell
+# or on Windows:
 iwr https://github.com/RomanEmreis/ferrus/releases/latest/download/install.ps1 -useb | iex
+```
+
+Run:
+
+```sh
+ferrus init                                                # scaffold ferrus.toml + .ferrus/
+ferrus register --supervisor claude-code --executor codex  # write agent configs
+ferrus                                                     # enter HQ
 ```
 
 Then type `/task` — a supervisor spawns, you describe what you want, and the full loop runs automatically.
