@@ -1,5 +1,6 @@
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
+use crate::platform::{self, ShutdownSignal};
 use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
 use anyhow::{Context, Result};
 use std::fs::File;
@@ -189,10 +190,7 @@ pub async fn kill_role(role: &str) -> Result<()> {
     if let Some(e) = reg.by_role_mut(role)
         && let Some(pid) = e.pid
     {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
+        platform::signal_process(pid, ShutdownSignal::Terminate);
         e.pid = None;
         e.status = AgentStatus::Suspended;
     }
@@ -225,51 +223,6 @@ pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
 }
 
-pub(crate) fn configure_headless_command(command: &mut StdCommand) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        // SAFETY: these libc calls are async-signal-safe and operate only on the
-        // child process between fork and exec.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-
-                #[cfg(target_os = "linux")]
-                {
-                    if libc::prctl(
-                        libc::PR_SET_PDEATHSIG,
-                        libc::SIGTERM as libc::c_ulong,
-                        0 as libc::c_ulong,
-                        0 as libc::c_ulong,
-                        0 as libc::c_ulong,
-                    ) != 0
-                    {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-
-                Ok(())
-            });
-        }
-    }
-}
-
-pub(crate) fn signal_process(pid: u32, signal: libc::c_int) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), signal);
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, signal);
-    }
-}
-
 /// Handle for a headless background executor process.
 pub struct HeadlessHandle {
     #[allow(dead_code)]
@@ -294,16 +247,16 @@ impl HeadlessHandle {
         let _ = tokio::task::spawn_blocking(move || self.blocking_shutdown(false)).await;
     }
 
-    fn send_signal(&self, signal: libc::c_int) {
-        signal_process(self.pid, signal);
+    fn send_signal(&self, signal: ShutdownSignal) {
+        platform::signal_process_group(self.pid, signal);
     }
 
     fn blocking_shutdown(&mut self, terminate: bool) {
         if terminate && self.is_alive() {
-            self.send_signal(libc::SIGTERM);
+            self.send_signal(ShutdownSignal::Terminate);
             std::thread::sleep(Duration::from_millis(250));
             if self.is_alive() {
-                self.send_signal(libc::SIGKILL);
+                self.send_signal(ShutdownSignal::Kill);
             }
         }
 
@@ -384,7 +337,7 @@ async fn spawn_headless(
         Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
     };
 
-    configure_headless_command(&mut command);
+    platform::configure_headless_command(&mut command);
 
     let mut child = command.spawn().with_context(|| {
         format!(
