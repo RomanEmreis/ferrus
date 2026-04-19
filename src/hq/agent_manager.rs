@@ -351,12 +351,16 @@ async fn spawn_headless(
 
     let pid = child.id();
     let platform_guard = match platform::attach_headless_process(pid) {
-        Ok(guard) => guard,
+        Ok(guard) => Some(guard),
         Err(err) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(err)
-                .with_context(|| format!("Failed to attach platform process guard to pid {pid}"));
+            tracing::warn!(
+                error = ?err,
+                pid,
+                role,
+                agent_type,
+                "failed to attach platform process guard; continuing without it"
+            );
+            None
         }
     };
     let mut output_threads = Vec::new();
@@ -423,7 +427,7 @@ async fn spawn_headless(
         log_path,
         pid,
         exit_rx,
-        platform_guard: Some(platform_guard),
+        platform_guard,
         wait_thread: Some(wait_thread),
         output_threads,
     })
