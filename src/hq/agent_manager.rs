@@ -230,6 +230,7 @@ pub struct HeadlessHandle {
     pub log_path: PathBuf,
     pub pid: u32,
     pub exit_rx: tokio::sync::watch::Receiver<Option<i32>>,
+    platform_guard: Option<platform::HeadlessProcessGuard>,
     wait_thread: Option<std::thread::JoinHandle<()>>,
     output_threads: Vec<std::thread::JoinHandle<()>>,
 }
@@ -259,6 +260,8 @@ impl HeadlessHandle {
                 self.send_signal(ShutdownSignal::Kill);
             }
         }
+
+        self.platform_guard.take();
 
         if let Some(wait_thread) = self.wait_thread.take() {
             let _ = wait_thread.join();
@@ -347,6 +350,19 @@ async fn spawn_headless(
     })?;
 
     let pid = child.id();
+    let platform_guard = match platform::attach_headless_process(pid) {
+        Ok(guard) => Some(guard),
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                pid,
+                role,
+                agent_type,
+                "failed to attach platform process guard; continuing without it"
+            );
+            None
+        }
+    };
     let mut output_threads = Vec::new();
 
     if let Some(logger) = logger.as_ref() {
@@ -411,6 +427,7 @@ async fn spawn_headless(
         log_path,
         pid,
         exit_rx,
+        platform_guard,
         wait_thread: Some(wait_thread),
         output_threads,
     })

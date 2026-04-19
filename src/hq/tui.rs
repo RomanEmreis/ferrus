@@ -1685,17 +1685,21 @@ fn longest_common_prefix(candidates: &[(&'static str, &'static str)]) -> &'stati
 }
 
 fn abbreviate_home(path: &Path) -> String {
-    let full = path.display().to_string();
     let Some(home) = dirs::home_dir() else {
-        return full;
+        return path.display().to_string();
     };
-    let home = home.display().to_string();
-    if full == home {
+
+    if path == home {
         "~".to_string()
-    } else if let Some(suffix) = full.strip_prefix(&(home + "/")) {
+    } else if let Ok(suffix) = path.strip_prefix(&home) {
+        let suffix = suffix
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
         format!("~/{suffix}")
     } else {
-        full
+        path.display().to_string()
     }
 }
 

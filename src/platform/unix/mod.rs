@@ -1,5 +1,7 @@
 use std::process::Command as StdCommand;
 
+use anyhow::Result;
+
 use super::ShutdownSignal;
 
 #[cfg(target_os = "linux")]
@@ -32,6 +34,12 @@ pub(crate) fn configure_headless_command(command: &mut StdCommand) {
             Ok(())
         });
     }
+}
+
+pub(crate) struct HeadlessProcessGuard;
+
+pub(crate) fn attach_headless_process(_pid: u32) -> Result<HeadlessProcessGuard> {
+    Ok(HeadlessProcessGuard)
 }
 
 pub(crate) fn signal_process(pid: u32, signal: ShutdownSignal) {
@@ -77,5 +85,38 @@ pub(crate) fn flush_stdin_input_buffer() {
     // some environments do not expose a flushable TTY.
     unsafe {
         let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn shell_command_uses_non_login_sh() {
+        assert_program_and_args(
+            shell_command("printf test").into_std(),
+            "sh",
+            &["-c", "printf test"],
+        );
+    }
+
+    #[test]
+    fn attach_headless_process_is_noop_on_unix() {
+        assert!(attach_headless_process(std::process::id()).is_ok());
+    }
+
+    fn assert_program_and_args(command: Command, program: &str, args: &[&str]) {
+        assert_eq!(command.get_program().to_string_lossy(), program);
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            args.iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
     }
 }
