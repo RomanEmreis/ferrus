@@ -68,7 +68,7 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
 
 pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
     let mut command = tokio::process::Command::new("sh");
-    command.arg("-lc").arg(cmd);
+    command.arg("-c").arg(cmd);
     command
 }
 
