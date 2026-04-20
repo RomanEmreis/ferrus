@@ -13,15 +13,29 @@ $HasChecksum = $false
 
 function Get-Target {
     $arch = $env:PROCESSOR_ARCHITECTURE
-    if (-not $arch -and $env:PROCESSOR_ARCHITEW6432) {
-        $arch = $env:PROCESSOR_ARCHITEW6432
+    $archWow64 = $env:PROCESSOR_ARCHITEW6432
+
+    if ($archWow64) {
+        $arch = $archWow64
+    }
+
+    if (-not $arch) {
+        try {
+            $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        } catch {
+            $arch = $null
+        }
+    }
+
+    if (-not $arch) {
+        throw "failed to detect Windows architecture"
     }
 
     switch ($arch.ToUpperInvariant()) {
         "AMD64" { return "x86_64-pc-windows-msvc" }
-        default {
-            throw "unsupported Windows architecture: $arch. Supported target: x86_64"
-        }
+        "X64"   { return "x86_64-pc-windows-msvc" }
+        "ARM64" { throw "unsupported Windows architecture: ARM64. Supported target: x86_64" }
+        default { throw "unsupported Windows architecture: $arch. Supported target: x86_64" }
     }
 }
 
