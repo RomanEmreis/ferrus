@@ -12,17 +12,11 @@ $TempDir = ""
 $HasChecksum = $false
 
 function Get-Target {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    if (-not $arch -and $env:PROCESSOR_ARCHITEW6432) {
-        $arch = $env:PROCESSOR_ARCHITEW6432
+    if ([Environment]::Is64BitOperatingSystem) {
+        return "x86_64-pc-windows-msvc"
     }
 
-    switch ($arch.ToUpperInvariant()) {
-        "AMD64" { return "x86_64-pc-windows-msvc" }
-        default {
-            throw "unsupported Windows architecture: $arch. Supported target: x86_64"
-        }
-    }
+    throw "Only 64-bit Windows is supported"
 }
 
 function Resolve-Urls {
