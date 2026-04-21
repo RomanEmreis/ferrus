@@ -8,6 +8,12 @@ use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
 pub(crate) const NAME: &str = "codex";
+/// Actual CLI executable name used to launch Codex.
+#[cfg(not(windows))]
+const EXECUTABLE: &str = "codex";
+/// On Windows, npm-style shims are commonly installed as `*.cmd`.
+#[cfg(windows)]
+const EXECUTABLE: &str = "codex.cmd";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -71,7 +77,7 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
-    let mut cmd = Command::new(NAME);
+    let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
             if let Some(model) = model {
@@ -98,7 +104,6 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
 mod tests {
     use super::*;
     use crate::agents::tests::assert_program_and_args;
-
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
@@ -106,7 +111,7 @@ mod tests {
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
-            "codex",
+            EXECUTABLE,
             &["plan"],
         );
     }
@@ -116,7 +121,7 @@ mod tests {
         let agent = Executor::new(None);
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            "codex",
+            EXECUTABLE,
             &["exec", "run"],
         );
     }
@@ -126,7 +131,7 @@ mod tests {
         let agent = Executor::new(Some("gpt-5.4"));
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            "codex",
+            EXECUTABLE,
             &["exec", "--model", "gpt-5.4", "run"],
         );
     }

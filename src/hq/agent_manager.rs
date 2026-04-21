@@ -344,8 +344,10 @@ async fn spawn_headless(
 
     let mut child = command.spawn().with_context(|| {
         format!(
-            "Failed to spawn {} headlessly as {role}",
-            command.get_program().to_string_lossy()
+            "Failed to spawn {} headlessly as {role}. {}. log={}",
+            command.get_program().to_string_lossy(),
+            command_summary,
+            log_path.display()
         )
     })?;
 

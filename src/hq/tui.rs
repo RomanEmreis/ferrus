@@ -7,12 +7,13 @@ use std::{
 };
 
 use anyhow::Result;
+#[cfg(not(windows))]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::{
     cursor::{MoveDown, MoveToColumn, MoveUp},
-    event::{
-        self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    },
+    event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     queue,
     style::{Attribute, Color, Print, PrintStyledContent, Stylize, style},
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
@@ -968,6 +969,7 @@ fn print_message_and_restore_prompt(
 fn enter_tui() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    #[cfg(not(windows))]
     let _ = queue!(
         stdout,
         PushKeyboardEnhancementFlags(
@@ -983,6 +985,7 @@ fn enter_tui() -> Result<()> {
 
 fn leave_tui() -> Result<()> {
     let mut stdout = io::stdout();
+    #[cfg(not(windows))]
     let _ = queue!(stdout, PopKeyboardEnhancementFlags);
     let _ = stdout.flush();
     disable_raw_mode()?;
