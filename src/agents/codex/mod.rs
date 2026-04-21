@@ -8,6 +8,12 @@ use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
 pub(crate) const NAME: &str = "codex";
+/// Actual CLI executable name used to launch Codex.
+#[cfg(not(windows))]
+const EXECUTABLE: &str = "codex";
+/// On Windows, npm-style shims are commonly installed as `*.cmd`.
+#[cfg(windows)]
+const EXECUTABLE: &str = "codex.cmd";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -71,7 +77,7 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
-    let mut cmd = codex_base_command();
+    let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
             if let Some(model) = model {
@@ -94,21 +100,10 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     cmd
 }
 
-#[cfg(not(windows))]
-fn codex_base_command() -> Command {
-    Command::new(NAME)
-}
-
-#[cfg(windows)]
-fn codex_base_command() -> Command {
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg(NAME);
-    cmd
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::tests::assert_program_and_args;
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
@@ -116,6 +111,7 @@ mod tests {
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
+            EXECUTABLE,
             &["plan"],
         );
     }
@@ -125,6 +121,7 @@ mod tests {
         let agent = Executor::new(None);
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            EXECUTABLE,
             &["exec", "run"],
         );
     }
@@ -134,6 +131,7 @@ mod tests {
         let agent = Executor::new(Some("gpt-5.4"));
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            EXECUTABLE,
             &["exec", "--model", "gpt-5.4", "run"],
         );
     }
@@ -182,38 +180,5 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
-    }
-
-    fn assert_program_and_args(command: Command, args: &[&str]) {
-        #[cfg(not(windows))]
-        assert_eq!(command.get_program().to_string_lossy(), "codex");
-        #[cfg(windows)]
-        assert_eq!(
-            command.get_program().to_string_lossy().to_ascii_lowercase(),
-            "cmd"
-        );
-
-        assert_eq!(
-            command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            expected_args(args)
-        );
-    }
-
-    #[cfg(not(windows))]
-    fn expected_args(args: &[&str]) -> Vec<String> {
-        args.iter()
-            .map(|arg| (*arg).to_string())
-            .collect::<Vec<_>>()
-    }
-
-    #[cfg(windows)]
-    fn expected_args(args: &[&str]) -> Vec<String> {
-        std::iter::once("/C".to_string())
-            .chain(std::iter::once("codex".to_string()))
-            .chain(args.iter().map(|arg| (*arg).to_string()))
-            .collect::<Vec<_>>()
     }
 }
