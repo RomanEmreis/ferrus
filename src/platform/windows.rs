@@ -93,6 +93,12 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
 
 pub(crate) fn flush_stdin_input_buffer() {}
 
+pub(crate) fn agent_command(executable: &str) -> StdCommand {
+    let mut command = StdCommand::new("cmd");
+    command.arg("/C").arg(executable);
+    command
+}
+
 fn with_process_handle<T>(pid: u32, access: u32, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
     let handle = unsafe { OpenProcess(access, 0, pid) };
     if handle.is_null() {

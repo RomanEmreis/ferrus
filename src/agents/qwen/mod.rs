@@ -4,6 +4,7 @@
 //! the orchestration layer can treat it like any other agent backend.
 
 use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
+use crate::platform;
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -73,7 +74,7 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn qwen_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
-    let mut cmd = Command::new(EXECUTABLE);
+    let mut cmd = platform::agent_command(EXECUTABLE);
     if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }

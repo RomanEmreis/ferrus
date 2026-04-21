@@ -968,6 +968,7 @@ fn print_message_and_restore_prompt(
 fn enter_tui() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    #[cfg(not(windows))]
     let _ = queue!(
         stdout,
         PushKeyboardEnhancementFlags(
@@ -983,6 +984,7 @@ fn enter_tui() -> Result<()> {
 
 fn leave_tui() -> Result<()> {
     let mut stdout = io::stdout();
+    #[cfg(not(windows))]
     let _ = queue!(stdout, PopKeyboardEnhancementFlags);
     let _ = stdout.flush();
     disable_raw_mode()?;

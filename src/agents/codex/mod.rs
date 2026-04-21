@@ -4,6 +4,7 @@
 //! Ferrus expects for interactive and headless sessions.
 
 use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
+use crate::platform;
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -71,7 +72,7 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
-    let mut cmd = Command::new(NAME);
+    let mut cmd = platform::agent_command(NAME);
     match mode {
         AgentRunMode::Interactive { prompt } => {
             if let Some(model) = model {
