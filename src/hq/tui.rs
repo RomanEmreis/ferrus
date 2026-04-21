@@ -7,12 +7,13 @@ use std::{
 };
 
 use anyhow::Result;
+#[cfg(not(windows))]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::{
     cursor::{MoveDown, MoveToColumn, MoveUp},
-    event::{
-        self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    },
+    event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     queue,
     style::{Attribute, Color, Print, PrintStyledContent, Stylize, style},
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
