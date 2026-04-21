@@ -88,10 +88,6 @@ pub(crate) fn flush_stdin_input_buffer() {
     }
 }
 
-pub(crate) fn agent_command(executable: &str) -> StdCommand {
-    StdCommand::new(executable)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

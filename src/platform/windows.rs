@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 use super::ShutdownSignal;
@@ -93,45 +92,6 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
 }
 
 pub(crate) fn flush_stdin_input_buffer() {}
-
-pub(crate) fn agent_command(executable: &str) -> StdCommand {
-    let resolved =
-        resolve_executable_in_path(executable).unwrap_or_else(|| PathBuf::from(executable));
-    StdCommand::new(resolved)
-}
-
-fn resolve_executable_in_path(executable: &str) -> Option<PathBuf> {
-    let executable_path = Path::new(executable);
-    if executable_path.components().count() > 1 || executable_path.extension().is_some() {
-        return executable_path
-            .is_file()
-            .then(|| executable_path.to_path_buf());
-    }
-
-    let path_var = std::env::var_os("PATH")?;
-    let pathext_var = std::env::var_os("PATHEXT")
-        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
-    let pathext = pathext_var
-        .to_string_lossy()
-        .split(';')
-        .map(str::trim)
-        .filter(|ext| !ext.is_empty())
-        .collect::<Vec<_>>();
-
-    for dir in std::env::split_paths(&path_var) {
-        let direct = dir.join(executable);
-        if direct.is_file() {
-            return Some(direct);
-        }
-        for ext in &pathext {
-            let candidate = dir.join(format!("{executable}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
 
 fn with_process_handle<T>(pid: u32, access: u32, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
     let handle = unsafe { OpenProcess(access, 0, pid) };

@@ -54,7 +54,3 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
 pub(crate) fn flush_stdin_input_buffer() {
     imp::flush_stdin_input_buffer();
 }
-
-pub(crate) fn agent_command(executable: &str) -> StdCommand {
-    imp::agent_command(executable)
-}
