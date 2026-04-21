@@ -4,10 +4,6 @@
 //! Ferrus expects for interactive and headless sessions.
 
 use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
-#[cfg(windows)]
-use std::ffi::OsString;
-#[cfg(windows)]
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -75,7 +71,7 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
-    let mut cmd = Command::new(codex_executable());
+    let mut cmd = codex_base_command();
     match mode {
         AgentRunMode::Interactive { prompt } => {
             if let Some(model) = model {
@@ -99,94 +95,46 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
 }
 
 #[cfg(not(windows))]
-fn codex_executable() -> &'static str {
-    NAME
+fn codex_base_command() -> Command {
+    Command::new(NAME)
 }
 
 #[cfg(windows)]
-fn codex_executable() -> OsString {
-    resolve_codex_on_path().unwrap_or_else(|| OsString::from(NAME))
-}
-
-#[cfg(windows)]
-fn resolve_codex_on_path() -> Option<OsString> {
-    let path_var = std::env::var_os("PATH")?;
-    let pathext_var =
-        std::env::var_os("PATHEXT").unwrap_or_else(|| OsString::from(".COM;.EXE;.BAT;.CMD"));
-    let pathext = pathext_var
-        .to_string_lossy()
-        .split(';')
-        .map(str::trim)
-        .filter(|ext| !ext.is_empty())
-        .collect::<Vec<_>>();
-
-    for dir in std::env::split_paths(&path_var) {
-        let direct = dir.join(NAME);
-        if direct.is_file() {
-            return Some(direct.into_os_string());
-        }
-        for ext in &pathext {
-            let candidate: PathBuf = dir.join(format!("{NAME}{ext}"));
-            if Path::new(&candidate).is_file() {
-                return Some(candidate.into_os_string());
-            }
-        }
-    }
-    None
+fn codex_base_command() -> Command {
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").arg(NAME);
+    cmd
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(windows))]
-    use crate::agents::tests::assert_program_and_args;
-
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
-        let command = agent.spawn(AgentRunMode::Interactive {
-            prompt: Some("plan"),
-        });
-        assert_codex_program(command.get_program());
-        assert_eq!(
-            command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec!["plan".to_string()]
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Interactive {
+                prompt: Some("plan"),
+            }),
+            &["plan"],
         );
     }
 
     #[test]
     fn codex_executor_builds_headless_command() {
         let agent = Executor::new(None);
-        let command = agent.spawn(AgentRunMode::Headless { prompt: "run" });
-        assert_codex_program(command.get_program());
-        assert_eq!(
-            command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec!["exec".to_string(), "run".to_string()]
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            &["exec", "run"],
         );
     }
 
     #[test]
     fn codex_model_override_is_part_of_spawned_command() {
         let agent = Executor::new(Some("gpt-5.4"));
-        let command = agent.spawn(AgentRunMode::Headless { prompt: "run" });
-        assert_codex_program(command.get_program());
-        assert_eq!(
-            command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            vec![
-                "exec".to_string(),
-                "--model".to_string(),
-                "gpt-5.4".to_string(),
-                "run".to_string(),
-            ]
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            &["exec", "--model", "gpt-5.4", "run"],
         );
     }
 
@@ -236,19 +184,36 @@ mod tests {
         assert_eq!(entry.model, None);
     }
 
+    fn assert_program_and_args(command: Command, args: &[&str]) {
+        #[cfg(not(windows))]
+        assert_eq!(command.get_program().to_string_lossy(), "codex");
+        #[cfg(windows)]
+        assert_eq!(
+            command.get_program().to_string_lossy().to_ascii_lowercase(),
+            "cmd"
+        );
+
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            expected_args(args)
+        );
+    }
+
     #[cfg(not(windows))]
-    fn assert_codex_program(program: &std::ffi::OsStr) {
-        assert_eq!(program.to_string_lossy(), "codex");
+    fn expected_args(args: &[&str]) -> Vec<String> {
+        args.iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>()
     }
 
     #[cfg(windows)]
-    fn assert_codex_program(program: &std::ffi::OsStr) {
-        let path = std::path::Path::new(program);
-        let stem = path
-            .file_stem()
-            .expect("codex program should have filename")
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        assert_eq!(stem, "codex");
+    fn expected_args(args: &[&str]) -> Vec<String> {
+        std::iter::once("/C".to_string())
+            .chain(std::iter::once("codex".to_string()))
+            .chain(args.iter().map(|arg| (*arg).to_string()))
+            .collect::<Vec<_>>()
     }
 }

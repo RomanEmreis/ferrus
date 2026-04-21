@@ -156,8 +156,9 @@ async fn load_agent_versions(hq: Option<&HqConfig>) -> (String, String) {
 }
 
 async fn load_agent_version_from_command(command: std::process::Command) -> String {
-    let program = command.get_program().to_owned();
-    let Ok(output) = Command::new(program).arg("--version").output().await else {
+    let mut version_cmd = Command::from(command);
+    version_cmd.arg("--version");
+    let Ok(output) = version_cmd.output().await else {
         return String::new();
     };
     if !output.status.success() {
