@@ -322,19 +322,6 @@ async fn spawn_headless(
         append_debug_agent_flags(agent_type, &mut command);
     }
     let command_summary = format_command(&command);
-    {
-        let mut preflight_log = log_file
-            .try_clone()
-            .context("Failed to clone log file handle for preflight logging")?;
-        writeln!(preflight_log, "== Ferrus headless spawn preflight ==")?;
-        writeln!(
-            preflight_log,
-            "name={name} role={role} agent_type={agent_type}"
-        )?;
-        writeln!(preflight_log, "{command_summary}")?;
-        writeln!(preflight_log, "prompt={prompt}")?;
-        writeln!(preflight_log, "====================================")?;
-    }
 
     let logger = if debug {
         let log_stderr = log_file
