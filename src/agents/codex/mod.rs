@@ -104,14 +104,10 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
 fn headless_prompt_arg(prompt: &str) -> String {
     // Codex is frequently installed via an npm shim (`codex.cmd`) on Windows.
     // Multi-line argv values can be mangled by cmd argument handling, causing
-    // `codex exec` to exit before any logs are produced. Flatten line breaks to
-    // preserve content while keeping the command-line transport robust.
-    prompt
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    // `codex exec` to exit before any logs are produced. Encode line breaks as
+    // literal `\n` markers so transport stays single-line without dropping
+    // blank lines or indentation semantics from the original prompt.
+    prompt.replace("\r\n", "\n").replace('\n', "\\n")
 }
 
 #[cfg(not(windows))]
@@ -209,7 +205,7 @@ mod tests {
                 prompt: "line one\n\nline two",
             }),
             EXECUTABLE,
-            &["exec", "line one\nline two"],
+            &["exec", "line one\\n\\nline two"],
         );
     }
 
