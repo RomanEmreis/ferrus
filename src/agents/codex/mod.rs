@@ -3,7 +3,9 @@
 //! These wrappers isolate the CLI details needed to launch Codex in the shapes
 //! Ferrus expects for interactive and headless sessions.
 
-use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
+use super::{
+    AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
+};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -57,6 +59,17 @@ impl SupervisorAgent for Supervisor {
     fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }
+
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        #[cfg(windows)]
+        {
+            HeadlessPromptTransport::Stdin
+        }
+        #[cfg(not(windows))]
+        {
+            HeadlessPromptTransport::Argv
+        }
+    }
 }
 
 impl ExecutorAgent for Executor {
@@ -72,6 +85,17 @@ impl ExecutorAgent for Executor {
 
     fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        #[cfg(windows)]
+        {
+            HeadlessPromptTransport::Stdin
+        }
+        #[cfg(not(windows))]
+        {
+            HeadlessPromptTransport::Argv
+        }
     }
 }
 
@@ -218,6 +242,32 @@ mod tests {
             }),
             EXECUTABLE,
             &["exec", "line one\n\nline two"],
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_uses_stdin_prompt_transport_on_windows() {
+        assert_eq!(
+            Executor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Stdin
+        );
+        assert_eq!(
+            Supervisor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Stdin
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_uses_argv_prompt_transport_off_windows() {
+        assert_eq!(
+            Executor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Argv
+        );
+        assert_eq!(
+            Supervisor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Argv
         );
     }
 }
