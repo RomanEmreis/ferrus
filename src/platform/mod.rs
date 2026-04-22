@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::io::Stdout;
 use std::process::Command as StdCommand;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,4 +54,12 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
 
 pub(crate) fn flush_stdin_input_buffer() {
     imp::flush_stdin_input_buffer();
+}
+
+pub(crate) fn enter_tui(stdout: &mut Stdout) {
+    imp::enter_tui(stdout);
+}
+
+pub(crate) fn leave_tui(stdout: &mut Stdout) {
+    imp::leave_tui(stdout);
 }

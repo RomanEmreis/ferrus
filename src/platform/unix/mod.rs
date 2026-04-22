@@ -1,6 +1,11 @@
+use std::io::Stdout;
 use std::process::Command as StdCommand;
 
 use anyhow::Result;
+use crossterm::{
+    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+    queue,
+};
 
 use super::ShutdownSignal;
 
@@ -86,6 +91,22 @@ pub(crate) fn flush_stdin_input_buffer() {
     unsafe {
         let _ = libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
     }
+}
+
+pub(crate) fn enter_tui(stdout: &mut Stdout) {
+    let _ = queue!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
+    );
+}
+
+pub(crate) fn leave_tui(stdout: &mut Stdout) {
+    let _ = queue!(stdout, PopKeyboardEnhancementFlags);
 }
 
 #[cfg(test)]

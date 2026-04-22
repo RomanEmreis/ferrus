@@ -7,10 +7,6 @@ use std::{
 };
 
 use anyhow::Result;
-#[cfg(not(windows))]
-use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
 use crossterm::{
     cursor::{MoveDown, MoveToColumn, MoveUp},
     event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -969,24 +965,14 @@ fn print_message_and_restore_prompt(
 fn enter_tui() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    #[cfg(not(windows))]
-    let _ = queue!(
-        stdout,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-        )
-    );
+    platform::enter_tui(&mut stdout);
     let _ = stdout.flush();
     Ok(())
 }
 
 fn leave_tui() -> Result<()> {
     let mut stdout = io::stdout();
-    #[cfg(not(windows))]
-    let _ = queue!(stdout, PopKeyboardEnhancementFlags);
+    platform::leave_tui(&mut stdout);
     let _ = stdout.flush();
     disable_raw_mode()?;
     Ok(())

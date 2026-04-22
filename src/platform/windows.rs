@@ -1,4 +1,4 @@
-use std::process::Command as StdCommand;
+use std::{io::Stdout, process::Command as StdCommand};
 
 use super::ShutdownSignal;
 use anyhow::{Context, Result};
@@ -106,6 +106,10 @@ pub(crate) fn flush_stdin_input_buffer() {
         let _ = FlushConsoleInputBuffer(handle);
     }
 }
+
+pub(crate) fn enter_tui(_stdout: &mut Stdout) {}
+
+pub(crate) fn leave_tui(_stdout: &mut Stdout) {}
 
 fn with_process_handle<T>(pid: u32, access: u32, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
     let handle = unsafe { OpenProcess(access, 0, pid) };
