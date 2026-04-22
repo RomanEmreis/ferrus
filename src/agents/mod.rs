@@ -32,6 +32,15 @@ pub enum AgentRunMode<'a> {
     Headless { prompt: &'a str },
 }
 
+/// Declares how a headless prompt should be transported to the child process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadlessPromptTransport {
+    /// Pass prompt as a regular CLI argument.
+    Argv,
+    /// Pass prompt via stdin and close stdin after writing.
+    Stdin,
+}
+
 /// Behavior required from a supervisor-capable agent implementation.
 ///
 /// Supervisor agents support both interactive sessions for humans and
@@ -63,6 +72,11 @@ pub trait SupervisorAgent: Send + Sync {
 
     /// Returns the optional model override used by this backend.
     fn model(&self) -> Option<&str>;
+
+    /// Describes how headless prompt text should be delivered.
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        HeadlessPromptTransport::Argv
+    }
 }
 
 /// Behavior required from an executor-capable agent implementation.
@@ -92,6 +106,11 @@ pub trait ExecutorAgent: Send + Sync {
 
     /// Returns the optional model override used by this backend.
     fn model(&self) -> Option<&str>;
+
+    /// Describes how headless prompt text should be delivered.
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        HeadlessPromptTransport::Argv
+    }
 }
 
 /// Parses a configured supervisor agent name into its concrete implementation.

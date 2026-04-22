@@ -3,7 +3,9 @@
 //! These wrappers isolate the CLI details needed to launch Codex in the shapes
 //! Ferrus expects for interactive and headless sessions.
 
-use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
+use super::{
+    AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
+};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -57,6 +59,10 @@ impl SupervisorAgent for Supervisor {
     fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }
+
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        codex_headless_prompt_transport()
+    }
 }
 
 impl ExecutorAgent for Executor {
@@ -72,6 +78,10 @@ impl ExecutorAgent for Executor {
 
     fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        codex_headless_prompt_transport()
     }
 }
 
@@ -94,10 +104,38 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
-            cmd.arg(prompt);
+            #[cfg(windows)]
+            {
+                // Keep this in sync with `codex_headless_prompt_transport()`.
+                // When transport is `Stdin`, Codex must receive `-` sentinel.
+                let _ = prompt;
+                match codex_headless_prompt_transport() {
+                    HeadlessPromptTransport::Stdin => {
+                        cmd.arg("-");
+                    }
+                    HeadlessPromptTransport::Argv => {
+                        cmd.arg(prompt);
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                cmd.arg(prompt);
+            }
         }
     }
     cmd
+}
+
+fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
+    #[cfg(windows)]
+    {
+        HeadlessPromptTransport::Stdin
+    }
+    #[cfg(not(windows))]
+    {
+        HeadlessPromptTransport::Argv
+    }
 }
 
 #[cfg(test)]
@@ -119,20 +157,28 @@ mod tests {
     #[test]
     fn codex_executor_builds_headless_command() {
         let agent = Executor::new(None);
+        #[cfg(windows)]
+        let expected: &[&str] = &["exec", "-"];
+        #[cfg(not(windows))]
+        let expected: &[&str] = &["exec", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             EXECUTABLE,
-            &["exec", "run"],
+            expected,
         );
     }
 
     #[test]
     fn codex_model_override_is_part_of_spawned_command() {
         let agent = Executor::new(Some("gpt-5.4"));
+        #[cfg(windows)]
+        let expected: &[&str] = &["exec", "--model", "gpt-5.4", "-"];
+        #[cfg(not(windows))]
+        let expected: &[&str] = &["exec", "--model", "gpt-5.4", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             EXECUTABLE,
-            &["exec", "--model", "gpt-5.4", "run"],
+            expected,
         );
     }
 
@@ -180,5 +226,56 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn codex_headless_command_uses_stdin_prompt_on_windows() {
+        let agent = Executor::new(None);
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Headless {
+                prompt: "line one\n\nline two",
+            }),
+            EXECUTABLE,
+            &["exec", "-"],
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_headless_prompt_preserves_newlines_off_windows() {
+        let agent = Executor::new(None);
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Headless {
+                prompt: "line one\n\nline two",
+            }),
+            EXECUTABLE,
+            &["exec", "line one\n\nline two"],
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_uses_stdin_prompt_transport_on_windows() {
+        assert_eq!(
+            Executor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Stdin
+        );
+        assert_eq!(
+            Supervisor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Stdin
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_uses_argv_prompt_transport_off_windows() {
+        assert_eq!(
+            Executor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Argv
+        );
+        assert_eq!(
+            Supervisor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Argv
+        );
     }
 }

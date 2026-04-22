@@ -1,6 +1,6 @@
 [package]
 name = "ferrus"
-version = "0.2.5-alpha.9"
+version = "0.2.5-alpha.10"
 edition = "2024"
 rust-version = "1.95.0"
 license = "Apache-2.0"

@@ -1,5 +1,5 @@
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
+use crate::agents::{AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent};
 use crate::platform::{self, ShutdownSignal};
 use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
 use anyhow::{Context, Result};
@@ -285,7 +285,16 @@ pub async fn spawn_headless_executor(
     debug: bool,
 ) -> Result<HeadlessHandle> {
     let command = agent.spawn(AgentRunMode::Headless { prompt });
-    spawn_headless(agent.name(), command, ROLE_EXECUTOR, name, prompt, debug).await
+    spawn_headless(
+        agent.name(),
+        command,
+        agent.headless_prompt_transport(),
+        ROLE_EXECUTOR,
+        name,
+        prompt,
+        debug,
+    )
+    .await
 }
 
 pub async fn spawn_headless_supervisor(
@@ -295,12 +304,22 @@ pub async fn spawn_headless_supervisor(
     debug: bool,
 ) -> Result<HeadlessHandle> {
     let command = agent.spawn(AgentRunMode::Headless { prompt });
-    spawn_headless(agent.name(), command, ROLE_SUPERVISOR, name, prompt, debug).await
+    spawn_headless(
+        agent.name(),
+        command,
+        agent.headless_prompt_transport(),
+        ROLE_SUPERVISOR,
+        name,
+        prompt,
+        debug,
+    )
+    .await
 }
 
 async fn spawn_headless(
     agent_type: &str,
     mut command: StdCommand,
+    prompt_transport: HeadlessPromptTransport,
     role: &str,
     name: &str,
     prompt: &str,
@@ -327,14 +346,24 @@ async fn spawn_headless(
         let log_stderr = log_file
             .try_clone()
             .context("Failed to clone log file handle")?;
+        let stdin = if prompt_transport == HeadlessPromptTransport::Stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
         command
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_stderr));
         None
     } else {
+        let stdin = if prompt_transport == HeadlessPromptTransport::Stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
         command
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
@@ -350,6 +379,9 @@ async fn spawn_headless(
             log_path.display()
         )
     })?;
+    if prompt_transport == HeadlessPromptTransport::Stdin {
+        stream_prompt_to_stdin(&mut child, prompt).context("Failed to stream initial prompt")?;
+    }
 
     let pid = child.id();
     let platform_guard = match platform::attach_headless_process(pid) {
@@ -433,6 +465,20 @@ async fn spawn_headless(
         wait_thread: Some(wait_thread),
         output_threads,
     })
+}
+
+fn stream_prompt_to_stdin(child: &mut std::process::Child, prompt: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stdin pipe is unavailable"))?;
+    stdin
+        .write_all(prompt.as_bytes())
+        .context("failed writing prompt to stdin")?;
+    drop(stdin);
+    Ok(())
 }
 
 fn append_debug_agent_flags(agent_type: &str, command: &mut StdCommand) {
