@@ -94,10 +94,29 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
-            cmd.arg(prompt);
+            cmd.arg(headless_prompt_arg(prompt));
         }
     }
     cmd
+}
+
+#[cfg(windows)]
+fn headless_prompt_arg(prompt: &str) -> String {
+    // Codex is frequently installed via an npm shim (`codex.cmd`) on Windows.
+    // Multi-line argv values can be mangled by cmd argument handling, causing
+    // `codex exec` to exit before any logs are produced. Flatten line breaks to
+    // preserve content while keeping the command-line transport robust.
+    prompt
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(not(windows))]
+fn headless_prompt_arg(prompt: &str) -> &str {
+    prompt
 }
 
 #[cfg(test)]
@@ -180,5 +199,30 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn codex_headless_prompt_is_flattened_on_windows() {
+        let agent = Executor::new(None);
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Headless {
+                prompt: "line one\n\nline two",
+            }),
+            EXECUTABLE,
+            &["exec", "line one\nline two"],
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn codex_headless_prompt_preserves_newlines_off_windows() {
+        let agent = Executor::new(None);
+        assert_program_and_args(
+            agent.spawn(AgentRunMode::Headless {
+                prompt: "line one\n\nline two",
+            }),
+            EXECUTABLE,
+            &["exec", "line one\n\nline two"],
+        );
     }
 }
