@@ -157,10 +157,14 @@ mod tests {
     #[test]
     fn codex_executor_builds_headless_command() {
         let agent = Executor::new(None);
+        #[cfg(windows)]
+        let expected: &[&str] = &["exec", "-"];
+        #[cfg(not(windows))]
+        let expected: &[&str] = &["exec", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             EXECUTABLE,
-            &["exec", "run"],
+            expected,
         );
     }
 
