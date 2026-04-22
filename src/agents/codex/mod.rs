@@ -85,7 +85,9 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
         // successful manual terminal path more closely than direct `.cmd`
         // process spawning under Ferrus.
         let mut cmd = Command::new(WINDOWS_SHELL);
-        cmd.arg("/C").arg("codex").arg("exec");
+        // `/D /S /C` keeps the shell invocation deterministic for quoted args
+        // and prevents AutoRun hooks from affecting non-interactive launches.
+        cmd.arg("/D").arg("/S").arg("/C").arg("codex").arg("exec");
         if let Some(model) = model {
             cmd.arg("--model").arg(model);
         }
@@ -206,7 +208,7 @@ mod tests {
                 prompt: "line one\n\nline two",
             }),
             WINDOWS_SHELL,
-            &["/C", "codex", "exec", "line one\n\nline two"],
+            &["/D", "/S", "/C", "codex", "exec", "line one\n\nline two"],
         );
     }
 
