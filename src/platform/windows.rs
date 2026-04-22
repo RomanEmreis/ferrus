@@ -1,9 +1,12 @@
-use std::process::Command as StdCommand;
+use std::{io::Stdout, process::Command as StdCommand};
 
 use super::ShutdownSignal;
 use anyhow::{Context, Result};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows_sys::Win32::System::Console::{
+    FlushConsoleInputBuffer, GetStdHandle, STD_INPUT_HANDLE,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -91,7 +94,22 @@ pub(crate) fn shell_command(cmd: &str) -> tokio::process::Command {
     command
 }
 
-pub(crate) fn flush_stdin_input_buffer() {}
+pub(crate) fn flush_stdin_input_buffer() {
+    // SAFETY: flushing the console input buffer is a best-effort cleanup.
+    // Failures are ignored because stdin may be redirected or not attached
+    // to a console host in some environments.
+    unsafe {
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let _ = FlushConsoleInputBuffer(handle);
+    }
+}
+
+pub(crate) fn enter_tui(_stdout: &mut Stdout) {}
+
+pub(crate) fn leave_tui(_stdout: &mut Stdout) {}
 
 fn with_process_handle<T>(pid: u32, access: u32, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
     let handle = unsafe { OpenProcess(access, 0, pid) };
