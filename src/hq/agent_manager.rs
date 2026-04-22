@@ -327,14 +327,24 @@ async fn spawn_headless(
         let log_stderr = log_file
             .try_clone()
             .context("Failed to clone log file handle")?;
+        let stdin = if use_stdin_prompt_transport(agent_type) {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
         command
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_stderr));
         None
     } else {
+        let stdin = if use_stdin_prompt_transport(agent_type) {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
         command
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
@@ -350,6 +360,9 @@ async fn spawn_headless(
             log_path.display()
         )
     })?;
+    if use_stdin_prompt_transport(agent_type) {
+        stream_prompt_to_stdin(&mut child, prompt).context("Failed to stream initial prompt")?;
+    }
 
     let pid = child.id();
     let platform_guard = match platform::attach_headless_process(pid) {
@@ -433,6 +446,30 @@ async fn spawn_headless(
         wait_thread: Some(wait_thread),
         output_threads,
     })
+}
+
+#[cfg(windows)]
+fn use_stdin_prompt_transport(agent_type: &str) -> bool {
+    agent_type == "codex"
+}
+
+#[cfg(not(windows))]
+fn use_stdin_prompt_transport(_agent_type: &str) -> bool {
+    false
+}
+
+fn stream_prompt_to_stdin(child: &mut std::process::Child, prompt: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stdin pipe is unavailable"))?;
+    stdin
+        .write_all(prompt.as_bytes())
+        .context("failed writing prompt to stdin")?;
+    drop(stdin);
+    Ok(())
 }
 
 fn append_debug_agent_flags(agent_type: &str, command: &mut StdCommand) {
@@ -693,5 +730,17 @@ mod tests {
             codex.get_args().next().is_none(),
             "codex should not receive an extra debug flag when none is supported"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_codex_headless_uses_stdin_transport() {
+        assert!(use_stdin_prompt_transport("codex"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_codex_headless_does_not_use_stdin_transport() {
+        assert!(!use_stdin_prompt_transport("codex"));
     }
 }

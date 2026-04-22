@@ -14,8 +14,6 @@ const EXECUTABLE: &str = "codex";
 /// On Windows, npm-style shims are commonly installed as `*.cmd`.
 #[cfg(windows)]
 const EXECUTABLE: &str = "codex.cmd";
-#[cfg(windows)]
-const WINDOWS_SHELL: &str = "cmd";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -79,22 +77,6 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
-    #[cfg(windows)]
-    if let AgentRunMode::Headless { prompt } = mode {
-        // On Windows, launching `codex exec` through `cmd /C` mirrors the
-        // successful manual terminal path more closely than direct `.cmd`
-        // process spawning under Ferrus.
-        let mut cmd = Command::new(WINDOWS_SHELL);
-        // `/D /S /C` keeps the shell invocation deterministic for quoted args
-        // and prevents AutoRun hooks from affecting non-interactive launches.
-        cmd.arg("/D").arg("/S").arg("/C").arg("codex").arg("exec");
-        if let Some(model) = model {
-            cmd.arg("--model").arg(model);
-        }
-        cmd.arg(prompt);
-        return cmd;
-    }
-
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
@@ -112,7 +94,17 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
-            cmd.arg(prompt);
+            #[cfg(windows)]
+            {
+                // On Windows, Ferrus streams the prompt via stdin to avoid
+                // multi-line argv transport issues through shell shims.
+                let _ = prompt;
+                cmd.arg("-");
+            }
+            #[cfg(not(windows))]
+            {
+                cmd.arg(prompt);
+            }
         }
     }
     cmd
@@ -147,10 +139,14 @@ mod tests {
     #[test]
     fn codex_model_override_is_part_of_spawned_command() {
         let agent = Executor::new(Some("gpt-5.4"));
+        #[cfg(windows)]
+        let expected: &[&str] = &["exec", "--model", "gpt-5.4", "-"];
+        #[cfg(not(windows))]
+        let expected: &[&str] = &["exec", "--model", "gpt-5.4", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             EXECUTABLE,
-            &["exec", "--model", "gpt-5.4", "run"],
+            expected,
         );
     }
 
@@ -201,14 +197,14 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
-    fn codex_headless_command_uses_cmd_wrapper_on_windows() {
+    fn codex_headless_command_uses_stdin_prompt_on_windows() {
         let agent = Executor::new(None);
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless {
                 prompt: "line one\n\nline two",
             }),
-            WINDOWS_SHELL,
-            &["/D", "/S", "/C", "codex", "exec", "line one\n\nline two"],
+            EXECUTABLE,
+            &["exec", "-"],
         );
     }
 
