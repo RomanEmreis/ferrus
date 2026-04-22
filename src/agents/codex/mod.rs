@@ -61,14 +61,7 @@ impl SupervisorAgent for Supervisor {
     }
 
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
-        #[cfg(windows)]
-        {
-            HeadlessPromptTransport::Stdin
-        }
-        #[cfg(not(windows))]
-        {
-            HeadlessPromptTransport::Argv
-        }
+        codex_headless_prompt_transport()
     }
 }
 
@@ -88,14 +81,7 @@ impl ExecutorAgent for Executor {
     }
 
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
-        #[cfg(windows)]
-        {
-            HeadlessPromptTransport::Stdin
-        }
-        #[cfg(not(windows))]
-        {
-            HeadlessPromptTransport::Argv
-        }
+        codex_headless_prompt_transport()
     }
 }
 
@@ -120,10 +106,17 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             }
             #[cfg(windows)]
             {
-                // On Windows, Ferrus streams the prompt via stdin to avoid
-                // multi-line argv transport issues through shell shims.
+                // Keep this in sync with `codex_headless_prompt_transport()`.
+                // When transport is `Stdin`, Codex must receive `-` sentinel.
                 let _ = prompt;
-                cmd.arg("-");
+                match codex_headless_prompt_transport() {
+                    HeadlessPromptTransport::Stdin => {
+                        cmd.arg("-");
+                    }
+                    HeadlessPromptTransport::Argv => {
+                        cmd.arg(prompt);
+                    }
+                }
             }
             #[cfg(not(windows))]
             {
@@ -132,6 +125,17 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
         }
     }
     cmd
+}
+
+fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
+    #[cfg(windows)]
+    {
+        HeadlessPromptTransport::Stdin
+    }
+    #[cfg(not(windows))]
+    {
+        HeadlessPromptTransport::Argv
+    }
 }
 
 #[cfg(test)]
