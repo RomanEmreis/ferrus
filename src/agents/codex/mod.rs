@@ -14,6 +14,8 @@ const EXECUTABLE: &str = "codex";
 /// On Windows, npm-style shims are commonly installed as `*.cmd`.
 #[cfg(windows)]
 const EXECUTABLE: &str = "codex.cmd";
+#[cfg(windows)]
+const WINDOWS_SHELL: &str = "cmd";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -77,6 +79,20 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
+    #[cfg(windows)]
+    if let AgentRunMode::Headless { prompt } = mode {
+        // On Windows, launching `codex exec` through `cmd /C` mirrors the
+        // successful manual terminal path more closely than direct `.cmd`
+        // process spawning under Ferrus.
+        let mut cmd = Command::new(WINDOWS_SHELL);
+        cmd.arg("/C").arg("codex").arg("exec");
+        if let Some(model) = model {
+            cmd.arg("--model").arg(model);
+        }
+        cmd.arg(prompt);
+        return cmd;
+    }
+
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
@@ -94,25 +110,10 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
-            cmd.arg(headless_prompt_arg(prompt));
+            cmd.arg(prompt);
         }
     }
     cmd
-}
-
-#[cfg(windows)]
-fn headless_prompt_arg(prompt: &str) -> String {
-    // Codex is frequently installed via an npm shim (`codex.cmd`) on Windows.
-    // Multi-line argv values can be mangled by cmd argument handling, causing
-    // `codex exec` to exit before any logs are produced. Encode line breaks as
-    // literal `\n` markers so transport stays single-line without dropping
-    // blank lines or indentation semantics from the original prompt.
-    prompt.replace("\r\n", "\n").replace('\n', "\\n")
-}
-
-#[cfg(not(windows))]
-fn headless_prompt_arg(prompt: &str) -> &str {
-    prompt
 }
 
 #[cfg(test)]
@@ -198,14 +199,14 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
-    fn codex_headless_prompt_is_flattened_on_windows() {
+    fn codex_headless_command_uses_cmd_wrapper_on_windows() {
         let agent = Executor::new(None);
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless {
                 prompt: "line one\n\nline two",
             }),
-            EXECUTABLE,
-            &["exec", "line one\\n\\nline two"],
+            WINDOWS_SHELL,
+            &["/C", "codex", "exec", "line one\n\nline two"],
         );
     }
 
