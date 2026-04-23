@@ -14,8 +14,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
+    PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 };
 
 // Win32 SYNCHRONIZE access right used for WaitForSingleObject on process handles.
@@ -25,7 +25,14 @@ pub(crate) fn set_serve_process_name() {}
 
 pub(crate) fn install_serve_parent_lifecycle_hooks() {}
 
-pub(crate) fn configure_headless_command(_command: &mut StdCommand) {}
+pub(crate) fn configure_headless_command(command: &mut StdCommand) {
+    use std::os::windows::process::CommandExt;
+
+    // Headless agents should not inherit HQ's console on Windows.
+    // Detached console state prevents child CLIs from mutating input modes
+    // (focus reporting, bracketed paste, mouse tracking) seen by HQ.
+    command.creation_flags(CREATE_NO_WINDOW);
+}
 
 pub(crate) struct HeadlessProcessGuard(HANDLE);
 
