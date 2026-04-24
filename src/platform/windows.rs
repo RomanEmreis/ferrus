@@ -1,4 +1,7 @@
-use std::{io::Stdout, process::Command as StdCommand};
+use std::{
+    io::{Stdout, Write},
+    process::Command as StdCommand,
+};
 
 use super::ShutdownSignal;
 use anyhow::{Context, Result};
@@ -14,8 +17,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-    PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    TerminateProcess, WaitForSingleObject,
 };
 
 // Win32 SYNCHRONIZE access right used for WaitForSingleObject on process handles.
@@ -26,12 +29,7 @@ pub(crate) fn set_serve_process_name() {}
 pub(crate) fn install_serve_parent_lifecycle_hooks() {}
 
 pub(crate) fn configure_headless_command(command: &mut StdCommand) {
-    use std::os::windows::process::CommandExt;
-
-    // Headless agents should not inherit HQ's console on Windows.
-    // Detached console state prevents child CLIs from mutating input modes
-    // (focus reporting, bracketed paste, mouse tracking) seen by HQ.
-    command.creation_flags(CREATE_NO_WINDOW);
+    let _ = command;
 }
 
 pub(crate) struct HeadlessProcessGuard(HANDLE);
@@ -114,9 +112,23 @@ pub(crate) fn flush_stdin_input_buffer() {
     }
 }
 
-pub(crate) fn enter_tui(_stdout: &mut Stdout) {}
+pub(crate) fn enter_tui(stdout: &mut Stdout) {
+    reset_console_input_reporting_modes(stdout);
+}
 
-pub(crate) fn leave_tui(_stdout: &mut Stdout) {}
+pub(crate) fn leave_tui(stdout: &mut Stdout) {
+    reset_console_input_reporting_modes(stdout);
+}
+
+fn reset_console_input_reporting_modes(stdout: &mut Stdout) {
+    // Best-effort cleanup for terminals that keep DEC private modes enabled
+    // after a child process exits. In ConPTY this can surface focus/mouse/
+    // bracketed-paste reports as literal key input once HQ resumes.
+    const RESET_MODES: &[u8] =
+        b"\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l";
+    let _ = stdout.write_all(RESET_MODES);
+    let _ = stdout.flush();
+}
 
 fn with_process_handle<T>(pid: u32, access: u32, f: impl FnOnce(HANDLE) -> T) -> Option<T> {
     let handle = unsafe { OpenProcess(access, 0, pid) };
