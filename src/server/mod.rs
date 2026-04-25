@@ -42,6 +42,9 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         app.map_tool("create_task", tools::create_task::handler)
             .with_description(tools::create_task::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::create_task::INPUT_SCHEMA));
+        app.map_tool("create_spec", tools::create_spec::handler)
+            .with_description(tools::create_spec::DESCRIPTION)
+            .with_input_schema(|_| ToolSchema::from_json_str(tools::create_spec::INPUT_SCHEMA));
         {
             let id = agent_id.clone();
             app.map_tool("wait_for_review", move || {
@@ -92,6 +95,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
     app.add_resource("ferrus://question", "Question");
     app.add_resource("ferrus://answer", "Answer");
     app.add_resource("ferrus://consult_template", "Consultation Template");
+    app.add_resource("ferrus://spec_template", "Specification Template");
     app.add_resource("ferrus://consult_request", "Consult Request");
     app.add_resource("ferrus://consult_response", "Consult Response");
     app.add_resource("ferrus://state", "State");

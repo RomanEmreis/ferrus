@@ -296,6 +296,7 @@ fn codex_auto_approved_tools(role: &str) -> &'static [&'static str] {
         ],
         ROLE_SUPERVISOR => &[
             "create_task",
+            "create_spec",
             "wait_for_review",
             "review_pending",
             "approve",

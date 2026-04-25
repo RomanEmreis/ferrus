@@ -1,6 +1,6 @@
 use neva::prelude::*;
 
-use crate::state::store;
+use crate::{state::store, templates::SPEC_TEMPLATE};
 
 fn to_err(e: impl std::fmt::Display) -> Error {
     Error::new(
@@ -35,6 +35,12 @@ pub async fn read(file: String) -> Result<ReadResourceResult, Error> {
             tokio::fs::read_to_string(".ferrus/CONSULT_TEMPLATE.md")
                 .await
                 .unwrap_or_default(),
+        ),
+        "spec_template" => (
+            "text/markdown",
+            tokio::fs::read_to_string(".ferrus/SPEC_TEMPLATE.md")
+                .await
+                .unwrap_or_else(|_| SPEC_TEMPLATE.to_string()),
         ),
         "consult_request" => (
             "text/markdown",

@@ -35,6 +35,7 @@ Runtime workflow is defined by the initial prompt and Ferrus MCP tools.
 ## Useful Ferrus tools
 
 - `/create_task`
+- `/create_spec`
 - `/wait_for_review`
 - `/review_pending`
 - `/approve`
@@ -45,6 +46,7 @@ Runtime workflow is defined by the initial prompt and Ferrus MCP tools.
 ## Useful Ferrus resources
 
 - `ferrus://task`
+- `ferrus://spec_template`
 - `ferrus://submission`
 - `ferrus://review`
 - `ferrus://consult_request`

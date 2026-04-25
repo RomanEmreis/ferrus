@@ -7,6 +7,7 @@ mod hq;
 mod platform;
 mod server;
 mod state;
+mod templates;
 mod update_check;
 
 use clap::Parser;

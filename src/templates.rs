@@ -1,0 +1,29 @@
+pub const SPEC_TEMPLATE: &str = r#"# <Feature Name> Specification
+
+## Summary
+Briefly describe the feature and the user or system outcome it should create.
+
+## Goals
+- ...
+
+## Non-Goals
+- ...
+
+## Context
+Relevant repository, product, architectural, or workflow context.
+
+## Requirements
+- ...
+
+## Milestones
+- #1.0 ...
+- #1.1 ...
+- #2.0 ...
+- #2.1 ...
+
+## Acceptance Criteria
+- ...
+
+## Risks and Open Questions
+- ...
+"#;

@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::state::{machine::StateData, store};
+use crate::{
+    state::{machine::StateData, store},
+    templates::SPEC_TEMPLATE,
+};
 
 const DEFAULT_FERRUS_TOML: &str = r#"[checks]
 commands = []
@@ -14,6 +17,9 @@ wait_timeout_secs = 60 # max duration of a single wait_* tool call before it ret
 
 [agents]
 path = ".agents" # root directory for agent skill files
+
+[spec]
+directory = "docs/specs" # directory where /create_spec writes approved specs
 
 [lease]
 ttl_secs = 90              # how long a claimed lease is valid without renewal
@@ -65,6 +71,7 @@ Runtime workflow is defined by the initial prompt and Ferrus MCP tools.
 ## Useful Ferrus tools
 
 - `/create_task`
+- `/create_spec`
 - `/wait_for_review`
 - `/review_pending`
 - `/approve`
@@ -75,6 +82,7 @@ Runtime workflow is defined by the initial prompt and Ferrus MCP tools.
 ## Useful Ferrus resources
 
 - `ferrus://task`
+- `ferrus://spec_template`
 - `ferrus://submission`
 - `ferrus://review`
 - `ferrus://consult_request`
@@ -276,6 +284,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 |---|---|
 | `/plan` | Free-form planning session with the supervisor (no task created) |
 | `/task` | Define a task with the supervisor, then run executor→review loop |
+| `/spec` | Draft, approve, and save a feature specification |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |
@@ -295,6 +304,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Tool | From state | Description |
 |---|---|---|
 | `create_task` | Idle | Write task description; moves to Executing |
+| `create_spec` | any | Write approved Markdown spec to the configured spec directory |
 | `wait_for_review` | — | Long-poll until state is Reviewing |
 | `review_pending` | Reviewing | Read task + submission context |
 | `approve` | Reviewing | Accept; moves to Complete |
@@ -329,6 +339,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
 | `ferrus://answer` | Human answer (`ANSWER.md`) |
 | `ferrus://consult_template` | Consultation request template (`CONSULT_TEMPLATE.md`) |
+| `ferrus://spec_template` | Feature specification template (`SPEC_TEMPLATE.md`) |
 | `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
@@ -356,6 +367,9 @@ wait_timeout_secs = 60   # max duration of one wait_* tool call; agents should c
 ttl_secs = 90            # lease validity without renewal
 heartbeat_interval_secs = 30  # how often to call /heartbeat
 
+[spec]
+directory = "docs/specs" # where /create_spec writes approved specs
+
 [hq.supervisor]
 agent = "claude-code"   # agent for supervisor/reviewer role: claude-code | codex
 model = ""              # optional override; empty = agent default
@@ -377,14 +391,17 @@ model = ""              # optional override; empty = agent default
 | `QUESTION.md` | Pending human question |
 | `ANSWER.md` | Human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
+| `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
+| `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `logs/check_<n>_<ts>.txt` | Full check output |
 "#;
 
 pub async fn run(agents_path: String) -> Result<()> {
     create_ferrus_toml(&agents_path).await?;
     create_ferrus_dir().await?;
+    create_spec_dir().await?;
     create_skill_files(&agents_path).await?;
     update_gitignore().await?;
     println!("\nferrus initialized. Run `ferrus serve` to start the MCP server.");
@@ -421,6 +438,14 @@ async fn create_ferrus_dir() -> Result<()> {
         println!("Created .ferrus/CONSULT_TEMPLATE.md");
     }
 
+    let spec_template_path = dir.join("SPEC_TEMPLATE.md");
+    if !spec_template_path.exists() {
+        tokio::fs::write(&spec_template_path, SPEC_TEMPLATE)
+            .await
+            .context("Failed to write .ferrus/SPEC_TEMPLATE.md")?;
+        println!("Created .ferrus/SPEC_TEMPLATE.md");
+    }
+
     let state_path = dir.join("STATE.json");
     if !state_path.exists() {
         store::write_state(&StateData::default())
@@ -437,6 +462,7 @@ async fn create_ferrus_dir() -> Result<()> {
         "ANSWER.md",
         "CONSULT_REQUEST.md",
         "CONSULT_RESPONSE.md",
+        "LAST_SPEC_PATH",
     ] {
         let path = dir.join(filename);
         if !path.exists() {
@@ -467,6 +493,18 @@ async fn create_ferrus_dir() -> Result<()> {
         println!("Created .ferrus/agents.json");
     }
 
+    Ok(())
+}
+
+async fn create_spec_dir() -> Result<()> {
+    let path = Path::new("docs/specs");
+    let existed = path.exists();
+    tokio::fs::create_dir_all(path)
+        .await
+        .context("Failed to create docs/specs/ directory")?;
+    if !existed {
+        println!("Created docs/specs/");
+    }
     Ok(())
 }
 

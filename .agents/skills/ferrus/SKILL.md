@@ -62,6 +62,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 |---|---|
 | `/plan` | Free-form planning session with the supervisor (no task created) |
 | `/task` | Define a task with the supervisor, then run executor→review loop |
+| `/spec` | Draft, approve, and save a feature specification |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |
@@ -80,6 +81,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Tool | From state | Description |
 |---|---|---|
 | `create_task` | Idle | Write task description; moves to Executing |
+| `create_spec` | any | Write approved Markdown spec to the configured spec directory |
 | `wait_for_review` | — | Long-poll until state is Reviewing |
 | `review_pending` | Reviewing | Read task + submission context |
 | `approve` | Reviewing | Accept; moves to Complete |
@@ -113,6 +115,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
 | `ferrus://consult_template` | Consultation request template (`CONSULT_TEMPLATE.md`) |
+| `ferrus://spec_template` | Feature specification template (`SPEC_TEMPLATE.md`) |
 | `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
@@ -139,6 +142,9 @@ wait_timeout_secs = 60   # max duration of one wait_* tool call; agents should c
 [lease]
 ttl_secs = 90            # lease validity without renewal
 heartbeat_interval_secs = 30  # how often to call /heartbeat
+
+[spec]
+directory = "docs/specs" # where /create_spec writes approved specs
 ```
 
 ## Runtime files (`.ferrus/`)
@@ -153,6 +159,8 @@ heartbeat_interval_secs = 30  # how often to call /heartbeat
 | `QUESTION.md` | Pending human question |
 | `ANSWER.md` | Human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
+| `SPEC_TEMPLATE.md` | Read-only feature specification template |
+| `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
 | `logs/check_<n>_<ts>.txt` | Full check output |

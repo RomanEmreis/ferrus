@@ -38,6 +38,8 @@ pub enum ShellCommand {
     Plan,
     /// Define a task with the supervisor, then run the executor→review loop automatically.
     Task,
+    /// Draft and approve a feature specification with the supervisor.
+    Spec,
     /// Open an interactive supervisor session (no initial prompt, no state requirement).
     Supervisor,
     /// Open an interactive executor session (no initial prompt, no state requirement).
@@ -154,6 +156,13 @@ mod tests {
         assert!(matches!(
             parse_command("/task").unwrap(),
             ShellCommand::Task
+        ));
+    }
+    #[test]
+    fn parse_spec() {
+        assert!(matches!(
+            parse_command("/spec").unwrap(),
+            ShellCommand::Spec
         ));
     }
     #[test]
