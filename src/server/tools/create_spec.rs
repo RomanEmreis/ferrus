@@ -26,6 +26,9 @@ pub async fn handler(markdown: String) -> Result<String, Error> {
 }
 
 async fn run(markdown: String) -> Result<String> {
+    let _state = store::read_state().await?;
+    store::clear_last_spec_path().await?;
+
     if markdown.trim().is_empty() {
         anyhow::bail!("Cannot create spec: markdown content is empty.");
     }

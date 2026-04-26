@@ -1009,8 +1009,7 @@ impl HqContext {
         use tokio::process::Command;
 
         self.ensure_hq_config().await?;
-        ensure_spec_template_file().await?;
-        store::clear_last_spec_path().await?;
+        prepare_spec_session_files().await?;
 
         let supervisor = std::sync::Arc::clone(
             self.supervisor
@@ -1197,14 +1196,21 @@ impl HqContext {
     }
 }
 
-async fn ensure_spec_template_file() -> Result<()> {
+async fn prepare_spec_session_files() -> Result<()> {
+    store::read_state().await.context(
+        "Cannot start /spec because Ferrus is not initialized. Run `ferrus init` first.",
+    )?;
+
     let path = std::path::Path::new(".ferrus/SPEC_TEMPLATE.md");
-    if tokio::fs::try_exists(path).await.unwrap_or(false) {
-        return Ok(());
+    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+        tokio::fs::write(path, crate::templates::SPEC_TEMPLATE)
+            .await
+            .context("Failed to write .ferrus/SPEC_TEMPLATE.md")?;
     }
-    tokio::fs::write(path, crate::templates::SPEC_TEMPLATE)
+
+    store::clear_last_spec_path()
         .await
-        .context("Failed to write .ferrus/SPEC_TEMPLATE.md")
+        .context("Failed to clear .ferrus/LAST_SPEC_PATH")
 }
 
 async fn reconcile_agent_pids() {
