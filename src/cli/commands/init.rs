@@ -555,14 +555,7 @@ async fn create_skill_files(agents_path: &str) -> Result<()> {
 
 async fn update_gitignore() -> Result<()> {
     let path = Path::new(".gitignore");
-    let entries = [
-        ".ferrus/",
-        ".claude/settings.local.json",
-        ".claude/.mcp.json",
-        ".mcp.json",
-        ".codex/config.toml",
-        ".qwen/settings.local.json",
-    ];
+    let entries = [".ferrus/"];
 
     if path.exists() {
         let mut contents = tokio::fs::read_to_string(path)

@@ -184,7 +184,7 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 ### `ferrus register --supervisor <agent> [--supervisor-model <model>] --executor <agent> [--executor-model <model>]`
 
-Writes agent config files so they automatically load `ferrus serve` as a tool server. Supported agents:
+Writes agent config files so they automatically load `ferrus serve` as a tool server, and adds only the selected agents' local files to `.gitignore`. Supported agents:
 
 | Agent | Config written |
 |---|---|

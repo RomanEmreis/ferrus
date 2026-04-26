@@ -135,6 +135,7 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
     tokio::fs::write(path, content).await?;
 
     crate::agents::claude::allow_mcp_server_tools(&key).await?;
+    update_gitignore(&[".mcp.json", ".claude/settings.local.json"]).await?;
     append_to_claude_md(role).await?;
     Ok(())
 }
@@ -209,6 +210,7 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
     let content = toml::to_string_pretty(&table)?;
     tokio::fs::write(&path, content).await?;
 
+    update_gitignore(&[".codex/config.toml"]).await?;
     append_to_agents_md(role).await?;
     Ok(())
 }
@@ -260,7 +262,41 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
     tokio::fs::write(path, content).await?;
 
     crate::agents::qwen::allow_mcp_server_tools(&key).await?;
+    update_gitignore(&[".qwen/settings.local.json"]).await?;
     append_to_qwen_md(role).await?;
+    Ok(())
+}
+
+async fn update_gitignore(entries: &[&str]) -> Result<()> {
+    let path = std::path::Path::new(".gitignore");
+    let mut contents = if path.exists() {
+        tokio::fs::read_to_string(path).await?
+    } else {
+        String::new()
+    };
+
+    let mut added_entries = Vec::new();
+    for entry in entries {
+        if contents.lines().any(|line| line == *entry) {
+            continue;
+        }
+
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(entry);
+        contents.push('\n');
+        added_entries.push(*entry);
+    }
+
+    if added_entries.is_empty() {
+        return Ok(());
+    }
+
+    tokio::fs::write(path, contents).await?;
+    for entry in added_entries {
+        println!("Added {entry} to .gitignore");
+    }
     Ok(())
 }
 
