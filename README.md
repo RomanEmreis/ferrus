@@ -190,7 +190,7 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 |---|---|
 | `claude-code` | `.mcp.json` + `.claude/settings.local.json` permissions |
 | `codex` | `.codex/config.toml` |
-| `qwen-code` | `.qwen/settings.local.json` |
+| `qwen-code` | `.qwen/settings.json` |
 
 ---
 

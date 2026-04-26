@@ -346,7 +346,7 @@ mod tests {
         let added = add_json_allow_permission(
             &mut root,
             "mcp__ferrus-supervisor-1__*",
-            Path::new(".qwen/settings.local.json"),
+            Path::new(".qwen/settings.json"),
         )
         .unwrap();
         assert!(!added);

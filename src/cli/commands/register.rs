@@ -218,7 +218,7 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
 async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
     let dir = std::path::Path::new(".qwen");
     tokio::fs::create_dir_all(dir).await?;
-    let path = dir.join("settings.local.json");
+    let path = dir.join("settings.json");
 
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(&path).await?;
@@ -229,13 +229,13 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
 
     let servers = root
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!(".qwen/settings.local.json root is not a JSON object"))?
+        .ok_or_else(|| anyhow::anyhow!(".qwen/settings.json root is not a JSON object"))?
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    let servers_obj = servers.as_object_mut().ok_or_else(|| {
-        anyhow::anyhow!(".qwen/settings.local.json mcpServers is not a JSON object")
-    })?;
+    let servers_obj = servers
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(".qwen/settings.json mcpServers is not a JSON object"))?;
 
     let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
     let key = format!("ferrus-{role}-{index}");
@@ -254,7 +254,7 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
     }
     servers_obj.insert(key.clone(), server_entry);
     println!(
-        "Registered {key} in .qwen/settings.local.json (agent_id will be \"{}\")",
+        "Registered {key} in .qwen/settings.json (agent_id will be \"{}\")",
         agent_id(role, agent_name, index)
     );
 
@@ -262,7 +262,7 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
     tokio::fs::write(path, content).await?;
 
     crate::agents::qwen::allow_mcp_server_tools(&key).await?;
-    update_gitignore(&[".qwen/settings.local.json"]).await?;
+    update_gitignore(&[".qwen/settings.json"]).await?;
     append_to_qwen_md(role).await?;
     Ok(())
 }

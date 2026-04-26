@@ -96,11 +96,8 @@ fn qwen_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
 }
 
 pub(crate) async fn allow_mcp_server_tools(server_key: &str) -> Result<()> {
-    allow_mcp_server_tools_in_json_settings(
-        std::path::Path::new(".qwen/settings.local.json"),
-        server_key,
-    )
-    .await
+    allow_mcp_server_tools_in_json_settings(std::path::Path::new(".qwen/settings.json"), server_key)
+        .await
 }
 
 #[cfg(test)]
