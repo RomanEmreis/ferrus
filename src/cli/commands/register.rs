@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
 use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
@@ -95,7 +95,7 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
 
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        serde_json::from_str(&content).context("Failed to parse .mcp.json")?
     } else {
         serde_json::json!({})
     };
@@ -222,7 +222,7 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
 
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(&path).await?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        serde_json::from_str(&content).context("Failed to parse .qwen/settings.json")?
     } else {
         serde_json::json!({})
     };

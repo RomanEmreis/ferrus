@@ -199,7 +199,8 @@ pub(crate) async fn allow_mcp_server_tools_in_json_settings(
 
     let mut root: Value = if path.exists() {
         let content = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
         serde_json::json!({})
     };
