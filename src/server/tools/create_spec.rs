@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use neva::prelude::*;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 use tracing::info;
 
 use crate::{config::Config, state::store};
@@ -48,12 +50,9 @@ async fn run(markdown: String) -> Result<String> {
     let slug = slugify(title);
     let date = chrono::Utc::now().format("%Y-%m-%d");
     let base_name = format!("{date}-{slug}");
-    let path = unique_spec_path(&spec_dir, &base_name).await;
 
     let content = ensure_trailing_newline(markdown);
-    tokio::fs::write(&path, content)
-        .await
-        .with_context(|| format!("Failed to write spec {}", path.display()))?;
+    let path = create_unique_spec_file(&spec_dir, &base_name, content.as_bytes()).await?;
 
     let display_path = path.display().to_string();
     store::write_last_spec_path(&display_path).await?;
@@ -94,14 +93,43 @@ fn slugify(title: &str) -> String {
     }
 }
 
-async fn unique_spec_path(dir: &Path, base_name: &str) -> PathBuf {
-    let mut candidate = dir.join(format!("{base_name}.md"));
+async fn create_unique_spec_file(dir: &Path, base_name: &str, content: &[u8]) -> Result<PathBuf> {
+    let mut candidate = spec_path_candidate(dir, base_name, 1);
     let mut suffix = 2;
-    while tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
-        candidate = dir.join(format!("{base_name}-{suffix}.md"));
-        suffix += 1;
+    loop {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+            .await
+        {
+            Ok(mut file) => {
+                file.write_all(content)
+                    .await
+                    .with_context(|| format!("Failed to write spec {}", candidate.display()))?;
+                file.flush()
+                    .await
+                    .with_context(|| format!("Failed to flush spec {}", candidate.display()))?;
+                return Ok(candidate);
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                candidate = spec_path_candidate(dir, base_name, suffix);
+                suffix += 1;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("Failed to create spec {}", candidate.display()));
+            }
+        }
     }
-    candidate
+}
+
+fn spec_path_candidate(dir: &Path, base_name: &str, suffix: u32) -> PathBuf {
+    if suffix == 1 {
+        dir.join(format!("{base_name}.md"))
+    } else {
+        dir.join(format!("{base_name}-{suffix}.md"))
+    }
 }
 
 fn ensure_trailing_newline(mut markdown: String) -> String {
@@ -129,5 +157,18 @@ mod tests {
     #[test]
     fn slugify_falls_back_for_non_ascii_title() {
         assert_eq!(slugify("спека"), "spec");
+    }
+
+    #[test]
+    fn spec_path_candidate_adds_suffix_after_first_candidate() {
+        let dir = Path::new("docs/specs");
+        assert_eq!(
+            spec_path_candidate(dir, "2026-04-26-feature", 1),
+            dir.join("2026-04-26-feature.md")
+        );
+        assert_eq!(
+            spec_path_candidate(dir, "2026-04-26-feature", 2),
+            dir.join("2026-04-26-feature-2.md")
+        );
     }
 }
