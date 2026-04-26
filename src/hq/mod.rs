@@ -232,7 +232,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /stop              Stop all running agent sessions\n",
                 "  /reset             Reset state to Idle (clears task files)\n",
                 "  /init              Initialize ferrus in the current directory\n",
-                "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
+                "  /register          Register agent configs and permissions\n",
                 "  /model <role> <model>\n",
                 "                     Update the configured model override\n",
                 "  /model <role> --clear\n",
