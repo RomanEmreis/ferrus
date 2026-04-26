@@ -8,6 +8,8 @@ pub(crate) mod codex;
 pub(crate) mod qwen;
 
 use anyhow::{Context, Result, bail};
+use serde_json::Value;
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -187,6 +189,71 @@ pub(crate) fn normalized_model(model: Option<&str>) -> Option<String> {
     })
 }
 
+pub(crate) async fn allow_mcp_server_tools_in_json_settings(
+    path: &Path,
+    server_key: &str,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let mut root: Value = if path.exists() {
+        let content = tokio::fs::read_to_string(path).await?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let permission = mcp_server_tools_permission(server_key);
+    let added = add_json_allow_permission(&mut root, &permission, path)?;
+    let content = serde_json::to_string_pretty(&root)?;
+    tokio::fs::write(path, content).await?;
+    if added {
+        println!("Allowed {permission} in {}", path.display());
+    }
+    Ok(())
+}
+
+fn mcp_server_tools_permission(server_key: &str) -> String {
+    format!("mcp__{server_key}__*")
+}
+
+fn add_json_allow_permission(root: &mut Value, permission: &str, path: &Path) -> Result<bool> {
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} root is not a JSON object", path.display()))?;
+
+    let permissions = root_obj
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    let permissions_obj = permissions
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} permissions is not an object", path.display()))?;
+
+    let allow = permissions_obj
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]));
+    let allow_array = allow
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} permissions.allow is not an array", path.display()))?;
+
+    if allow_array
+        .iter()
+        .any(|value| value.as_str() == Some(permission))
+    {
+        return Ok(false);
+    }
+    if allow_array.iter().any(|value| !value.is_string()) {
+        bail!(
+            "{} permissions.allow must contain only strings",
+            path.display()
+        );
+    }
+
+    allow_array.push(Value::String(permission.to_string()));
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +303,56 @@ mod tests {
         assert_eq!(
             normalized_model(Some("gpt-5.4")),
             Some("gpt-5.4".to_string())
+        );
+    }
+
+    #[test]
+    fn mcp_permission_uses_mcp_server_wildcard() {
+        assert_eq!(
+            mcp_server_tools_permission("ferrus-supervisor-1"),
+            "mcp__ferrus-supervisor-1__*"
+        );
+    }
+
+    #[test]
+    fn add_json_allow_permission_preserves_existing_entries() {
+        let mut root = serde_json::json!({
+            "permissions": {
+                "allow": ["Bash(cargo test)"]
+            }
+        });
+
+        let added = add_json_allow_permission(
+            &mut root,
+            "mcp__ferrus-executor-1__*",
+            Path::new(".claude/settings.local.json"),
+        )
+        .unwrap();
+        assert!(added);
+        assert_eq!(
+            root["permissions"]["allow"],
+            serde_json::json!(["Bash(cargo test)", "mcp__ferrus-executor-1__*"])
+        );
+    }
+
+    #[test]
+    fn add_json_allow_permission_is_idempotent() {
+        let mut root = serde_json::json!({
+            "permissions": {
+                "allow": ["mcp__ferrus-supervisor-1__*"]
+            }
+        });
+
+        let added = add_json_allow_permission(
+            &mut root,
+            "mcp__ferrus-supervisor-1__*",
+            Path::new(".qwen/settings.local.json"),
+        )
+        .unwrap();
+        assert!(!added);
+        assert_eq!(
+            root["permissions"]["allow"],
+            serde_json::json!(["mcp__ferrus-supervisor-1__*"])
         );
     }
 }

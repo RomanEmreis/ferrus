@@ -77,7 +77,7 @@ Run:
 
 ```sh
 ferrus init                                                # scaffold ferrus.toml + .ferrus/
-ferrus register --supervisor claude-code --executor codex  # write agent configs
+ferrus register --supervisor claude-code --executor codex  # write agent configs and tool permissions
 ferrus                                                     # enter HQ
 ```
 
@@ -188,8 +188,9 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 
 | Agent | Config written |
 |---|---|
-| `claude-code` | `.mcp.json` |
+| `claude-code` | `.mcp.json` + `.claude/settings.local.json` permissions |
 | `codex` | `.codex/config.toml` |
+| `qwen-code` | `.qwen/settings.json` + `.qwen/settings.local.json` permissions |
 
 ---
 
@@ -217,11 +218,11 @@ heartbeat_interval_secs = 30   # how often agents should call heartbeat
 directory = "docs/specs"       # where /create_spec writes approved specs
 
 [hq.supervisor]
-agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 
 [hq.executor]
-agent = "codex"        # agent for executor role: claude-code | codex
+agent = "codex"        # agent for executor role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 ```
 

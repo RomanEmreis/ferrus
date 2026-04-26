@@ -27,3 +27,5 @@ target
 .claude/.mcp.json
 .mcp.json
 .codex/config.toml
+.qwen/settings.json
+.qwen/settings.local.json

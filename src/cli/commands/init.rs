@@ -26,11 +26,11 @@ ttl_secs = 90              # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30 # how often agents should call /heartbeat
 
 [hq.supervisor]
-agent = "claude-code"  # agent to use for supervisor/reviewer role: claude-code | codex
+agent = "claude-code"  # agent to use for supervisor/reviewer role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 
 [hq.executor]
-agent = "codex"        # agent to use for executor role: claude-code | codex
+agent = "codex"        # agent to use for executor role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 "#;
 
@@ -371,11 +371,11 @@ heartbeat_interval_secs = 30  # how often to call /heartbeat
 directory = "docs/specs" # where /create_spec writes approved specs
 
 [hq.supervisor]
-agent = "claude-code"   # agent for supervisor/reviewer role: claude-code | codex
+agent = "claude-code"   # agent for supervisor/reviewer role: claude-code | codex | qwen-code
 model = ""              # optional override; empty = agent default
 
 [hq.executor]
-agent = "codex"         # agent for executor role: claude-code | codex
+agent = "codex"         # agent for executor role: claude-code | codex | qwen-code
 model = ""              # optional override; empty = agent default
 ```
 
@@ -561,6 +561,7 @@ async fn update_gitignore() -> Result<()> {
         ".claude/.mcp.json",
         ".mcp.json",
         ".codex/config.toml",
+        ".qwen/settings.local.json",
     ];
 
     if path.exists() {

@@ -3,7 +3,11 @@
 //! Ferrus uses this module to normalize Claude's CLI conventions so the rest of
 //! the orchestration layer can treat it like any other agent backend.
 
-use super::{AgentRunMode, ExecutorAgent, SupervisorAgent, normalized_model};
+use super::{
+    AgentRunMode, ExecutorAgent, SupervisorAgent, allow_mcp_server_tools_in_json_settings,
+    normalized_model,
+};
+use anyhow::Result;
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -90,6 +94,14 @@ fn claude_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
         }
     }
     cmd
+}
+
+pub(crate) async fn allow_mcp_server_tools(server_key: &str) -> Result<()> {
+    allow_mcp_server_tools_in_json_settings(
+        std::path::Path::new(".claude/settings.local.json"),
+        server_key,
+    )
+    .await
 }
 
 #[cfg(test)]

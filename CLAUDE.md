@@ -35,7 +35,7 @@ ferrus serve [--role supervisor|executor] [--agent-name <name>] [--agent-index <
     # defaults: agent-name=unknown, agent-index=0
 
 ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor <agent>] [--executor-model <model>]
-    # write MCP config for claude-code (.mcp.json) or codex (.codex/config.toml)
+    # write MCP config and tool permissions for claude-code, codex, or qwen-code
     # at least one flag required
     # e.g. ferrus register --supervisor claude-code --executor codex
 ```
@@ -90,11 +90,11 @@ heartbeat_interval_secs = 30  # how often agents should call /heartbeat
 directory = "docs/specs" # where /create_spec writes approved specs
 
 [hq.supervisor]
-agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 
 [hq.executor]
-agent = "codex"        # agent for executor role: claude-code | codex
+agent = "codex"        # agent for executor role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 ```
 
