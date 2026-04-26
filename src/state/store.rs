@@ -153,6 +153,18 @@ pub async fn clear_consult_response() -> Result<()> {
     write_file("CONSULT_RESPONSE.md", "").await
 }
 
+pub async fn read_last_spec_path() -> Result<String> {
+    read_file("LAST_SPEC_PATH").await
+}
+
+pub async fn write_last_spec_path(content: &str) -> Result<()> {
+    write_file("LAST_SPEC_PATH", content).await
+}
+
+pub async fn clear_last_spec_path() -> Result<()> {
+    write_last_spec_path("").await
+}
+
 pub async fn clear_question() -> Result<()> {
     write_file("QUESTION.md", "").await
 }

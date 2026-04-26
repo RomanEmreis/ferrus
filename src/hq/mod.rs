@@ -220,6 +220,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "ferrus HQ commands:\n",
                 "  /plan              Free-form planning session with the supervisor\n",
                 "  /task              Define a task with the supervisor, then run executor→review loop\n",
+                "  /spec              Draft, approve, and save a feature specification\n",
                 "  /check             Run the Ferrus check gate deterministically from HQ\n",
                 "  /check --force     Run configured checks from HQ without state requirements\n",
                 "  /supervisor        Open an interactive supervisor session\n",
@@ -231,7 +232,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /stop              Stop all running agent sessions\n",
                 "  /reset             Reset state to Idle (clears task files)\n",
                 "  /init              Initialize ferrus in the current directory\n",
-                "  /register          Register agent configs (.mcp.json / .codex/config.toml)\n",
+                "  /register          Register agent configs and permissions\n",
                 "  /model <role> <model>\n",
                 "                     Update the configured model override\n",
                 "  /model <role> --clear\n",
@@ -246,6 +247,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Stop => ctx.stop().await?,
         ShellCommand::Plan => ctx.plan().await?,
         ShellCommand::Task => ctx.task().await?,
+        ShellCommand::Spec => ctx.spec().await?,
         ShellCommand::Supervisor => ctx.supervisor_interactive().await?,
         ShellCommand::Executor => ctx.executor_interactive().await?,
         ShellCommand::Resume => ctx.resume().await?,
@@ -1002,6 +1004,92 @@ impl HqContext {
         Ok(())
     }
 
+    async fn spec(&mut self) -> Result<()> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        self.ensure_hq_config().await?;
+        prepare_spec_session_files().await?;
+
+        let supervisor = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
+
+        self.display.info(format!(
+            "Spawning supervisor ({}) for specification drafting…",
+            supervisor.name()
+        ));
+        self.display
+            .info("Collaborate with the supervisor to draft and approve the specification.");
+
+        let mut cmd = Command::from(supervisor.spawn(AgentRunMode::Interactive {
+            prompt: Some(agent_manager::supervisor_spec_prompt()),
+        }));
+
+        let ack_rx = self.display.suspend();
+        let _ = ack_rx.await;
+        let mut resume_guard = ResumeGuard::new(self.display.clone());
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+        let mut child = cmd
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("Failed to spawn {program}"))?;
+        let supervisor_id = self.supervisor_agent_id()?;
+        self.mark_agent_running(
+            ROLE_SUPERVISOR,
+            supervisor.name(),
+            &supervisor_id,
+            child.id(),
+        )
+        .await?;
+
+        let mut created_path = None;
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
+        loop {
+            tokio::select! {
+                _ = child.wait() => break,
+                _ = ticker.tick() => {
+                    if let Ok(path) = store::read_last_spec_path().await {
+                        let path = path.trim();
+                        if !path.is_empty() {
+                            created_path = Some(path.to_string());
+                            self.display.muted("Spec created — stopping supervisor…");
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        resume_guard.resume_now();
+
+        self.mark_agent_suspended(&supervisor_id).await?;
+
+        if created_path.is_none()
+            && let Ok(path) = store::read_last_spec_path().await
+        {
+            let path = path.trim();
+            if !path.is_empty() {
+                created_path = Some(path.to_string());
+            }
+        }
+
+        if let Some(path) = created_path {
+            self.display.info(format!(
+                "Specification ready: {path}\nUse /task to start implementing a selected part."
+            ));
+        } else {
+            self.display
+                .info("No specification created. Re-run /spec when ready.");
+        }
+        Ok(())
+    }
+
     async fn supervisor_interactive(&mut self) -> Result<()> {
         self.ensure_hq_config().await?;
         let agent = std::sync::Arc::clone(
@@ -1106,6 +1194,23 @@ impl HqContext {
             handle.terminate().await;
         }
     }
+}
+
+async fn prepare_spec_session_files() -> Result<()> {
+    store::read_state().await.context(
+        "Cannot start /spec because Ferrus is not initialized. Run `ferrus init` first.",
+    )?;
+
+    let path = std::path::Path::new(".ferrus/SPEC_TEMPLATE.md");
+    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+        tokio::fs::write(path, crate::templates::SPEC_TEMPLATE)
+            .await
+            .context("Failed to write .ferrus/SPEC_TEMPLATE.md")?;
+    }
+
+    store::clear_last_spec_path()
+        .await
+        .context("Failed to clear .ferrus/LAST_SPEC_PATH")
 }
 
 async fn reconcile_agent_pids() {

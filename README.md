@@ -1,6 +1,6 @@
 # ferrus
 
-[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.5--alpha.12-orange)](https://crates.io/crates/ferrus)
+[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.6--alpha.1-orange)](https://crates.io/crates/ferrus)
 [![Rust version](https://img.shields.io/badge/rustc-1.95+-964B00)](https://releases.rs/docs/1.95.0/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/RomanEmreis/ferrus/blob/main/LICENSE)
 [![Rust](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml)
@@ -77,7 +77,7 @@ Run:
 
 ```sh
 ferrus init                                                # scaffold ferrus.toml + .ferrus/
-ferrus register --supervisor claude-code --executor codex  # write agent configs
+ferrus register --supervisor claude-code --executor codex  # write agent configs and tool permissions
 ferrus                                                     # enter HQ
 ```
 
@@ -95,6 +95,7 @@ On Linux and macOS for `x86_64` and `aarch64`/`arm64`, `install.sh` downloads th
 |---|---|
 | `/plan` | Free-form planning session with the supervisor (no task created) |
 | `/task` | Define a task with the supervisor, then run the executor→review loop automatically |
+| `/spec` | Draft, approve, and save a feature specification |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both supervisor and executor |
@@ -177,18 +178,19 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `supervisor` | `create_task`, `create_spec`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
 ### `ferrus register --supervisor <agent> [--supervisor-model <model>] --executor <agent> [--executor-model <model>]`
 
-Writes agent config files so they automatically load `ferrus serve` as a tool server. Supported agents:
+Writes agent config files so they automatically load `ferrus serve` as a tool server, and adds only the selected agents' local files to `.gitignore`. Supported agents:
 
 | Agent | Config written |
 |---|---|
-| `claude-code` | `.mcp.json` |
+| `claude-code` | `.mcp.json` + `.claude/settings.local.json` permissions |
 | `codex` | `.codex/config.toml` |
+| `qwen-code` | `.qwen/settings.json` |
 
 ---
 
@@ -212,12 +214,15 @@ wait_timeout_secs = 60   # max duration of one wait_* tool call before it return
 ttl_secs = 90                  # how long a claimed lease is valid without renewal
 heartbeat_interval_secs = 30   # how often agents should call heartbeat
 
+[spec]
+directory = "docs/specs"       # where /create_spec writes approved specs
+
 [hq.supervisor]
-agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex
+agent = "claude-code"  # agent for supervisor/reviewer role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 
 [hq.executor]
-agent = "codex"        # agent for executor role: claude-code | codex
+agent = "codex"        # agent for executor role: claude-code | codex | qwen-code
 model = ""             # optional override; empty = agent default
 ```
 
@@ -236,6 +241,9 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 | `SUBMISSION.md` | Executor submission notes |
 | `QUESTION.md` | Pending human question (written by `/ask_human`) |
 | `ANSWER.md` | Human answer |
+| `CONSULT_TEMPLATE.md` | Read-only consultation request template |
+| `SPEC_TEMPLATE.md` | Read-only feature specification template |
+| `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |

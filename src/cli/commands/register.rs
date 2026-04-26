@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
 use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
@@ -95,7 +95,7 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
 
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        serde_json::from_str(&content).context("Failed to parse .mcp.json")?
     } else {
         serde_json::json!({})
     };
@@ -134,6 +134,8 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
     let content = serde_json::to_string_pretty(&root)?;
     tokio::fs::write(path, content).await?;
 
+    crate::agents::claude::allow_mcp_server_tools(&key).await?;
+    update_gitignore(&[".mcp.json", ".claude/settings.local.json"]).await?;
     append_to_claude_md(role).await?;
     Ok(())
 }
@@ -198,7 +200,7 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
     if let Some(model) = model {
         entry.insert("model".to_string(), toml::Value::String(model));
     }
-    apply_codex_tool_approval_overrides(role, &mut entry);
+    crate::agents::codex::apply_tool_approval_overrides(role, &mut entry);
     mcp_servers.insert(key.clone(), toml::Value::Table(entry));
     println!(
         "Registered {key} in .codex/config.toml (agent_id will be \"{}\")",
@@ -208,6 +210,7 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
     let content = toml::to_string_pretty(&table)?;
     tokio::fs::write(&path, content).await?;
 
+    update_gitignore(&[".codex/config.toml"]).await?;
     append_to_agents_md(role).await?;
     Ok(())
 }
@@ -219,7 +222,7 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
 
     let mut root: serde_json::Value = if path.exists() {
         let content = tokio::fs::read_to_string(&path).await?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        serde_json::from_str(&content).context("Failed to parse .qwen/settings.json")?
     } else {
         serde_json::json!({})
     };
@@ -258,57 +261,43 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
     let content = serde_json::to_string_pretty(&root)?;
     tokio::fs::write(path, content).await?;
 
+    crate::agents::qwen::allow_mcp_server_tools(&key).await?;
+    update_gitignore(&[".qwen/settings.json"]).await?;
     append_to_qwen_md(role).await?;
     Ok(())
 }
 
-fn apply_codex_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
-    let tools = entry
-        .entry("tools")
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-        .as_table_mut()
-        .expect("tools must be a TOML table");
+async fn update_gitignore(entries: &[&str]) -> Result<()> {
+    let path = std::path::Path::new(".gitignore");
+    let mut contents = if path.exists() {
+        tokio::fs::read_to_string(path).await?
+    } else {
+        String::new()
+    };
 
-    for tool in codex_auto_approved_tools(role) {
-        let mut tool_config = toml::Table::new();
-        tool_config.insert(
-            "approval_mode".to_string(),
-            toml::Value::String("approve".to_string()),
-        );
-        tools.insert(tool.to_string(), toml::Value::Table(tool_config));
-    }
-}
+    let mut added_entries = Vec::new();
+    for entry in entries {
+        if contents.lines().any(|line| line == *entry) {
+            continue;
+        }
 
-fn codex_auto_approved_tools(role: &str) -> &'static [&'static str] {
-    match role {
-        ROLE_EXECUTOR => &[
-            "wait_for_task",
-            "check",
-            "consult",
-            "submit",
-            "wait_for_consult",
-            "wait_for_answer",
-            "ask_human",
-            "answer",
-            "status",
-            "reset",
-            "heartbeat",
-        ],
-        ROLE_SUPERVISOR => &[
-            "create_task",
-            "wait_for_review",
-            "review_pending",
-            "approve",
-            "reject",
-            "respond_consult",
-            "ask_human",
-            "answer",
-            "status",
-            "reset",
-            "heartbeat",
-        ],
-        _ => &[],
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(entry);
+        contents.push('\n');
+        added_entries.push(*entry);
     }
+
+    if added_entries.is_empty() {
+        return Ok(());
+    }
+
+    tokio::fs::write(path, contents).await?;
+    for entry in added_entries {
+        println!("Added {entry} to .gitignore");
+    }
+    Ok(())
 }
 
 async fn append_to_agents_md(role: &str) -> Result<()> {

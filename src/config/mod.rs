@@ -10,6 +10,7 @@ pub struct Config {
     pub checks: ChecksConfig,
     pub limits: LimitsConfig,
     pub lease: LeaseConfig,
+    pub spec: SpecConfig,
     pub hq: Option<HqConfig>,
 }
 
@@ -46,6 +47,13 @@ pub struct LeaseConfig {
     pub heartbeat_interval_secs: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SpecConfig {
+    /// Directory where `/create_spec` writes approved feature specifications.
+    #[serde(default = "default_spec_directory")]
+    pub directory: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct HqAgentConfig {
     pub agent: String,
@@ -65,6 +73,8 @@ struct RawConfig {
     limits: LimitsConfig,
     #[serde(default)]
     lease: LeaseConfig,
+    #[serde(default)]
+    spec: SpecConfig,
     #[serde(default)]
     hq: Option<RawHqConfig>,
 }
@@ -109,6 +119,7 @@ impl TryFrom<RawConfig> for Config {
             checks: raw.checks,
             limits: raw.limits,
             lease: raw.lease,
+            spec: raw.spec,
             hq,
         })
     }
@@ -171,6 +182,14 @@ impl Default for LeaseConfig {
     }
 }
 
+impl Default for SpecConfig {
+    fn default() -> Self {
+        Self {
+            directory: default_spec_directory(),
+        }
+    }
+}
+
 const fn default_max_check_retries() -> u32 {
     20
 }
@@ -188,6 +207,9 @@ const fn default_ttl_secs() -> u64 {
 }
 const fn default_heartbeat_interval_secs() -> u64 {
     30
+}
+fn default_spec_directory() -> String {
+    "docs/specs".to_string()
 }
 
 impl Config {
@@ -323,6 +345,7 @@ commands = ["cargo test"]
         let config = Config::from_toml(toml).unwrap();
         assert_eq!(config.lease.ttl_secs, 90);
         assert_eq!(config.lease.heartbeat_interval_secs, 30);
+        assert_eq!(config.spec.directory, "docs/specs");
     }
 
     #[test]
@@ -356,6 +379,9 @@ wait_timeout_secs = 900
 [lease]
 ttl_secs = 120
 heartbeat_interval_secs = 45
+
+[spec]
+directory = "docs/feature-specs"
 "#;
         let config = Config::from_toml(toml).unwrap();
 
@@ -372,6 +398,7 @@ heartbeat_interval_secs = 45
         assert_eq!(config.limits.wait_timeout_secs, 900);
         assert_eq!(config.lease.ttl_secs, 120);
         assert_eq!(config.lease.heartbeat_interval_secs, 45);
+        assert_eq!(config.spec.directory, "docs/feature-specs");
     }
 
     #[test]

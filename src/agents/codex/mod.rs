@@ -6,6 +6,7 @@
 use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
 };
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -138,6 +139,56 @@ fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
     }
 }
 
+pub(crate) fn apply_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
+    let tools = entry
+        .entry("tools")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .expect("tools must be a TOML table");
+
+    for tool in auto_approved_tools(role) {
+        let mut tool_config = toml::Table::new();
+        tool_config.insert(
+            "approval_mode".to_string(),
+            toml::Value::String("approve".to_string()),
+        );
+        tools.insert(tool.to_string(), toml::Value::Table(tool_config));
+    }
+}
+
+fn auto_approved_tools(role: &str) -> &'static [&'static str] {
+    match role {
+        ROLE_EXECUTOR => &[
+            "wait_for_task",
+            "check",
+            "consult",
+            "submit",
+            "wait_for_consult",
+            "wait_for_answer",
+            "ask_human",
+            "answer",
+            "status",
+            "reset",
+            "heartbeat",
+        ],
+        ROLE_SUPERVISOR => &[
+            "create_task",
+            "create_spec",
+            "wait_for_review",
+            "review_pending",
+            "approve",
+            "reject",
+            "respond_consult",
+            "ask_human",
+            "answer",
+            "status",
+            "reset",
+            "heartbeat",
+        ],
+        _ => &[],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +278,27 @@ mod tests {
         );
         assert_eq!(entry.model, None);
     }
+
+    #[test]
+    fn codex_approves_executor_tools_by_role() {
+        let mut entry = toml::Table::new();
+        apply_tool_approval_overrides("executor", &mut entry);
+        let tools = entry.get("tools").and_then(toml::Value::as_table).unwrap();
+        assert!(tools.contains_key("wait_for_task"));
+        assert!(tools.contains_key("submit"));
+        assert!(!tools.contains_key("approve"));
+    }
+
+    #[test]
+    fn codex_approves_supervisor_tools_by_role() {
+        let mut entry = toml::Table::new();
+        apply_tool_approval_overrides("supervisor", &mut entry);
+        let tools = entry.get("tools").and_then(toml::Value::as_table).unwrap();
+        assert!(tools.contains_key("create_task"));
+        assert!(tools.contains_key("create_spec"));
+        assert!(!tools.contains_key("submit"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn codex_headless_command_uses_stdin_prompt_on_windows() {

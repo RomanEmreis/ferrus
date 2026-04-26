@@ -24,6 +24,5 @@ target
 
 # MCP config
 .claude/settings.local.json
-.claude/.mcp.json
 .mcp.json
 .codex/config.toml
