@@ -7,6 +7,8 @@ use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
 };
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -93,12 +95,18 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     #[cfg(windows)]
     let mut cmd = {
         let mut cmd = Command::new(POWERSHELL_EXECUTABLE);
+        let codex_script = resolve_windows_executable_path().unwrap_or_else(|| {
+            panic!(
+                "Unable to locate {EXECUTABLE} in PATH; cannot launch PowerShell with -File \
+                 without an absolute script path."
+            )
+        });
         cmd.arg("-NoLogo")
             .arg("-NoProfile")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-File")
-            .arg(EXECUTABLE);
+            .arg(codex_script);
         cmd
     };
     #[cfg(not(windows))]
@@ -119,6 +127,12 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
+            #[cfg(windows)]
+            {
+                let _ = prompt;
+                cmd.arg("-");
+            }
+            #[cfg(not(windows))]
             cmd.arg(prompt);
         }
     }
@@ -126,7 +140,23 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
 }
 
 fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
-    HeadlessPromptTransport::Argv
+    #[cfg(windows)]
+    {
+        HeadlessPromptTransport::Stdin
+    }
+    #[cfg(not(windows))]
+    {
+        HeadlessPromptTransport::Argv
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_executable_path() -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|path| path.join(EXECUTABLE))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 pub(crate) fn apply_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
@@ -183,26 +213,50 @@ fn auto_approved_tools(role: &str) -> &'static [&'static str] {
 mod tests {
     use super::*;
     use crate::agents::tests::assert_program_and_args;
+    #[cfg(windows)]
+    fn assert_windows_program_and_args(command: Command, args: &[String]) {
+        assert_eq!(
+            command.get_program().to_string_lossy(),
+            POWERSHELL_EXECUTABLE
+        );
+        let actual = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, args);
+    }
+
+    #[cfg(windows)]
+    fn expected_windows_codex_script() -> String {
+        resolve_windows_executable_path()
+            .expect("test requires codex.ps1 in PATH on windows")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
-        #[cfg(windows)]
-        let expected_program = POWERSHELL_EXECUTABLE;
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
-        #[cfg(windows)]
-        let expected_args: &[&str] = &[
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            EXECUTABLE,
-            "plan",
-        ];
         #[cfg(not(windows))]
         let expected_args: &[&str] = &["plan"];
-
+        #[cfg(windows)]
+        assert_windows_program_and_args(
+            agent.spawn(AgentRunMode::Interactive {
+                prompt: Some("plan"),
+            }),
+            &[
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                expected_windows_codex_script(),
+                "plan".into(),
+            ],
+        );
+        #[cfg(not(windows))]
         assert_program_and_args(
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
@@ -215,23 +269,25 @@ mod tests {
     #[test]
     fn codex_executor_builds_headless_command() {
         let agent = Executor::new(None);
-        #[cfg(windows)]
-        let expected_program = POWERSHELL_EXECUTABLE;
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
-        #[cfg(windows)]
-        let expected: &[&str] = &[
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            EXECUTABLE,
-            "exec",
-            "run",
-        ];
         #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "run"];
+        #[cfg(windows)]
+        assert_windows_program_and_args(
+            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            &[
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                expected_windows_codex_script(),
+                "exec".into(),
+                "-".into(),
+            ],
+        );
+        #[cfg(not(windows))]
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             expected_program,
@@ -242,25 +298,27 @@ mod tests {
     #[test]
     fn codex_model_override_is_part_of_spawned_command() {
         let agent = Executor::new(Some("gpt-5.4"));
-        #[cfg(windows)]
-        let expected_program = POWERSHELL_EXECUTABLE;
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
-        #[cfg(windows)]
-        let expected: &[&str] = &[
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            EXECUTABLE,
-            "exec",
-            "--model",
-            "gpt-5.4",
-            "run",
-        ];
         #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "--model", "gpt-5.4", "run"];
+        #[cfg(windows)]
+        assert_windows_program_and_args(
+            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            &[
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                expected_windows_codex_script(),
+                "exec".into(),
+                "--model".into(),
+                "gpt-5.4".into(),
+                "-".into(),
+            ],
+        );
+        #[cfg(not(windows))]
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             expected_program,
@@ -337,23 +395,27 @@ mod tests {
     #[test]
     fn codex_headless_prompt_preserves_newlines() {
         let agent = Executor::new(None);
-        #[cfg(windows)]
-        let expected_program = POWERSHELL_EXECUTABLE;
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
-        #[cfg(windows)]
-        let expected: &[&str] = &[
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            EXECUTABLE,
-            "exec",
-            "line one\n\nline two",
-        ];
         #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "line one\n\nline two"];
+        #[cfg(windows)]
+        assert_windows_program_and_args(
+            agent.spawn(AgentRunMode::Headless {
+                prompt: "line one\n\nline two",
+            }),
+            &[
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                expected_windows_codex_script(),
+                "exec".into(),
+                "-".into(),
+            ],
+        );
+        #[cfg(not(windows))]
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless {
                 prompt: "line one\n\nline two",
@@ -364,14 +426,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_uses_argv_prompt_transport() {
-        assert_eq!(
-            Executor::new(None).headless_prompt_transport(),
-            HeadlessPromptTransport::Argv
-        );
-        assert_eq!(
-            Supervisor::new(None).headless_prompt_transport(),
-            HeadlessPromptTransport::Argv
-        );
+    fn codex_uses_expected_headless_prompt_transport() {
+        #[cfg(windows)]
+        let expected = HeadlessPromptTransport::Stdin;
+        #[cfg(not(windows))]
+        let expected = HeadlessPromptTransport::Argv;
+        assert_eq!(Executor::new(None).headless_prompt_transport(), expected);
+        assert_eq!(Supervisor::new(None).headless_prompt_transport(), expected);
     }
 }
