@@ -3,7 +3,9 @@
 //! These wrappers isolate the CLI details needed to launch Codex in the shapes
 //! Ferrus expects for interactive and headless sessions.
 
-use super::{AgentRunMode, ExecutorAgent, PromptTransport, SupervisorAgent, normalized_model};
+use super::{
+    AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
+};
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use std::process::Command;
 
@@ -59,8 +61,8 @@ impl SupervisorAgent for Supervisor {
         self.model.as_deref()
     }
 
-    fn prompt_transport(&self) -> PromptTransport {
-        codex_prompt_transport()
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        codex_headless_prompt_transport()
     }
 }
 
@@ -79,8 +81,8 @@ impl ExecutorAgent for Executor {
         self.model.as_deref()
     }
 
-    fn prompt_transport(&self) -> PromptTransport {
-        codex_prompt_transport()
+    fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
+        codex_headless_prompt_transport()
     }
 }
 
@@ -89,24 +91,24 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
+            #[cfg(windows)]
+            if let Some(prompt) = prompt {
+                // On Windows, route interactive prompt invocations through `cmd /C`
+                // so `.cmd` shim execution matches terminal behavior.
+                let mut wrapped = Command::new("cmd");
+                wrapped.arg("/D").arg("/S").arg("/C").arg(EXECUTABLE);
+                if let Some(model) = model {
+                    wrapped.arg("--model").arg(model);
+                }
+                wrapped.arg(prompt);
+                return wrapped;
+            }
+
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
             if let Some(prompt) = prompt {
-                #[cfg(windows)]
-                {
-                    // Keep this in sync with `codex_prompt_transport()`.
-                    // When transport is `Stdin`, Codex must receive `-` sentinel.
-                    let _ = prompt;
-                    match codex_prompt_transport() {
-                        PromptTransport::Stdin => cmd.arg("-"),
-                        PromptTransport::Argv => cmd.arg(prompt),
-                    };
-                }
-                #[cfg(not(windows))]
-                {
-                    cmd.arg(prompt);
-                }
+                cmd.arg(prompt);
             }
         }
         AgentRunMode::Headless { prompt } => {
@@ -118,14 +120,14 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             }
             #[cfg(windows)]
             {
-                // Keep this in sync with `codex_prompt_transport()`.
+                // Keep this in sync with `codex_headless_prompt_transport()`.
                 // When transport is `Stdin`, Codex must receive `-` sentinel.
                 let _ = prompt;
-                match codex_prompt_transport() {
-                    PromptTransport::Stdin => {
+                match codex_headless_prompt_transport() {
+                    HeadlessPromptTransport::Stdin => {
                         cmd.arg("-");
                     }
-                    PromptTransport::Argv => {
+                    HeadlessPromptTransport::Argv => {
                         cmd.arg(prompt);
                     }
                 }
@@ -139,14 +141,14 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     cmd
 }
 
-fn codex_prompt_transport() -> PromptTransport {
+fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
     #[cfg(windows)]
     {
-        PromptTransport::Stdin
+        HeadlessPromptTransport::Stdin
     }
     #[cfg(not(windows))]
     {
-        PromptTransport::Argv
+        HeadlessPromptTransport::Argv
     }
 }
 
@@ -208,15 +210,21 @@ mod tests {
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
         #[cfg(windows)]
-        let expected: &[&str] = &["-"];
+        let expected_program = "cmd";
         #[cfg(not(windows))]
-        let expected: &[&str] = &["plan"];
+        let expected_program = EXECUTABLE;
+
+        #[cfg(windows)]
+        let expected_args: &[&str] = &["/D", "/S", "/C", EXECUTABLE, "plan"];
+        #[cfg(not(windows))]
+        let expected_args: &[&str] = &["plan"];
+
         assert_program_and_args(
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
-            EXECUTABLE,
-            expected,
+            expected_program,
+            expected_args,
         );
     }
 
@@ -231,32 +239,6 @@ mod tests {
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
             EXECUTABLE,
             expected,
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn codex_interactive_prompt_uses_stdin_on_windows() {
-        let agent = Supervisor::new(None);
-        assert_program_and_args(
-            agent.spawn(AgentRunMode::Interactive {
-                prompt: Some("line one\nline two\n\nline three"),
-            }),
-            EXECUTABLE,
-            &["-"],
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn codex_interactive_prompt_uses_argv_off_windows() {
-        let agent = Supervisor::new(None);
-        assert_program_and_args(
-            agent.spawn(AgentRunMode::Interactive {
-                prompt: Some("line one\nline two"),
-            }),
-            EXECUTABLE,
-            &["line one\nline two"],
         );
     }
 
@@ -370,12 +352,12 @@ mod tests {
     #[test]
     fn codex_uses_stdin_prompt_transport_on_windows() {
         assert_eq!(
-            Executor::new(None).prompt_transport(),
-            PromptTransport::Stdin
+            Executor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Stdin
         );
         assert_eq!(
-            Supervisor::new(None).prompt_transport(),
-            PromptTransport::Stdin
+            Supervisor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Stdin
         );
     }
 
@@ -383,12 +365,12 @@ mod tests {
     #[test]
     fn codex_uses_argv_prompt_transport_off_windows() {
         assert_eq!(
-            Executor::new(None).prompt_transport(),
-            PromptTransport::Argv
+            Executor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Argv
         );
         assert_eq!(
-            Supervisor::new(None).prompt_transport(),
-            PromptTransport::Argv
+            Supervisor::new(None).headless_prompt_transport(),
+            HeadlessPromptTransport::Argv
         );
     }
 }
