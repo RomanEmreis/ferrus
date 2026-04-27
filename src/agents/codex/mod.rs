@@ -14,9 +14,9 @@ pub(crate) const NAME: &str = "codex";
 /// Actual CLI executable name used to launch Codex.
 #[cfg(not(windows))]
 const EXECUTABLE: &str = "codex";
-/// On Windows, npm-style shims are commonly installed as `*.cmd`.
+/// On Windows, use the PowerShell shim.
 #[cfg(windows)]
-const EXECUTABLE: &str = "codex.cmd";
+const EXECUTABLE: &str = "codex.ps1";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -91,19 +91,6 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
-            #[cfg(windows)]
-            if let Some(prompt) = prompt {
-                // On Windows, route interactive prompt invocations through `cmd /C`
-                // so `.cmd` shim execution matches terminal behavior.
-                let mut wrapped = Command::new("cmd");
-                wrapped.arg("/D").arg("/S").arg("/C").arg(EXECUTABLE);
-                if let Some(model) = model {
-                    wrapped.arg("--model").arg(model);
-                }
-                wrapped.arg(prompt);
-                return wrapped;
-            }
-
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
@@ -118,38 +105,14 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
-            #[cfg(windows)]
-            {
-                // Keep this in sync with `codex_headless_prompt_transport()`.
-                // When transport is `Stdin`, Codex must receive `-` sentinel.
-                let _ = prompt;
-                match codex_headless_prompt_transport() {
-                    HeadlessPromptTransport::Stdin => {
-                        cmd.arg("-");
-                    }
-                    HeadlessPromptTransport::Argv => {
-                        cmd.arg(prompt);
-                    }
-                }
-            }
-            #[cfg(not(windows))]
-            {
-                cmd.arg(prompt);
-            }
+            cmd.arg(prompt);
         }
     }
     cmd
 }
 
 fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
-    #[cfg(windows)]
-    {
-        HeadlessPromptTransport::Stdin
-    }
-    #[cfg(not(windows))]
-    {
-        HeadlessPromptTransport::Argv
-    }
+    HeadlessPromptTransport::Argv
 }
 
 pub(crate) fn apply_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
@@ -209,14 +172,7 @@ mod tests {
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
-        #[cfg(windows)]
-        let expected_program = "cmd";
-        #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
-
-        #[cfg(windows)]
-        let expected_args: &[&str] = &["/D", "/S", "/C", EXECUTABLE, "plan"];
-        #[cfg(not(windows))]
         let expected_args: &[&str] = &["plan"];
 
         assert_program_and_args(
@@ -231,9 +187,6 @@ mod tests {
     #[test]
     fn codex_executor_builds_headless_command() {
         let agent = Executor::new(None);
-        #[cfg(windows)]
-        let expected: &[&str] = &["exec", "-"];
-        #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
@@ -245,9 +198,6 @@ mod tests {
     #[test]
     fn codex_model_override_is_part_of_spawned_command() {
         let agent = Executor::new(Some("gpt-5.4"));
-        #[cfg(windows)]
-        let expected: &[&str] = &["exec", "--model", "gpt-5.4", "-"];
-        #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "--model", "gpt-5.4", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
@@ -322,22 +272,8 @@ mod tests {
         assert!(!tools.contains_key("submit"));
     }
 
-    #[cfg(windows)]
     #[test]
-    fn codex_headless_command_uses_stdin_prompt_on_windows() {
-        let agent = Executor::new(None);
-        assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless {
-                prompt: "line one\n\nline two",
-            }),
-            EXECUTABLE,
-            &["exec", "-"],
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn codex_headless_prompt_preserves_newlines_off_windows() {
+    fn codex_headless_prompt_preserves_newlines() {
         let agent = Executor::new(None);
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless {
@@ -348,22 +284,8 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     #[test]
-    fn codex_uses_stdin_prompt_transport_on_windows() {
-        assert_eq!(
-            Executor::new(None).headless_prompt_transport(),
-            HeadlessPromptTransport::Stdin
-        );
-        assert_eq!(
-            Supervisor::new(None).headless_prompt_transport(),
-            HeadlessPromptTransport::Stdin
-        );
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn codex_uses_argv_prompt_transport_off_windows() {
+    fn codex_uses_argv_prompt_transport() {
         assert_eq!(
             Executor::new(None).headless_prompt_transport(),
             HeadlessPromptTransport::Argv
