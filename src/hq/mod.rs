@@ -629,10 +629,11 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let mut stdin_forwarder = None;
         if let Some(prompt) = prompt
             && prompt_transport == PromptTransport::Stdin
         {
-            stream_prompt_to_stdin(&mut child, prompt)
+            stdin_forwarder = prime_prompt_and_forward_stdin(&mut child, prompt)
                 .await
                 .context("Failed to stream interactive startup prompt")?;
         }
@@ -640,6 +641,9 @@ impl HqContext {
             .await?;
 
         let _ = child.wait().await;
+        if let Some(handle) = stdin_forwarder {
+            handle.abort();
+        }
         guard.resume_now();
         self.mark_agent_suspended(name).await?;
         Ok(())
@@ -987,10 +991,12 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let mut stdin_forwarder = None;
         if prompt_transport == PromptTransport::Stdin {
-            stream_prompt_to_stdin(&mut child, agent_manager::supervisor_task_prompt())
-                .await
-                .context("Failed to stream interactive startup prompt")?;
+            stdin_forwarder =
+                prime_prompt_and_forward_stdin(&mut child, agent_manager::supervisor_task_prompt())
+                    .await
+                    .context("Failed to stream interactive startup prompt")?;
         }
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
@@ -1015,6 +1021,9 @@ impl HqContext {
                     }
                 }
             }
+        }
+        if let Some(handle) = stdin_forwarder {
+            handle.abort();
         }
         resume_guard.resume_now();
 
@@ -1071,10 +1080,12 @@ impl HqContext {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let mut stdin_forwarder = None;
         if prompt_transport == PromptTransport::Stdin {
-            stream_prompt_to_stdin(&mut child, agent_manager::supervisor_spec_prompt())
-                .await
-                .context("Failed to stream interactive startup prompt")?;
+            stdin_forwarder =
+                prime_prompt_and_forward_stdin(&mut child, agent_manager::supervisor_spec_prompt())
+                    .await
+                    .context("Failed to stream interactive startup prompt")?;
         }
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
@@ -1103,6 +1114,9 @@ impl HqContext {
                     }
                 }
             }
+        }
+        if let Some(handle) = stdin_forwarder {
+            handle.abort();
         }
         resume_guard.resume_now();
 
@@ -1308,13 +1322,24 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
     }
 }
 
-async fn stream_prompt_to_stdin(child: &mut tokio::process::Child, prompt: &str) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).await?;
-        stdin.flush().await?;
-    }
-    Ok(())
+async fn prime_prompt_and_forward_stdin(
+    child: &mut tokio::process::Child,
+    prompt: &str,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    use tokio::io::{AsyncWriteExt, stdin};
+
+    let Some(mut child_stdin) = child.stdin.take() else {
+        return Ok(None);
+    };
+
+    child_stdin.write_all(prompt.as_bytes()).await?;
+    child_stdin.flush().await?;
+
+    let handle = tokio::spawn(async move {
+        let mut terminal_stdin = stdin();
+        let _ = tokio::io::copy(&mut terminal_stdin, &mut child_stdin).await;
+    });
+    Ok(Some(handle))
 }
 
 #[cfg(test)]
