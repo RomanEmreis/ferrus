@@ -1,5 +1,5 @@
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use crate::agents::{AgentRunMode, ExecutorAgent, PromptTransport, SupervisorAgent};
+use crate::agents::{AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent};
 use crate::platform::{self, ShutdownSignal};
 use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
 use anyhow::{Context, Result};
@@ -333,7 +333,7 @@ pub async fn spawn_headless_executor(
     spawn_headless(
         agent.name(),
         command,
-        agent.prompt_transport(),
+        agent.headless_prompt_transport(),
         ROLE_EXECUTOR,
         name,
         prompt,
@@ -352,7 +352,7 @@ pub async fn spawn_headless_supervisor(
     spawn_headless(
         agent.name(),
         command,
-        agent.prompt_transport(),
+        agent.headless_prompt_transport(),
         ROLE_SUPERVISOR,
         name,
         prompt,
@@ -364,7 +364,7 @@ pub async fn spawn_headless_supervisor(
 async fn spawn_headless(
     agent_type: &str,
     mut command: StdCommand,
-    prompt_transport: PromptTransport,
+    prompt_transport: HeadlessPromptTransport,
     role: &str,
     name: &str,
     prompt: &str,
@@ -391,7 +391,7 @@ async fn spawn_headless(
         let log_stderr = log_file
             .try_clone()
             .context("Failed to clone log file handle")?;
-        let stdin = if prompt_transport == PromptTransport::Stdin {
+        let stdin = if prompt_transport == HeadlessPromptTransport::Stdin {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -402,7 +402,7 @@ async fn spawn_headless(
             .stderr(Stdio::from(log_stderr));
         None
     } else {
-        let stdin = if prompt_transport == PromptTransport::Stdin {
+        let stdin = if prompt_transport == HeadlessPromptTransport::Stdin {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -424,7 +424,7 @@ async fn spawn_headless(
             log_path.display()
         )
     })?;
-    if prompt_transport == PromptTransport::Stdin {
+    if prompt_transport == HeadlessPromptTransport::Stdin {
         stream_prompt_to_stdin(&mut child, prompt).context("Failed to stream initial prompt")?;
     }
 
