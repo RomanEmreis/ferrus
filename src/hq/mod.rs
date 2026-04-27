@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
-use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
+use crate::agents::{AgentRunMode, ExecutorAgent, PromptTransport, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::platform;
@@ -606,6 +606,8 @@ impl HqContext {
         agent_type: &str,
         name: &str,
         command: std::process::Command,
+        prompt: Option<&str>,
+        prompt_transport: PromptTransport,
     ) -> Result<()> {
         use std::process::Stdio;
         use tokio::process::Command;
@@ -616,12 +618,24 @@ impl HqContext {
         let mut guard = ResumeGuard::new(self.display.clone());
         let program = cmd.as_std().get_program().to_string_lossy().into_owned();
 
+        let stdin = if prompt.is_some() && prompt_transport == PromptTransport::Stdin {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        };
         let mut child = cmd
-            .stdin(Stdio::inherit())
+            .stdin(stdin)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        if let Some(prompt) = prompt
+            && prompt_transport == PromptTransport::Stdin
+        {
+            stream_prompt_to_stdin(&mut child, prompt)
+                .await
+                .context("Failed to stream interactive startup prompt")?;
+        }
         self.mark_agent_running(role, agent_type, name, child.id())
             .await?;
 
@@ -878,6 +892,8 @@ impl HqContext {
             agent.name(),
             name,
             agent.spawn(AgentRunMode::Interactive { prompt }),
+            prompt,
+            agent.prompt_transport(),
         )
         .await
     }
@@ -893,6 +909,8 @@ impl HqContext {
             agent.name(),
             name,
             agent.spawn(AgentRunMode::Interactive { prompt }),
+            prompt,
+            agent.prompt_transport(),
         )
         .await
     }
@@ -958,12 +976,22 @@ impl HqContext {
         let _ = ack_rx.await;
         let mut resume_guard = ResumeGuard::new(self.display.clone());
         let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+        let prompt_transport = supervisor.prompt_transport();
         let mut child = cmd
-            .stdin(Stdio::inherit())
+            .stdin(if prompt_transport == PromptTransport::Stdin {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        if prompt_transport == PromptTransport::Stdin {
+            stream_prompt_to_stdin(&mut child, agent_manager::supervisor_task_prompt())
+                .await
+                .context("Failed to stream interactive startup prompt")?;
+        }
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
             ROLE_SUPERVISOR,
@@ -1032,12 +1060,22 @@ impl HqContext {
         let _ = ack_rx.await;
         let mut resume_guard = ResumeGuard::new(self.display.clone());
         let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+        let prompt_transport = supervisor.prompt_transport();
         let mut child = cmd
-            .stdin(Stdio::inherit())
+            .stdin(if prompt_transport == PromptTransport::Stdin {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        if prompt_transport == PromptTransport::Stdin {
+            stream_prompt_to_stdin(&mut child, agent_manager::supervisor_spec_prompt())
+                .await
+                .context("Failed to stream interactive startup prompt")?;
+        }
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
             ROLE_SUPERVISOR,
@@ -1268,6 +1306,15 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
         // Either way, no spawning needed here.
         _ => TransitionAction::NoOp,
     }
+}
+
+async fn stream_prompt_to_stdin(child: &mut tokio::process::Child, prompt: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes()).await?;
+        stdin.flush().await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
