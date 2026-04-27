@@ -20,11 +20,13 @@ const EXECUTABLE: &str = "codex";
 #[cfg(windows)]
 const EXECUTABLE: &str = "codex.ps1";
 #[cfg(windows)]
+const WINDOWS_FALLBACK_EXECUTABLE: &str = "codex.cmd";
+#[cfg(windows)]
 const POWERSHELL_EXECUTABLE: &str = "powershell";
 #[cfg(windows)]
 enum WindowsCodexInvocation {
     File(PathBuf),
-    CommandName,
+    DirectExecutable,
 }
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
@@ -98,22 +100,19 @@ impl ExecutorAgent for Executor {
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     #[cfg(windows)]
-    let mut cmd = {
-        let mut cmd = Command::new(POWERSHELL_EXECUTABLE);
-        cmd.arg("-NoLogo")
-            .arg("-NoProfile")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass");
-        match windows_codex_invocation() {
-            WindowsCodexInvocation::File(codex_script) => {
-                cmd.arg("-File").arg(codex_script);
-            }
-            WindowsCodexInvocation::CommandName => {
-                // Fallback keeps failures recoverable (spawn/exit error) without panicking.
-                cmd.arg("-Command").arg(EXECUTABLE);
-            }
+    let mut cmd = match windows_codex_invocation() {
+        WindowsCodexInvocation::File(codex_script) => {
+            let mut cmd = Command::new(POWERSHELL_EXECUTABLE);
+            cmd.arg("-NoLogo")
+                .arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(codex_script);
+            cmd
         }
-        cmd
+        // Fallback stays recoverable and preserves literal argv handling.
+        WindowsCodexInvocation::DirectExecutable => Command::new(WINDOWS_FALLBACK_EXECUTABLE),
     };
     #[cfg(not(windows))]
     let mut cmd = Command::new(EXECUTABLE);
@@ -169,7 +168,7 @@ fn resolve_windows_executable_path() -> Option<PathBuf> {
 fn windows_codex_invocation() -> WindowsCodexInvocation {
     resolve_windows_executable_path()
         .map(WindowsCodexInvocation::File)
-        .unwrap_or(WindowsCodexInvocation::CommandName)
+        .unwrap_or(WindowsCodexInvocation::DirectExecutable)
 }
 
 pub(crate) fn apply_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
@@ -228,34 +227,33 @@ mod tests {
     use crate::agents::tests::assert_program_and_args;
     #[cfg(windows)]
     fn assert_windows_program_and_args(command: Command, tail_args: &[&str]) {
-        assert_eq!(
-            command.get_program().to_string_lossy(),
-            POWERSHELL_EXECUTABLE
-        );
+        let program = command.get_program().to_string_lossy().into_owned();
         let actual = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(
-            actual.len() >= 6,
-            "expected powershell prolog + launcher args, got: {actual:?}"
-        );
-        assert_eq!(
-            actual[0..4],
-            ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]
-        );
-        assert!(actual[4] == "-File" || actual[4] == "-Command");
-        if actual[4] == "-File" {
+        if program == POWERSHELL_EXECUTABLE {
+            assert!(
+                actual.len() >= 6,
+                "expected powershell prolog + launcher args, got: {actual:?}"
+            );
+            assert_eq!(
+                actual[0..4],
+                ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+            );
+            assert_eq!(actual[4], "-File");
             assert!(
                 actual[5].ends_with(EXECUTABLE),
                 "expected resolved script ending with {EXECUTABLE}, got {}",
                 actual[5]
             );
-        } else {
-            assert_eq!(actual[5], EXECUTABLE);
+            let expected_tail = tail_args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            assert_eq!(actual[6..], expected_tail);
+            return;
         }
+        assert_eq!(program, WINDOWS_FALLBACK_EXECUTABLE);
         let expected_tail = tail_args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(actual[6..], expected_tail);
+        assert_eq!(actual, expected_tail);
     }
 
     #[test]
