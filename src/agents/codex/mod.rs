@@ -17,6 +17,8 @@ const EXECUTABLE: &str = "codex";
 /// On Windows, use the PowerShell shim.
 #[cfg(windows)]
 const EXECUTABLE: &str = "codex.ps1";
+#[cfg(windows)]
+const POWERSHELL_EXECUTABLE: &str = "powershell";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -88,6 +90,18 @@ impl ExecutorAgent for Executor {
 
 #[inline(always)]
 fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut cmd = Command::new(POWERSHELL_EXECUTABLE);
+        cmd.arg("-NoLogo")
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-File")
+            .arg(EXECUTABLE);
+        cmd
+    };
+    #[cfg(not(windows))]
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
@@ -172,7 +186,21 @@ mod tests {
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
+        #[cfg(windows)]
+        let expected_program = POWERSHELL_EXECUTABLE;
+        #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
+        #[cfg(windows)]
+        let expected_args: &[&str] = &[
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            EXECUTABLE,
+            "plan",
+        ];
+        #[cfg(not(windows))]
         let expected_args: &[&str] = &["plan"];
 
         assert_program_and_args(
@@ -187,10 +215,26 @@ mod tests {
     #[test]
     fn codex_executor_builds_headless_command() {
         let agent = Executor::new(None);
+        #[cfg(windows)]
+        let expected_program = POWERSHELL_EXECUTABLE;
+        #[cfg(not(windows))]
+        let expected_program = EXECUTABLE;
+        #[cfg(windows)]
+        let expected: &[&str] = &[
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            EXECUTABLE,
+            "exec",
+            "run",
+        ];
+        #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            EXECUTABLE,
+            expected_program,
             expected,
         );
     }
@@ -198,10 +242,28 @@ mod tests {
     #[test]
     fn codex_model_override_is_part_of_spawned_command() {
         let agent = Executor::new(Some("gpt-5.4"));
+        #[cfg(windows)]
+        let expected_program = POWERSHELL_EXECUTABLE;
+        #[cfg(not(windows))]
+        let expected_program = EXECUTABLE;
+        #[cfg(windows)]
+        let expected: &[&str] = &[
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            EXECUTABLE,
+            "exec",
+            "--model",
+            "gpt-5.4",
+            "run",
+        ];
+        #[cfg(not(windows))]
         let expected: &[&str] = &["exec", "--model", "gpt-5.4", "run"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            EXECUTABLE,
+            expected_program,
             expected,
         );
     }
@@ -275,12 +337,29 @@ mod tests {
     #[test]
     fn codex_headless_prompt_preserves_newlines() {
         let agent = Executor::new(None);
+        #[cfg(windows)]
+        let expected_program = POWERSHELL_EXECUTABLE;
+        #[cfg(not(windows))]
+        let expected_program = EXECUTABLE;
+        #[cfg(windows)]
+        let expected: &[&str] = &[
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            EXECUTABLE,
+            "exec",
+            "line one\n\nline two",
+        ];
+        #[cfg(not(windows))]
+        let expected: &[&str] = &["exec", "line one\n\nline two"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Headless {
                 prompt: "line one\n\nline two",
             }),
-            EXECUTABLE,
-            &["exec", "line one\n\nline two"],
+            expected_program,
+            expected,
         );
     }
 
