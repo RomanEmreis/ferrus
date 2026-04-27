@@ -91,6 +91,19 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
         AgentRunMode::Interactive { prompt } => {
+            #[cfg(windows)]
+            if let Some(prompt) = prompt {
+                // On Windows, route interactive prompt invocations through `cmd /C`
+                // so `.cmd` shim execution matches terminal behavior.
+                let mut wrapped = Command::new("cmd");
+                wrapped.arg("/D").arg("/S").arg("/C").arg(EXECUTABLE);
+                if let Some(model) = model {
+                    wrapped.arg("--model").arg(model);
+                }
+                wrapped.arg(prompt);
+                return wrapped;
+            }
+
             if let Some(model) = model {
                 cmd.arg("--model").arg(model);
             }
@@ -196,12 +209,22 @@ mod tests {
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
+        #[cfg(windows)]
+        let expected_program = "cmd";
+        #[cfg(not(windows))]
+        let expected_program = EXECUTABLE;
+
+        #[cfg(windows)]
+        let expected_args: &[&str] = &["/D", "/S", "/C", EXECUTABLE, "plan"];
+        #[cfg(not(windows))]
+        let expected_args: &[&str] = &["plan"];
+
         assert_program_and_args(
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
-            EXECUTABLE,
-            &["plan"],
+            expected_program,
+            expected_args,
         );
     }
 
