@@ -207,12 +207,16 @@ mod tests {
     #[test]
     fn codex_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
+        #[cfg(windows)]
+        let expected: &[&str] = &["-"];
+        #[cfg(not(windows))]
+        let expected: &[&str] = &["plan"];
         assert_program_and_args(
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
             EXECUTABLE,
-            &["plan"],
+            expected,
         );
     }
 
