@@ -21,6 +21,11 @@ const EXECUTABLE: &str = "codex";
 const EXECUTABLE: &str = "codex.ps1";
 #[cfg(windows)]
 const POWERSHELL_EXECUTABLE: &str = "powershell";
+#[cfg(windows)]
+enum WindowsCodexInvocation {
+    File(PathBuf),
+    CommandName,
+}
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -95,18 +100,19 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     #[cfg(windows)]
     let mut cmd = {
         let mut cmd = Command::new(POWERSHELL_EXECUTABLE);
-        let codex_script = resolve_windows_executable_path().unwrap_or_else(|| {
-            panic!(
-                "Unable to locate {EXECUTABLE} in PATH; cannot launch PowerShell with -File \
-                 without an absolute script path."
-            )
-        });
         cmd.arg("-NoLogo")
             .arg("-NoProfile")
             .arg("-ExecutionPolicy")
-            .arg("Bypass")
-            .arg("-File")
-            .arg(codex_script);
+            .arg("Bypass");
+        match windows_codex_invocation() {
+            WindowsCodexInvocation::File(codex_script) => {
+                cmd.arg("-File").arg(codex_script);
+            }
+            WindowsCodexInvocation::CommandName => {
+                // Fallback keeps failures recoverable (spawn/exit error) without panicking.
+                cmd.arg("-Command").arg(EXECUTABLE);
+            }
+        }
         cmd
     };
     #[cfg(not(windows))]
@@ -157,6 +163,13 @@ fn resolve_windows_executable_path() -> Option<PathBuf> {
             .map(|path| path.join(EXECUTABLE))
             .find(|candidate| candidate.is_file())
     })
+}
+
+#[cfg(windows)]
+fn windows_codex_invocation() -> WindowsCodexInvocation {
+    resolve_windows_executable_path()
+        .map(WindowsCodexInvocation::File)
+        .unwrap_or(WindowsCodexInvocation::CommandName)
 }
 
 pub(crate) fn apply_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
@@ -214,7 +227,7 @@ mod tests {
     use super::*;
     use crate::agents::tests::assert_program_and_args;
     #[cfg(windows)]
-    fn assert_windows_program_and_args(command: Command, args: &[String]) {
+    fn assert_windows_program_and_args(command: Command, tail_args: &[&str]) {
         assert_eq!(
             command.get_program().to_string_lossy(),
             POWERSHELL_EXECUTABLE
@@ -223,15 +236,26 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(actual, args);
-    }
-
-    #[cfg(windows)]
-    fn expected_windows_codex_script() -> String {
-        resolve_windows_executable_path()
-            .expect("test requires codex.ps1 in PATH on windows")
-            .to_string_lossy()
-            .into_owned()
+        assert!(
+            actual.len() >= 6,
+            "expected powershell prolog + launcher args, got: {actual:?}"
+        );
+        assert_eq!(
+            actual[0..4],
+            ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]
+        );
+        assert!(actual[4] == "-File" || actual[4] == "-Command");
+        if actual[4] == "-File" {
+            assert!(
+                actual[5].ends_with(EXECUTABLE),
+                "expected resolved script ending with {EXECUTABLE}, got {}",
+                actual[5]
+            );
+        } else {
+            assert_eq!(actual[5], EXECUTABLE);
+        }
+        let expected_tail = tail_args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(actual[6..], expected_tail);
     }
 
     #[test]
@@ -246,15 +270,7 @@ mod tests {
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
-            &[
-                "-NoLogo".into(),
-                "-NoProfile".into(),
-                "-ExecutionPolicy".into(),
-                "Bypass".into(),
-                "-File".into(),
-                expected_windows_codex_script(),
-                "plan".into(),
-            ],
+            &["plan"],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -276,16 +292,7 @@ mod tests {
         #[cfg(windows)]
         assert_windows_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            &[
-                "-NoLogo".into(),
-                "-NoProfile".into(),
-                "-ExecutionPolicy".into(),
-                "Bypass".into(),
-                "-File".into(),
-                expected_windows_codex_script(),
-                "exec".into(),
-                "-".into(),
-            ],
+            &["exec", "-"],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -305,18 +312,7 @@ mod tests {
         #[cfg(windows)]
         assert_windows_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            &[
-                "-NoLogo".into(),
-                "-NoProfile".into(),
-                "-ExecutionPolicy".into(),
-                "Bypass".into(),
-                "-File".into(),
-                expected_windows_codex_script(),
-                "exec".into(),
-                "--model".into(),
-                "gpt-5.4".into(),
-                "-".into(),
-            ],
+            &["exec", "--model", "gpt-5.4", "-"],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -404,16 +400,7 @@ mod tests {
             agent.spawn(AgentRunMode::Headless {
                 prompt: "line one\n\nline two",
             }),
-            &[
-                "-NoLogo".into(),
-                "-NoProfile".into(),
-                "-ExecutionPolicy".into(),
-                "Bypass".into(),
-                "-File".into(),
-                expected_windows_codex_script(),
-                "exec".into(),
-                "-".into(),
-            ],
+            &["exec", "-"],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
