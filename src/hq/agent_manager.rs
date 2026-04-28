@@ -329,7 +329,14 @@ pub async fn spawn_headless_executor(
     prompt: &str,
     debug: bool,
 ) -> Result<HeadlessHandle> {
-    let command = agent.spawn(AgentRunMode::Headless { prompt });
+    let command = agent
+        .spawn(AgentRunMode::Headless { prompt })
+        .with_context(|| {
+            format!(
+                "Failed to resolve launcher for executor agent {}",
+                agent.name()
+            )
+        })?;
     spawn_headless(
         agent.name(),
         command,
@@ -348,7 +355,14 @@ pub async fn spawn_headless_supervisor(
     prompt: &str,
     debug: bool,
 ) -> Result<HeadlessHandle> {
-    let command = agent.spawn(AgentRunMode::Headless { prompt });
+    let command = agent
+        .spawn(AgentRunMode::Headless { prompt })
+        .with_context(|| {
+            format!(
+                "Failed to resolve launcher for supervisor agent {}",
+                agent.name()
+            )
+        })?;
     spawn_headless(
         agent.name(),
         command,

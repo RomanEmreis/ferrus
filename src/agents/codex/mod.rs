@@ -7,6 +7,9 @@ use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
 };
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::anyhow;
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Command;
@@ -16,18 +19,10 @@ pub(crate) const NAME: &str = "codex";
 /// Actual CLI executable name used to launch Codex.
 #[cfg(not(windows))]
 const EXECUTABLE: &str = "codex";
-/// On Windows, use the PowerShell shim.
 #[cfg(windows)]
-const EXECUTABLE: &str = "codex.ps1";
+const WINDOWS_CMD_EXECUTABLE: &str = "codex.cmd";
 #[cfg(windows)]
-const WINDOWS_FALLBACK_EXECUTABLE: &str = "codex.cmd";
-#[cfg(windows)]
-const POWERSHELL_EXECUTABLE: &str = "powershell";
-#[cfg(windows)]
-enum WindowsCodexInvocation {
-    File(PathBuf),
-    DirectExecutable,
-}
+const WINDOWS_POWERSHELL_EXECUTABLE: &str = "codex.ps1";
 
 /// Interactive and headless supervisor launcher for the Codex CLI.
 #[derive(Debug, Clone)]
@@ -64,7 +59,7 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command {
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
         codex_command(mode, self.model())
     }
 
@@ -84,7 +79,7 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command {
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
         codex_command(mode, self.model())
     }
 
@@ -98,22 +93,9 @@ impl ExecutorAgent for Executor {
 }
 
 #[inline(always)]
-fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
+fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Result<Command> {
     #[cfg(windows)]
-    let mut cmd = match windows_codex_invocation() {
-        WindowsCodexInvocation::File(codex_script) => {
-            let mut cmd = Command::new(POWERSHELL_EXECUTABLE);
-            cmd.arg("-NoLogo")
-                .arg("-NoProfile")
-                .arg("-ExecutionPolicy")
-                .arg("Bypass")
-                .arg("-File")
-                .arg(codex_script);
-            cmd
-        }
-        // Fallback stays recoverable and preserves literal argv handling.
-        WindowsCodexInvocation::DirectExecutable => Command::new(WINDOWS_FALLBACK_EXECUTABLE),
-    };
+    let mut cmd = windows_codex_command()?;
     #[cfg(not(windows))]
     let mut cmd = Command::new(EXECUTABLE);
     match mode {
@@ -141,7 +123,7 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
             cmd.arg(prompt);
         }
     }
-    cmd
+    Ok(cmd)
 }
 
 fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
@@ -156,19 +138,94 @@ fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
 }
 
 #[cfg(windows)]
-fn resolve_windows_executable_path() -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|path| path.join(EXECUTABLE))
-            .find(|candidate| candidate.is_file())
+fn resolve_windows_npm_shim_path() -> Option<PathBuf> {
+    windows_path_dirs().into_iter().find_map(|path| {
+        [
+            path.join(WINDOWS_CMD_EXECUTABLE),
+            path.join(WINDOWS_POWERSHELL_EXECUTABLE),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
     })
 }
 
 #[cfg(windows)]
-fn windows_codex_invocation() -> WindowsCodexInvocation {
-    resolve_windows_executable_path()
-        .map(WindowsCodexInvocation::File)
-        .unwrap_or(WindowsCodexInvocation::DirectExecutable)
+fn windows_path_dirs() -> Vec<PathBuf> {
+    #[cfg(test)]
+    if let Some(paths) = windows_test_path_override() {
+        return std::env::split_paths(&paths).collect();
+    }
+
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(all(windows, test))]
+fn windows_test_path_override() -> Option<std::ffi::OsString> {
+    windows_test_path_override_lock()
+        .lock()
+        .expect("path override lock poisoned")
+        .clone()
+}
+
+#[cfg(all(windows, test))]
+fn set_windows_test_path_override(value: Option<std::ffi::OsString>) {
+    *windows_test_path_override_lock()
+        .lock()
+        .expect("path override lock poisoned") = value;
+}
+
+#[cfg(all(windows, test))]
+fn windows_test_path_override_lock() -> &'static std::sync::Mutex<Option<std::ffi::OsString>> {
+    use std::sync::{Mutex, OnceLock};
+
+    static PATH_OVERRIDE: OnceLock<Mutex<Option<std::ffi::OsString>>> = OnceLock::new();
+    PATH_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(windows)]
+fn windows_codex_invocation() -> Result<(PathBuf, PathBuf)> {
+    let shim = resolve_windows_npm_shim_path().ok_or_else(|| {
+        anyhow!(
+            "Failed to locate codex.cmd or codex.ps1 in PATH; cannot resolve npm base directory \
+             for direct Node launcher."
+        )
+    })?;
+    let base_dir = shim.parent().ok_or_else(|| {
+        anyhow!(
+            "Failed to resolve parent directory for shim path: {}",
+            shim.display()
+        )
+    })?;
+    let codex_js = base_dir
+        .join("node_modules")
+        .join("@openai")
+        .join("codex")
+        .join("bin")
+        .join("codex.js");
+    if !codex_js.is_file() {
+        return Err(anyhow!(
+            "Failed to resolve direct Codex launcher script at {}",
+            codex_js.display()
+        ));
+    }
+    let local_node = base_dir.join("node.exe");
+    let node = if local_node.is_file() {
+        local_node
+    } else {
+        PathBuf::from("node.exe")
+    };
+    Ok((node, codex_js))
+}
+
+#[cfg(windows)]
+fn windows_codex_command() -> Result<Command> {
+    let (node, codex_js) = windows_codex_invocation()
+        .map_err(|error| anyhow!("Failed to resolve Codex Windows launcher: {error}"))?;
+    let mut cmd = Command::new(node);
+    cmd.arg(codex_js);
+    Ok(cmd)
 }
 
 pub(crate) fn apply_tool_approval_overrides(role: &str, entry: &mut toml::Table) {
@@ -224,36 +281,87 @@ fn auto_approved_tools(role: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use crate::agents::tests::assert_program_and_args;
     #[cfg(windows)]
-    fn assert_windows_program_and_args(command: Command, tail_args: &[&str]) {
+    use std::ffi::OsString;
+    #[cfg(windows)]
+    use std::sync::Mutex;
+    #[cfg(windows)]
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(windows)]
+    struct PathGuard {
+        original: Option<OsString>,
+    }
+
+    #[cfg(windows)]
+    impl PathGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let original = windows_test_path_override();
+            set_windows_test_path_override(Some(path.as_os_str().to_os_string()));
+            Self { original }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            set_windows_test_path_override(self.original.take());
+        }
+    }
+
+    #[cfg(windows)]
+    fn assert_windows_program_and_args(command: Result<Command>, tail_args: &[&str]) {
+        let Ok(command) = command else {
+            let error = command.unwrap_err().to_string();
+            assert!(
+                error.contains("Failed to resolve Codex Windows launcher"),
+                "expected structured launcher resolution error, got: {error}"
+            );
+            return;
+        };
         let program = command.get_program().to_string_lossy().into_owned();
         let actual = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        if program == POWERSHELL_EXECUTABLE {
+        if program.ends_with("node.exe") || program == "node.exe" {
             assert!(
-                actual.len() >= 6,
-                "expected powershell prolog + launcher args, got: {actual:?}"
+                !actual.is_empty(),
+                "expected codex.js arg + launcher args, got: {actual:?}"
             );
-            assert_eq!(
-                actual[0..4],
-                ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]
-            );
-            assert_eq!(actual[4], "-File");
             assert!(
-                actual[5].ends_with(EXECUTABLE),
-                "expected resolved script ending with {EXECUTABLE}, got {}",
-                actual[5]
+                actual[0].ends_with("node_modules\\@openai\\codex\\bin\\codex.js"),
+                "expected codex.js path, got {}",
+                actual[0]
             );
             let expected_tail = tail_args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-            assert_eq!(actual[6..], expected_tail);
+            assert_eq!(actual[1..], expected_tail);
             return;
         }
-        assert_eq!(program, WINDOWS_FALLBACK_EXECUTABLE);
-        let expected_tail = tail_args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(actual, expected_tail);
+        panic!("unexpected launcher program: {program} with args {actual:?}");
+    }
+
+    #[cfg(windows)]
+    fn assert_windows_version_command_shape(command: Result<Command>, expected_node: &str) {
+        let command = command.expect("version command should resolve");
+        let program = command.get_program().to_string_lossy().into_owned();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            program.ends_with(expected_node),
+            "expected launcher program ending with {expected_node}, got {program}"
+        );
+        assert_eq!(args.len(), 2, "expected codex.js + --version args");
+        assert!(
+            args[0].ends_with("node_modules\\@openai\\codex\\bin\\codex.js"),
+            "expected first arg to be codex.js path, got {}",
+            args[0]
+        );
+        assert_eq!(args[1], "--version");
     }
 
     #[test]
@@ -272,9 +380,11 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Interactive {
-                prompt: Some("plan"),
-            }),
+            agent
+                .spawn(AgentRunMode::Interactive {
+                    prompt: Some("plan"),
+                })
+                .unwrap(),
             expected_program,
             expected_args,
         );
@@ -294,7 +404,9 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            agent
+                .spawn(AgentRunMode::Headless { prompt: "run" })
+                .unwrap(),
             expected_program,
             expected,
         );
@@ -314,7 +426,9 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            agent
+                .spawn(AgentRunMode::Headless { prompt: "run" })
+                .unwrap(),
             expected_program,
             expected,
         );
@@ -402,9 +516,11 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless {
-                prompt: "line one\n\nline two",
-            }),
+            agent
+                .spawn(AgentRunMode::Headless {
+                    prompt: "line one\n\nline two",
+                })
+                .unwrap(),
             expected_program,
             expected,
         );
@@ -418,5 +534,34 @@ mod tests {
         let expected = HeadlessPromptTransport::Argv;
         assert_eq!(Executor::new(None).headless_prompt_transport(), expected);
         assert_eq!(Supervisor::new(None).headless_prompt_transport(), expected);
+    }
+
+    #[test]
+    fn codex_version_command_uses_expected_shape() {
+        let agent = Supervisor::new(None);
+        #[cfg(not(windows))]
+        assert_program_and_args(agent.version_command().unwrap(), EXECUTABLE, &["--version"]);
+
+        #[cfg(windows)]
+        {
+            let _lock = ENV_LOCK.lock().expect("env lock poisoned");
+            let temp = tempfile::TempDir::new().expect("tempdir");
+            let bin_dir = temp.path().join("npm");
+            std::fs::create_dir_all(&bin_dir).expect("create shim dir");
+            std::fs::write(bin_dir.join(WINDOWS_CMD_EXECUTABLE), "@echo off\n").expect("shim");
+            let codex_js = bin_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin")
+                .join("codex.js");
+            std::fs::create_dir_all(codex_js.parent().expect("codex.js parent"))
+                .expect("create codex.js parent");
+            std::fs::write(&codex_js, "console.log('codex');").expect("codex.js");
+            std::fs::write(bin_dir.join("node.exe"), "").expect("node.exe");
+
+            let _guard = PathGuard::set(&bin_dir);
+            assert_windows_version_command_shape(agent.version_command(), "node.exe");
+        }
     }
 }

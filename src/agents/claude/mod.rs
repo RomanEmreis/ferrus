@@ -50,8 +50,8 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command {
-        claude_command(mode, self.model())
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+        Ok(claude_command(mode, self.model()))
     }
 
     fn model(&self) -> Option<&str> {
@@ -66,8 +66,8 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command {
-        claude_command(mode, self.model())
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+        Ok(claude_command(mode, self.model()))
     }
 
     fn model(&self) -> Option<&str> {
@@ -113,9 +113,11 @@ mod tests {
     fn claude_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Interactive {
-                prompt: Some("plan"),
-            }),
+            agent
+                .spawn(AgentRunMode::Interactive {
+                    prompt: Some("plan"),
+                })
+                .unwrap(),
             "claude",
             &["plan"],
         );
@@ -125,7 +127,9 @@ mod tests {
     fn claude_executor_builds_headless_command() {
         let agent = Executor::new(None);
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            agent
+                .spawn(AgentRunMode::Headless { prompt: "run" })
+                .unwrap(),
             "claude",
             &["-p", "run"],
         );
@@ -135,7 +139,9 @@ mod tests {
     fn claude_model_override_is_part_of_spawned_command() {
         let agent = Supervisor::new(Some("claude-opus-4-6"));
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless { prompt: "review" }),
+            agent
+                .spawn(AgentRunMode::Headless { prompt: "review" })
+                .unwrap(),
             "claude",
             &["--model", "claude-opus-4-6", "-p", "review"],
         );

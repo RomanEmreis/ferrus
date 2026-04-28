@@ -139,25 +139,24 @@ async fn load_agent_versions(hq: Option<&HqConfig>) -> (String, String) {
         return (String::new(), String::new());
     };
     let supervisor = match hq.supervisor_agent() {
-        Ok(agent) => {
-            load_agent_version_from_command(agent.spawn(AgentRunMode::Interactive { prompt: None }))
-                .await
-        }
+        Ok(agent) => match agent.version_command() {
+            Ok(command) => load_agent_version_from_version_command(command).await,
+            Err(_) => String::new(),
+        },
         Err(_) => String::new(),
     };
     let executor = match hq.executor_agent() {
-        Ok(agent) => {
-            load_agent_version_from_command(agent.spawn(AgentRunMode::Interactive { prompt: None }))
-                .await
-        }
+        Ok(agent) => match agent.version_command() {
+            Ok(command) => load_agent_version_from_version_command(command).await,
+            Err(_) => String::new(),
+        },
         Err(_) => String::new(),
     };
     (supervisor, executor)
 }
 
-async fn load_agent_version_from_command(command: std::process::Command) -> String {
-    let program = command.get_program().to_owned();
-    let Ok(output) = Command::new(program).arg("--version").output().await else {
+async fn load_agent_version_from_version_command(command: std::process::Command) -> String {
+    let Ok(output) = Command::from(command).output().await else {
         return String::new();
     };
     if !output.status.success() {
@@ -877,7 +876,14 @@ impl HqContext {
             ROLE_SUPERVISOR,
             agent.name(),
             name,
-            agent.spawn(AgentRunMode::Interactive { prompt }),
+            agent
+                .spawn(AgentRunMode::Interactive { prompt })
+                .with_context(|| {
+                    format!(
+                        "Failed to resolve launcher for supervisor agent {}",
+                        agent.name()
+                    )
+                })?,
         )
         .await
     }
@@ -892,7 +898,14 @@ impl HqContext {
             ROLE_EXECUTOR,
             agent.name(),
             name,
-            agent.spawn(AgentRunMode::Interactive { prompt }),
+            agent
+                .spawn(AgentRunMode::Interactive { prompt })
+                .with_context(|| {
+                    format!(
+                        "Failed to resolve launcher for executor agent {}",
+                        agent.name()
+                    )
+                })?,
         )
         .await
     }
@@ -950,9 +963,18 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to define the task.");
 
-        let mut cmd = Command::from(supervisor.spawn(AgentRunMode::Interactive {
-            prompt: Some(agent_manager::supervisor_task_prompt()),
-        }));
+        let mut cmd = Command::from(
+            supervisor
+                .spawn(AgentRunMode::Interactive {
+                    prompt: Some(agent_manager::supervisor_task_prompt()),
+                })
+                .with_context(|| {
+                    format!(
+                        "Failed to resolve launcher for supervisor agent {}",
+                        supervisor.name()
+                    )
+                })?,
+        );
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
@@ -1024,9 +1046,18 @@ impl HqContext {
         self.display
             .info("Collaborate with the supervisor to draft and approve the specification.");
 
-        let mut cmd = Command::from(supervisor.spawn(AgentRunMode::Interactive {
-            prompt: Some(agent_manager::supervisor_spec_prompt()),
-        }));
+        let mut cmd = Command::from(
+            supervisor
+                .spawn(AgentRunMode::Interactive {
+                    prompt: Some(agent_manager::supervisor_spec_prompt()),
+                })
+                .with_context(|| {
+                    format!(
+                        "Failed to resolve launcher for supervisor agent {}",
+                        supervisor.name()
+                    )
+                })?,
+        );
 
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;

@@ -52,7 +52,23 @@ pub trait SupervisorAgent: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Builds the command used when a human or HQ drives the supervisor.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Ferrus cannot resolve the launcher command for
+    /// the selected backend and mode.
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command>;
+
+    /// Builds a command that returns the backend version string.
+    ///
+    /// The default implementation reuses the interactive launcher shape and
+    /// appends `--version`, which works for regular CLIs and wrapper launchers
+    /// like `node <script>`.
+    fn version_command(&self) -> Result<Command> {
+        let mut cmd = self.spawn(AgentRunMode::Interactive { prompt: None })?;
+        cmd.arg("--version");
+        Ok(cmd)
+    }
 
     /// Builds the MCP configuration entry for this supervisor instance.
     ///
@@ -90,7 +106,23 @@ pub trait ExecutorAgent: Send + Sync {
     fn name(&self) -> &'static str;
 
     /// Builds the command used when a human or HQ drives the executor.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Ferrus cannot resolve the launcher command for
+    /// the selected backend and mode.
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command>;
+
+    /// Builds a command that returns the backend version string.
+    ///
+    /// The default implementation reuses the interactive launcher shape and
+    /// appends `--version`, which works for regular CLIs and wrapper launchers
+    /// like `node <script>`.
+    fn version_command(&self) -> Result<Command> {
+        let mut cmd = self.spawn(AgentRunMode::Interactive { prompt: None })?;
+        cmd.arg("--version");
+        Ok(cmd)
+    }
 
     /// Builds the MCP configuration entry for this executor instance.
     ///
