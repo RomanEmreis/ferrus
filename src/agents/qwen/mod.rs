@@ -50,8 +50,8 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Qwen command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command {
-        qwen_command(mode, self.model())
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+        Ok(qwen_command(mode, self.model()))
     }
 
     fn model(&self) -> Option<&str> {
@@ -66,8 +66,8 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Qwen command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Command {
-        qwen_command(mode, self.model())
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+        Ok(qwen_command(mode, self.model()))
     }
 
     fn model(&self) -> Option<&str> {
@@ -109,9 +109,11 @@ mod tests {
     fn qwen_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Interactive {
-                prompt: Some("plan"),
-            }),
+            agent
+                .spawn(AgentRunMode::Interactive {
+                    prompt: Some("plan"),
+                })
+                .unwrap(),
             "qwen",
             &["-i", "plan"],
         );
@@ -121,7 +123,9 @@ mod tests {
     fn qwen_executor_builds_headless_command() {
         let agent = Executor::new(None);
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless { prompt: "run" }),
+            agent
+                .spawn(AgentRunMode::Headless { prompt: "run" })
+                .unwrap(),
             "qwen",
             &["-p", "run"],
         );
@@ -131,7 +135,9 @@ mod tests {
     fn qwen_model_override_is_part_of_spawned_command() {
         let agent = Supervisor::new(Some("qwen3-coder-plus"));
         assert_program_and_args(
-            agent.spawn(AgentRunMode::Headless { prompt: "review" }),
+            agent
+                .spawn(AgentRunMode::Headless { prompt: "review" })
+                .unwrap(),
             "qwen",
             &["--model", "qwen3-coder-plus", "-p", "review"],
         );
