@@ -186,6 +186,11 @@ fn windows_test_path_override_lock() -> &'static std::sync::Mutex<Option<std::ff
 
 #[cfg(windows)]
 fn windows_codex_invocation() -> Result<(PathBuf, PathBuf)> {
+    // Windows npm shims (`codex.cmd` / `codex.ps1`) are unreliable for Ferrus-managed
+    // interactive/headless sessions, so we resolve the npm-installed Codex JS entrypoint
+    // and launch it through node.exe directly. This intentionally depends on the current
+    // npm package layout and should eventually be replaced by a native Codex binary
+    // launcher when one is consistently available on Windows.
     let shim = resolve_windows_npm_shim_path().ok_or_else(|| {
         anyhow!(
             "Failed to locate codex.cmd or codex.ps1 in PATH; cannot resolve npm base directory \
@@ -206,8 +211,10 @@ fn windows_codex_invocation() -> Result<(PathBuf, PathBuf)> {
         .join("codex.js");
     if !codex_js.is_file() {
         return Err(anyhow!(
-            "Failed to resolve direct Codex launcher script at {}",
-            codex_js.display()
+            "Failed to resolve direct Codex Node launcher. Ferrus currently expects the npm \
+             Codex layout at node_modules/@openai/codex/bin/codex.js on Windows. If this \
+             Codex installation uses a native/Rust binary layout, configure an explicit \
+             Codex executable or reinstall Codex via npm."
         ));
     }
     let local_node = base_dir.join("node.exe");
