@@ -7,7 +7,9 @@ use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
 };
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+#[cfg(windows)]
+use anyhow::anyhow;
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Command;
@@ -137,16 +139,49 @@ fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
 
 #[cfg(windows)]
 fn resolve_windows_npm_shim_path() -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .flat_map(|path| {
-                [
-                    path.join(WINDOWS_CMD_EXECUTABLE),
-                    path.join(WINDOWS_POWERSHELL_EXECUTABLE),
-                ]
-            })
-            .find(|candidate| candidate.is_file())
+    windows_path_dirs().into_iter().find_map(|path| {
+        [
+            path.join(WINDOWS_CMD_EXECUTABLE),
+            path.join(WINDOWS_POWERSHELL_EXECUTABLE),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
     })
+}
+
+#[cfg(windows)]
+fn windows_path_dirs() -> Vec<PathBuf> {
+    #[cfg(test)]
+    if let Some(paths) = windows_test_path_override() {
+        return std::env::split_paths(&paths).collect();
+    }
+
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(all(windows, test))]
+fn windows_test_path_override() -> Option<std::ffi::OsString> {
+    windows_test_path_override_lock()
+        .lock()
+        .expect("path override lock poisoned")
+        .clone()
+}
+
+#[cfg(all(windows, test))]
+fn set_windows_test_path_override(value: Option<std::ffi::OsString>) {
+    *windows_test_path_override_lock()
+        .lock()
+        .expect("path override lock poisoned") = value;
+}
+
+#[cfg(all(windows, test))]
+fn windows_test_path_override_lock() -> &'static std::sync::Mutex<Option<std::ffi::OsString>> {
+    use std::sync::{Mutex, OnceLock};
+
+    static PATH_OVERRIDE: OnceLock<Mutex<Option<std::ffi::OsString>>> = OnceLock::new();
+    PATH_OVERRIDE.get_or_init(|| Mutex::new(None))
 }
 
 #[cfg(windows)]
@@ -246,6 +281,7 @@ fn auto_approved_tools(role: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use crate::agents::tests::assert_program_and_args;
     #[cfg(windows)]
     use std::ffi::OsString;
@@ -262,8 +298,8 @@ mod tests {
     #[cfg(windows)]
     impl PathGuard {
         fn set(path: &std::path::Path) -> Self {
-            let original = std::env::var_os("PATH");
-            std::env::set_var("PATH", path.as_os_str());
+            let original = windows_test_path_override();
+            set_windows_test_path_override(Some(path.as_os_str().to_os_string()));
             Self { original }
         }
     }
@@ -271,11 +307,7 @@ mod tests {
     #[cfg(windows)]
     impl Drop for PathGuard {
         fn drop(&mut self) {
-            if let Some(original) = self.original.take() {
-                std::env::set_var("PATH", original);
-            } else {
-                std::env::remove_var("PATH");
-            }
+            set_windows_test_path_override(self.original.take());
         }
     }
 
