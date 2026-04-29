@@ -671,7 +671,6 @@ fn parse_mcp_tool_status(line: &str) -> Option<(String, ToolCallStatus)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn background_pty_log_path_contains_role() {
         let role = "executor";

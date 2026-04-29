@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id, mcp_server_name};
 use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
 use crate::config::{HqRole, update_hq_agent_config};
 
@@ -111,7 +111,7 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
         .ok_or_else(|| anyhow::anyhow!(".mcp.json mcpServers is not a JSON object"))?;
 
     let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
-    let key = format!("ferrus-{role}-{index}");
+    let key = mcp_server_name(role, index);
     let McpConfigEntry {
         command,
         args,
@@ -180,7 +180,7 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
         .ok_or_else(|| anyhow::anyhow!(".codex/config.toml mcp_servers is not a table"))?;
 
     let index = count_codex_entries(mcp_servers, role, agent_name) + 1;
-    let key = format!("ferrus-{role}-{index}");
+    let key = mcp_server_name(role, index);
     let McpConfigEntry {
         command,
         args,
@@ -238,7 +238,7 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
         .ok_or_else(|| anyhow::anyhow!(".qwen/settings.json mcpServers is not a JSON object"))?;
 
     let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
-    let key = format!("ferrus-{role}-{index}");
+    let key = mcp_server_name(role, index);
     let McpConfigEntry {
         command,
         args,
