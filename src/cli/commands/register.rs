@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id, mcp_server_name};
 use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
 use crate::config::{HqRole, update_hq_agent_config};
 
