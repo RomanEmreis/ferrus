@@ -3,6 +3,10 @@ use serde::Deserialize;
 use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::agents::{ExecutorAgent, SupervisorAgent, parse_executor_agent, parse_supervisor_agent};
+mod claude;
+pub use claude::{
+    ClaudeMcpIsolation, ensure_claude_mcp_isolation_default, load_claude_mcp_isolation,
+};
 
 #[derive(Debug)]
 #[allow(dead_code)]

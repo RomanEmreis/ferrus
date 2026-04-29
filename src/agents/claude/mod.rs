@@ -8,6 +8,7 @@ use super::{
     normalized_model,
 };
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::config::ClaudeMcpIsolation;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,26 +22,30 @@ const EXECUTABLE: &str = "claude";
 #[derive(Debug, Clone)]
 pub struct Supervisor {
     model: Option<String>,
+    mcp_isolation: ClaudeMcpIsolation,
 }
 
 /// Interactive and headless executor launcher for Claude Code.
 #[derive(Debug, Clone)]
 pub struct Executor {
     model: Option<String>,
+    mcp_isolation: ClaudeMcpIsolation,
 }
 
 impl Supervisor {
-    pub fn new(model: Option<&str>) -> Self {
+    pub fn new(model: Option<&str>, mcp_isolation: ClaudeMcpIsolation) -> Self {
         Self {
             model: normalized_model(model),
+            mcp_isolation,
         }
     }
 }
 
 impl Executor {
-    pub fn new(model: Option<&str>) -> Self {
+    pub fn new(model: Option<&str>, mcp_isolation: ClaudeMcpIsolation) -> Self {
         Self {
             model: normalized_model(model),
+            mcp_isolation,
         }
     }
 }
@@ -53,7 +58,12 @@ impl SupervisorAgent for Supervisor {
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
     fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        Ok(claude_command(ROLE_SUPERVISOR, mode, self.model()))
+        Ok(claude_command(
+            ROLE_SUPERVISOR,
+            mode,
+            self.model(),
+            self.mcp_isolation,
+        ))
     }
 
     fn model(&self) -> Option<&str> {
@@ -69,7 +79,12 @@ impl ExecutorAgent for Executor {
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
     fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        Ok(claude_command(ROLE_EXECUTOR, mode, self.model()))
+        Ok(claude_command(
+            ROLE_EXECUTOR,
+            mode,
+            self.model(),
+            self.mcp_isolation,
+        ))
     }
 
     fn model(&self) -> Option<&str> {
@@ -78,11 +93,18 @@ impl ExecutorAgent for Executor {
 }
 
 #[inline(always)]
-fn claude_command(role: &str, mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
+fn claude_command(
+    role: &str,
+    mode: AgentRunMode<'_>,
+    model: Option<&str>,
+    isolation: ClaudeMcpIsolation,
+) -> Command {
     let mut cmd = Command::new(EXECUTABLE);
     cmd.arg("--mcp-config")
-        .arg(claude_role_mcp_config_path(role))
-        .arg("--strict-mcp-config");
+        .arg(claude_role_mcp_config_path(role));
+    if isolation == ClaudeMcpIsolation::FerrusOnly {
+        cmd.arg("--strict-mcp-config");
+    }
     if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }
@@ -120,7 +142,7 @@ mod tests {
 
     #[test]
     fn claude_supervisor_builds_interactive_command() {
-        let agent = Supervisor::new(None);
+        let agent = Supervisor::new(None, ClaudeMcpIsolation::MergeUser);
         let role_config = claude_role_mcp_config_path(ROLE_SUPERVISOR)
             .to_string_lossy()
             .into_owned();
@@ -131,13 +153,13 @@ mod tests {
                 })
                 .unwrap(),
             "claude",
-            &["--mcp-config", &role_config, "--strict-mcp-config", "plan"],
+            &["--mcp-config", &role_config, "plan"],
         );
     }
 
     #[test]
     fn claude_executor_builds_headless_command() {
-        let agent = Executor::new(None);
+        let agent = Executor::new(None, ClaudeMcpIsolation::MergeUser);
         let role_config = claude_role_mcp_config_path(ROLE_EXECUTOR)
             .to_string_lossy()
             .into_owned();
@@ -146,19 +168,13 @@ mod tests {
                 .spawn(AgentRunMode::Headless { prompt: "run" })
                 .unwrap(),
             "claude",
-            &[
-                "--mcp-config",
-                &role_config,
-                "--strict-mcp-config",
-                "-p",
-                "run",
-            ],
+            &["--mcp-config", &role_config, "-p", "run"],
         );
     }
 
     #[test]
     fn claude_model_override_is_part_of_spawned_command() {
-        let agent = Supervisor::new(Some("claude-opus-4-6"));
+        let agent = Supervisor::new(Some("claude-opus-4-6"), ClaudeMcpIsolation::MergeUser);
         let role_config = claude_role_mcp_config_path(ROLE_SUPERVISOR)
             .to_string_lossy()
             .into_owned();
@@ -170,7 +186,6 @@ mod tests {
             &[
                 "--mcp-config",
                 &role_config,
-                "--strict-mcp-config",
                 "--model",
                 "claude-opus-4-6",
                 "-p",
@@ -180,8 +195,43 @@ mod tests {
     }
 
     #[test]
+    fn claude_ferrus_only_mode_adds_strict_mcp_config() {
+        let role_config = claude_role_mcp_config_path(ROLE_SUPERVISOR)
+            .to_string_lossy()
+            .into_owned();
+        assert_program_and_args(
+            claude_command(
+                ROLE_SUPERVISOR,
+                AgentRunMode::Headless { prompt: "review" },
+                None,
+                ClaudeMcpIsolation::FerrusOnly,
+            ),
+            "claude",
+            &[
+                "--mcp-config",
+                &role_config,
+                "--strict-mcp-config",
+                "-p",
+                "review",
+            ],
+        );
+    }
+
+    #[test]
+    fn claude_role_mcp_config_paths_are_role_scoped() {
+        assert_eq!(
+            claude_role_mcp_config_path(ROLE_SUPERVISOR),
+            Path::new(".claude/mcp-supervisor.json")
+        );
+        assert_eq!(
+            claude_role_mcp_config_path(ROLE_EXECUTOR),
+            Path::new(".claude/mcp-executor.json")
+        );
+    }
+
+    #[test]
     fn claude_config_entry_uses_expected_args() {
-        let entry = Supervisor::new(Some("claude-opus-4-6"))
+        let entry = Supervisor::new(Some("claude-opus-4-6"), ClaudeMcpIsolation::MergeUser)
             .mcp_config_entry("supervisor", 2)
             .unwrap();
         assert!(!entry.command.is_empty());
@@ -205,7 +255,9 @@ mod tests {
 
     #[test]
     fn claude_executor_config_entry_uses_expected_args() {
-        let entry = Executor::new(None).mcp_config_entry("executor", 4).unwrap();
+        let entry = Executor::new(None, ClaudeMcpIsolation::MergeUser)
+            .mcp_config_entry("executor", 4)
+            .unwrap();
         assert!(!entry.command.is_empty());
         assert_eq!(
             entry.args,
