@@ -569,7 +569,12 @@ mod tests {
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
         #[cfg(not(windows))]
-        let expected: &[&str] = &["exec", "line one\n\nline two"];
+        let expected: &[&str] = &[
+            "exec",
+            "line one\n\nline two",
+            "--config",
+            "mcp_servers.ferrus-supervisor-1.enabled=false",
+        ];
         #[cfg(windows)]
         assert_windows_program_and_args(
             agent.spawn(AgentRunMode::Headless {
