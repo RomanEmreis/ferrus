@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id, mcp_server_name};
 use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
-use crate::config::{HqRole, update_hq_agent_config};
+use crate::config::{HqRole, ensure_claude_mcp_isolation_default, update_hq_agent_config};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
@@ -91,6 +91,7 @@ fn config_entry(
 }
 
 async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
+    ensure_claude_mcp_isolation_default().await?;
     let dir = std::path::Path::new(".claude");
     tokio::fs::create_dir_all(dir).await?;
     let path = crate::agents::claude::claude_role_mcp_config_path(role);
@@ -567,6 +568,9 @@ mod tests {
         let _lock = cwd_test_mutex().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+        tokio::fs::write("ferrus.toml", "[checks]\n[limits]\n")
+            .await
+            .unwrap();
 
         register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
             .await
@@ -593,6 +597,9 @@ mod tests {
         let _lock = cwd_test_mutex().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+        tokio::fs::write("ferrus.toml", "[checks]\n[limits]\n")
+            .await
+            .unwrap();
 
         register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
             .await
@@ -635,5 +642,44 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("--supervisor-model requires --supervisor"));
+    }
+
+    #[tokio::test]
+    async fn claude_registration_sets_default_mcp_isolation_when_missing() {
+        let _lock = cwd_test_mutex().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+        tokio::fs::write("ferrus.toml", "[checks]\n[limits]\n")
+            .await
+            .unwrap();
+
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+
+        let ferrus_toml = tokio::fs::read_to_string("ferrus.toml").await.unwrap();
+        assert!(ferrus_toml.contains("[agents.claude]"));
+        assert!(ferrus_toml.contains("mcp_isolation = \"merge-user\""));
+    }
+
+    #[tokio::test]
+    async fn claude_registration_does_not_overwrite_existing_mcp_isolation() {
+        let _lock = cwd_test_mutex().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\n[limits]\n[agents.claude]\nmcp_isolation = \"ferrus-only\"\n",
+        )
+        .await
+        .unwrap();
+
+        register_claude_code(ROLE_EXECUTOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+
+        let ferrus_toml = tokio::fs::read_to_string("ferrus.toml").await.unwrap();
+        assert!(ferrus_toml.contains("mcp_isolation = \"ferrus-only\""));
+        assert!(!ferrus_toml.contains("mcp_isolation = \"merge-user\""));
     }
 }

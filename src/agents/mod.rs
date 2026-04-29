@@ -158,7 +158,10 @@ pub fn parse_supervisor_agent(
     model: Option<&str>,
 ) -> Result<Arc<dyn SupervisorAgent>> {
     match agent_type {
-        claude::NAME => Ok(Arc::new(claude::Supervisor::new(model))),
+        claude::NAME => Ok(Arc::new(claude::Supervisor::new(
+            model,
+            crate::config::load_claude_mcp_isolation(),
+        ))),
         codex::NAME => Ok(Arc::new(codex::Supervisor::new(model))),
         qwen::NAME => Ok(Arc::new(qwen::Supervisor::new(model))),
         other => bail!(
@@ -178,7 +181,10 @@ pub fn parse_executor_agent(
     model: Option<&str>,
 ) -> Result<Arc<dyn ExecutorAgent>> {
     match agent_type {
-        claude::NAME => Ok(Arc::new(claude::Executor::new(model))),
+        claude::NAME => Ok(Arc::new(claude::Executor::new(
+            model,
+            crate::config::load_claude_mcp_isolation(),
+        ))),
         codex::NAME => Ok(Arc::new(codex::Executor::new(model))),
         qwen::NAME => Ok(Arc::new(qwen::Executor::new(model))),
         other => bail!(
