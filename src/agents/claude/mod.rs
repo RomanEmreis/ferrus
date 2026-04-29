@@ -121,6 +121,9 @@ mod tests {
     #[test]
     fn claude_supervisor_builds_interactive_command() {
         let agent = Supervisor::new(None);
+        let role_config = claude_role_mcp_config_path(ROLE_SUPERVISOR)
+            .to_string_lossy()
+            .into_owned();
         assert_program_and_args(
             agent
                 .spawn(AgentRunMode::Interactive {
@@ -128,18 +131,16 @@ mod tests {
                 })
                 .unwrap(),
             "claude",
-            &[
-                "--mcp-config",
-                ".claude/mcp-supervisor.json",
-                "--strict-mcp-config",
-                "plan",
-            ],
+            &["--mcp-config", &role_config, "--strict-mcp-config", "plan"],
         );
     }
 
     #[test]
     fn claude_executor_builds_headless_command() {
         let agent = Executor::new(None);
+        let role_config = claude_role_mcp_config_path(ROLE_EXECUTOR)
+            .to_string_lossy()
+            .into_owned();
         assert_program_and_args(
             agent
                 .spawn(AgentRunMode::Headless { prompt: "run" })
@@ -147,7 +148,7 @@ mod tests {
             "claude",
             &[
                 "--mcp-config",
-                ".claude/mcp-executor.json",
+                &role_config,
                 "--strict-mcp-config",
                 "-p",
                 "run",
@@ -158,6 +159,9 @@ mod tests {
     #[test]
     fn claude_model_override_is_part_of_spawned_command() {
         let agent = Supervisor::new(Some("claude-opus-4-6"));
+        let role_config = claude_role_mcp_config_path(ROLE_SUPERVISOR)
+            .to_string_lossy()
+            .into_owned();
         assert_program_and_args(
             agent
                 .spawn(AgentRunMode::Headless { prompt: "review" })
@@ -165,7 +169,7 @@ mod tests {
             "claude",
             &[
                 "--mcp-config",
-                ".claude/mcp-supervisor.json",
+                &role_config,
                 "--strict-mcp-config",
                 "--model",
                 "claude-opus-4-6",
