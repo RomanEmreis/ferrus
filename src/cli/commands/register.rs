@@ -91,24 +91,27 @@ fn config_entry(
 }
 
 async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
-    let path = std::path::Path::new(".mcp.json");
+    let dir = std::path::Path::new(".claude");
+    tokio::fs::create_dir_all(dir).await?;
+    let path = crate::agents::claude::claude_role_mcp_config_path(role);
 
     let mut root: serde_json::Value = if path.exists() {
-        let content = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str(&content).context("Failed to parse .mcp.json")?
+        let content = tokio::fs::read_to_string(&path).await?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse {}", path.display()))?
     } else {
         serde_json::json!({})
     };
 
     let servers = root
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!(".mcp.json root is not a JSON object"))?
+        .ok_or_else(|| anyhow::anyhow!("{} root is not a JSON object", path.display()))?
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
     let servers_obj = servers
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!(".mcp.json mcpServers is not a JSON object"))?;
+        .ok_or_else(|| anyhow::anyhow!("{} mcpServers is not a JSON object", path.display()))?;
 
     let index = count_mcp_entries(servers_obj, role, agent_name) + 1;
     let key = mcp_server_name(role, index);
@@ -127,15 +130,21 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
     }
     servers_obj.insert(key.clone(), server_entry);
     println!(
-        "Registered {key} in .mcp.json (agent_id will be \"{}\")",
+        "Registered {key} in {} (agent_id will be \"{}\")",
+        path.display(),
         agent_id(role, agent_name, index)
     );
 
     let content = serde_json::to_string_pretty(&root)?;
-    tokio::fs::write(path, content).await?;
+    tokio::fs::write(&path, content).await?;
 
     crate::agents::claude::allow_mcp_server_tools(&key).await?;
-    update_gitignore(&[".mcp.json", ".claude/settings.local.json"]).await?;
+    update_gitignore(&[
+        ".claude/mcp-supervisor.json",
+        ".claude/mcp-executor.json",
+        ".claude/settings.local.json",
+    ])
+    .await?;
     append_to_claude_md(role).await?;
     Ok(())
 }
@@ -468,6 +477,30 @@ fn normalize_model(model: Option<&str>) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn cwd_test_mutex() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CurrentDirGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn change_to(path: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
+    }
 
     #[test]
     fn agents_md_supervisor_section_requires_user_approval_before_create_task() {
@@ -527,6 +560,72 @@ mod tests {
         assert_eq!(normalize_model(Some("")), None);
         assert_eq!(normalize_model(Some(" ")), None);
         assert_eq!(normalize_model(Some("gpt-5.4")), Some("gpt-5.4"));
+    }
+
+    #[tokio::test]
+    async fn claude_supervisor_registration_increments_index_in_same_role_file() {
+        let _lock = cwd_test_mutex().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(".claude/mcp-supervisor.json")
+            .await
+            .unwrap();
+        let root: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let servers = root
+            .get("mcpServers")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert!(servers.contains_key("ferrus-supervisor-1"));
+        assert!(servers.contains_key("ferrus-supervisor-2"));
+        assert!(!servers.contains_key("ferrus-executor-1"));
+    }
+
+    #[tokio::test]
+    async fn claude_executor_registration_is_role_scoped_and_does_not_change_supervisor_index() {
+        let _lock = cwd_test_mutex().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+        register_claude_code(ROLE_EXECUTOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+            .await
+            .unwrap();
+
+        let supervisor_content = tokio::fs::read_to_string(".claude/mcp-supervisor.json")
+            .await
+            .unwrap();
+        let supervisor_root: serde_json::Value = serde_json::from_str(&supervisor_content).unwrap();
+        let supervisor_servers = supervisor_root
+            .get("mcpServers")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert!(supervisor_servers.contains_key("ferrus-supervisor-1"));
+        assert!(supervisor_servers.contains_key("ferrus-supervisor-2"));
+        assert!(!supervisor_servers.contains_key("ferrus-executor-1"));
+
+        let executor_content = tokio::fs::read_to_string(".claude/mcp-executor.json")
+            .await
+            .unwrap();
+        let executor_root: serde_json::Value = serde_json::from_str(&executor_content).unwrap();
+        let executor_servers = executor_root
+            .get("mcpServers")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert!(executor_servers.contains_key("ferrus-executor-1"));
+        assert!(!executor_servers.contains_key("ferrus-supervisor-1"));
     }
 
     #[tokio::test]

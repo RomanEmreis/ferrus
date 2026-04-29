@@ -7,7 +7,9 @@ use super::{
     AgentRunMode, ExecutorAgent, SupervisorAgent, allow_mcp_server_tools_in_json_settings,
     normalized_model,
 };
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Stable agent identifier used in Ferrus configuration and error messages.
@@ -51,7 +53,7 @@ impl SupervisorAgent for Supervisor {
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
     fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        Ok(claude_command(mode, self.model()))
+        Ok(claude_command(ROLE_SUPERVISOR, mode, self.model()))
     }
 
     fn model(&self) -> Option<&str> {
@@ -67,7 +69,7 @@ impl ExecutorAgent for Executor {
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
     fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        Ok(claude_command(mode, self.model()))
+        Ok(claude_command(ROLE_EXECUTOR, mode, self.model()))
     }
 
     fn model(&self) -> Option<&str> {
@@ -76,8 +78,11 @@ impl ExecutorAgent for Executor {
 }
 
 #[inline(always)]
-fn claude_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
+fn claude_command(role: &str, mode: AgentRunMode<'_>, model: Option<&str>) -> Command {
     let mut cmd = Command::new(EXECUTABLE);
+    cmd.arg("--mcp-config")
+        .arg(claude_role_mcp_config_path(role))
+        .arg("--strict-mcp-config");
     if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }
@@ -104,6 +109,10 @@ pub(crate) async fn allow_mcp_server_tools(server_key: &str) -> Result<()> {
     .await
 }
 
+pub(crate) fn claude_role_mcp_config_path(role: &str) -> PathBuf {
+    Path::new(".claude").join(format!("mcp-{role}.json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,7 +128,12 @@ mod tests {
                 })
                 .unwrap(),
             "claude",
-            &["plan"],
+            &[
+                "--mcp-config",
+                ".claude/mcp-supervisor.json",
+                "--strict-mcp-config",
+                "plan",
+            ],
         );
     }
 
@@ -131,7 +145,13 @@ mod tests {
                 .spawn(AgentRunMode::Headless { prompt: "run" })
                 .unwrap(),
             "claude",
-            &["-p", "run"],
+            &[
+                "--mcp-config",
+                ".claude/mcp-executor.json",
+                "--strict-mcp-config",
+                "-p",
+                "run",
+            ],
         );
     }
 
@@ -143,7 +163,15 @@ mod tests {
                 .spawn(AgentRunMode::Headless { prompt: "review" })
                 .unwrap(),
             "claude",
-            &["--model", "claude-opus-4-6", "-p", "review"],
+            &[
+                "--mcp-config",
+                ".claude/mcp-supervisor.json",
+                "--strict-mcp-config",
+                "--model",
+                "claude-opus-4-6",
+                "-p",
+                "review",
+            ],
         );
     }
 
