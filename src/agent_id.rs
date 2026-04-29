@@ -6,6 +6,10 @@ pub fn agent_id(role: &str, vendor: &str, index: u32) -> String {
     format!("{role}:{vendor}:{index}")
 }
 
+pub fn mcp_server_name(role: &str, index: u32) -> String {
+    format!("ferrus-{role}-{index}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13,5 +17,10 @@ mod tests {
     #[test]
     fn builds_structured_agent_id() {
         assert_eq!(agent_id("executor", "codex", 1), "executor:codex:1");
+    }
+
+    #[test]
+    fn builds_mcp_server_name() {
+        assert_eq!(mcp_server_name("supervisor", 2), "ferrus-supervisor-2");
     }
 }

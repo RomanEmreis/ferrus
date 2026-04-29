@@ -6,7 +6,7 @@
 use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
 };
-use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
 use anyhow::Result;
 #[cfg(windows)]
 use anyhow::anyhow;
@@ -60,7 +60,7 @@ impl SupervisorAgent for Supervisor {
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
     fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        codex_command(mode, self.model())
+        codex_command(mode, self.model(), ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)
     }
 
     fn model(&self) -> Option<&str> {
@@ -80,7 +80,7 @@ impl ExecutorAgent for Executor {
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
     fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        codex_command(mode, self.model())
+        codex_command(mode, self.model(), ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)
     }
 
     fn model(&self) -> Option<&str> {
@@ -93,7 +93,12 @@ impl ExecutorAgent for Executor {
 }
 
 #[inline(always)]
-fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Result<Command> {
+fn codex_command(
+    mode: AgentRunMode<'_>,
+    model: Option<&str>,
+    role: &str,
+    index: u32,
+) -> Result<Command> {
     #[cfg(windows)]
     let mut cmd = windows_codex_command()?;
     #[cfg(not(windows))]
@@ -123,7 +128,20 @@ fn codex_command(mode: AgentRunMode<'_>, model: Option<&str>) -> Result<Command>
             cmd.arg(prompt);
         }
     }
+    apply_opposite_role_mcp_override(&mut cmd, role, index);
     Ok(cmd)
+}
+
+fn apply_opposite_role_mcp_override(command: &mut Command, role: &str, index: u32) {
+    let opposite_role = match role {
+        ROLE_SUPERVISOR => ROLE_EXECUTOR,
+        ROLE_EXECUTOR => ROLE_SUPERVISOR,
+        _ => return,
+    };
+    let opposite_server = mcp_server_name(opposite_role, index);
+    command
+        .arg("--config")
+        .arg(format!("mcp_servers.{opposite_server}.enabled=false"));
 }
 
 fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
@@ -362,13 +380,19 @@ mod tests {
             program.ends_with(expected_node),
             "expected launcher program ending with {expected_node}, got {program}"
         );
-        assert_eq!(args.len(), 2, "expected codex.js + --version args");
+        assert_eq!(
+            args.len(),
+            4,
+            "expected codex.js + role override + --version args"
+        );
         assert!(
             args[0].ends_with("node_modules\\@openai\\codex\\bin\\codex.js"),
             "expected first arg to be codex.js path, got {}",
             args[0]
         );
-        assert_eq!(args[1], "--version");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[2], "mcp_servers.ferrus-executor-1.enabled=false");
+        assert_eq!(args[3], "--version");
     }
 
     #[test]
@@ -377,13 +401,21 @@ mod tests {
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
         #[cfg(not(windows))]
-        let expected_args: &[&str] = &["plan"];
+        let expected_args: &[&str] = &[
+            "plan",
+            "--config",
+            "mcp_servers.ferrus-executor-1.enabled=false",
+        ];
         #[cfg(windows)]
         assert_windows_program_and_args(
             agent.spawn(AgentRunMode::Interactive {
                 prompt: Some("plan"),
             }),
-            &["plan"],
+            &[
+                "plan",
+                "--config",
+                "mcp_servers.ferrus-executor-1.enabled=false",
+            ],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -403,11 +435,21 @@ mod tests {
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
         #[cfg(not(windows))]
-        let expected: &[&str] = &["exec", "run"];
+        let expected: &[&str] = &[
+            "exec",
+            "run",
+            "--config",
+            "mcp_servers.ferrus-supervisor-1.enabled=false",
+        ];
         #[cfg(windows)]
         assert_windows_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            &["exec", "-"],
+            &[
+                "exec",
+                "-",
+                "--config",
+                "mcp_servers.ferrus-supervisor-1.enabled=false",
+            ],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -425,11 +467,25 @@ mod tests {
         #[cfg(not(windows))]
         let expected_program = EXECUTABLE;
         #[cfg(not(windows))]
-        let expected: &[&str] = &["exec", "--model", "gpt-5.4", "run"];
+        let expected: &[&str] = &[
+            "exec",
+            "--model",
+            "gpt-5.4",
+            "run",
+            "--config",
+            "mcp_servers.ferrus-supervisor-1.enabled=false",
+        ];
         #[cfg(windows)]
         assert_windows_program_and_args(
             agent.spawn(AgentRunMode::Headless { prompt: "run" }),
-            &["exec", "--model", "gpt-5.4", "-"],
+            &[
+                "exec",
+                "--model",
+                "gpt-5.4",
+                "-",
+                "--config",
+                "mcp_servers.ferrus-supervisor-1.enabled=false",
+            ],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -519,7 +575,12 @@ mod tests {
             agent.spawn(AgentRunMode::Headless {
                 prompt: "line one\n\nline two",
             }),
-            &["exec", "-"],
+            &[
+                "exec",
+                "-",
+                "--config",
+                "mcp_servers.ferrus-supervisor-1.enabled=false",
+            ],
         );
         #[cfg(not(windows))]
         assert_program_and_args(
@@ -547,7 +608,15 @@ mod tests {
     fn codex_version_command_uses_expected_shape() {
         let agent = Supervisor::new(None);
         #[cfg(not(windows))]
-        assert_program_and_args(agent.version_command().unwrap(), EXECUTABLE, &["--version"]);
+        assert_program_and_args(
+            agent.version_command().unwrap(),
+            EXECUTABLE,
+            &[
+                "--config",
+                "mcp_servers.ferrus-executor-1.enabled=false",
+                "--version",
+            ],
+        );
 
         #[cfg(windows)]
         {
