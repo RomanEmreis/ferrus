@@ -37,7 +37,13 @@ pub enum ShellCommand {
     /// Free-form planning session with the supervisor (no task created, no state requirement).
     Plan,
     /// Define a task with the supervisor, then run the executor→review loop automatically.
-    Task,
+    Task {
+        /// Ignore the selected spec milestone and define a free-form task.
+        #[arg(long)]
+        manual: bool,
+    },
+    /// Select the current spec and milestone without creating a task.
+    Milestones,
     /// Draft and approve a feature specification with the supervisor.
     Spec,
     /// Open an interactive supervisor session (no initial prompt, no state requirement).
@@ -155,7 +161,21 @@ mod tests {
     fn parse_task() {
         assert!(matches!(
             parse_command("/task").unwrap(),
-            ShellCommand::Task
+            ShellCommand::Task { manual: false }
+        ));
+    }
+    #[test]
+    fn parse_task_manual() {
+        assert!(matches!(
+            parse_command("/task --manual").unwrap(),
+            ShellCommand::Task { manual: true }
+        ));
+    }
+    #[test]
+    fn parse_milestones() {
+        assert!(matches!(
+            parse_command("/milestones").unwrap(),
+            ShellCommand::Milestones
         ));
     }
     #[test]

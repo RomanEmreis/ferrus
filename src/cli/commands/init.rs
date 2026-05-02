@@ -283,8 +283,10 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Command | Description |
 |---|---|
 | `/plan` | Free-form planning session with the supervisor (no task created) |
-| `/task` | Define a task with the supervisor, then run executor→review loop |
+| `/task` | Define a task from the selected milestone, then run executor→review loop |
+| `/task --manual` | Define a free-form task without selected milestone context |
 | `/spec` | Draft, approve, and save a feature specification |
+| `/milestones` | Select the current spec and milestone |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |
@@ -383,7 +385,7 @@ model = ""              # optional override; empty = agent default
 
 | File | Contents |
 |---|---|
-| `STATE.json` | State, counters, schema version, timestamp, PID |
+| `STATE.json` | State, counters, schema version, timestamp, PID, selected spec/milestone IDs |
 | `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Task description |
 | `REVIEW.md` | Rejection notes |

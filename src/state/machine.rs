@@ -48,6 +48,12 @@ pub struct StateData {
     /// None when unclaimed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat: Option<DateTime<Utc>>,
+    /// Relative path or configured path of the currently selected spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_spec: Option<String>,
+    /// Stable milestone ID selected inside `selected_spec`, e.g. "m1.1".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_milestone: Option<String>,
 }
 
 const fn default_schema_version() -> u32 {
@@ -71,6 +77,8 @@ impl Default for StateData {
             claimed_by: None,
             lease_until: None,
             last_heartbeat: None,
+            selected_spec: None,
+            selected_milestone: None,
         }
     }
 }
@@ -97,7 +105,11 @@ pub enum TransitionError {
 impl StateData {
     /// Reset to Idle from any state. Used by the HQ `/reset` command.
     pub fn force_reset(&mut self) {
+        let selected_spec = self.selected_spec.clone();
+        let selected_milestone = self.selected_milestone.clone();
         *self = Self::default();
+        self.selected_spec = selected_spec;
+        self.selected_milestone = selected_milestone;
     }
 
     /// True if a non-expired lease exists (`lease_until` is set and in the future).

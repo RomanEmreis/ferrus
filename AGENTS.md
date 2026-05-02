@@ -37,7 +37,7 @@ src/
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
-  hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs; double-Ctrl+C-to-quit (2-second window)
+  hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, spec/milestone status line, confirmation/selection dialogs; double-Ctrl+C-to-quit (2-second window)
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
   hq/agent_manager.rs        # agent spawn helpers (headless for executor, reviewer, consultant); HeadlessHandle; agents.json updates
@@ -56,6 +56,8 @@ src/
 **Lease fields**: `claimed_by`, `lease_until`, `last_heartbeat` on `StateData`. Cleared by transition methods (`create_task`, `submit`, `approve`, `reject`) — not by tool files. Never clear them manually in a tool.
 
 **File locking**: `wait_for_task`, `wait_for_review`, and `/heartbeat` acquire an exclusive `flock` on `.ferrus/STATE.lock` (not `STATE.json`) for their read-check-write cycle. Use `store::open_lock_file()` + `tokio::task::spawn_blocking` for the blocking lock call.
+
+**Spec selection**: `STATE.json` stores `selected_spec` and `selected_milestone` as references only. Milestone display text is resolved from the spec Markdown by milestone `ID`. Keep milestone IDs stable across title edits.
 
 ## Ferrus Executor
 

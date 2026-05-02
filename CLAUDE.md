@@ -45,8 +45,10 @@ ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor 
 | Command | Description |
 |---|---|
 | `/plan` | Free-form planning session with the supervisor (no task created, no state requirement) |
-| `/task` | Define a task with the supervisor, then run the executor→review loop automatically |
+| `/task` | Define a task from the selected milestone, then run the executor→review loop automatically |
+| `/task --manual` | Define a free-form task without selected milestone context |
 | `/spec` | Draft, approve, and save a feature specification |
+| `/milestones` | Select the current spec and milestone |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt, no state requirement) |
 | `/executor` | Open an interactive executor session (no initial prompt, no state requirement) |
 | `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both consultant and executor |

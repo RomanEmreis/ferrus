@@ -6,9 +6,20 @@ mod config;
 mod hq;
 mod platform;
 mod server;
+mod specs;
 mod state;
 mod templates;
 mod update_check;
+
+#[cfg(test)]
+mod test_support {
+    use std::sync::{Mutex, OnceLock};
+
+    pub(crate) fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+}
 
 use clap::Parser;
 

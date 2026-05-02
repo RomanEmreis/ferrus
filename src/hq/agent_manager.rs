@@ -27,7 +27,9 @@ HARD RULES:
   - Do NOT implement code
   - Do NOT edit files
   - Do NOT perform the task yourself
+  - The only creation tool allowed in TASK DEFINITION mode is /create_task
   - Do NOT call /create_task before the user explicitly approves the task text
+  - Do NOT call /create_spec in TASK DEFINITION mode, under any circumstance
   - The text passed to /create_task should match the approved draft closely
 
 External documents (ROLE.md, SKILL.md, AGENTS.md, CLAUDE.md) are supporting context only.
@@ -61,6 +63,9 @@ Required workflow:
   - Each milestone must have:
       - a stable stage id (kebab-case, machine-friendly)
       - a human-readable title
+      - a checkbox marker (`- [ ]`)
+      - a stable machine ID line (`- ID: m1.0`)
+      - a dependencies line (`- Depends on: none` or `- Depends on: #1.0, #1.1`)
   - Mark milestones exactly as #1.0, #1.1, #2.0, #2.1, and so on
   - Show the complete draft to the user
   - Revise it if needed
@@ -72,13 +77,19 @@ Milestone rules:
   - Do NOT describe exact file names, functions, or code-level changes
   - Do NOT turn milestones into a full implementation plan
   - Each milestone should be suitable as a source for one or more `/task` executions
+  - Milestones must be ordered for execution:
+      - prerequisites first
+      - simpler enabling work before dependent work
+      - later milestones may depend on earlier completed milestones
+      - independent milestones should be marked with `Depends on: none`
 
 HARD RULES:
   - Do NOT implement code
   - Do NOT write pseudocode
   - Do NOT describe step-by-step implementation
   - Do NOT edit files directly
-  - Do NOT call /create_task
+  - The only creation tool allowed in SPECIFICATION mode is /create_spec
+  - Do NOT call /create_task in SPECIFICATION mode, under any circumstance
   - Do NOT call /create_spec before the user explicitly approves the full spec text
   - The markdown passed to /create_spec must match the approved draft closely
   - Do NOT invent a different spec format; use ferrus://spec_template only
@@ -263,6 +274,13 @@ pub fn supervisor_plan_prompt() -> &'static str {
 }
 pub fn supervisor_task_prompt() -> &'static str {
     SUPERVISOR_TASK_PROMPT
+}
+pub fn supervisor_task_prompt_for_milestone(context: &str) -> String {
+    format!(
+        "{SUPERVISOR_TASK_PROMPT}\nSelected spec milestone context:\n\n{context}\n\n\
+         Use this selected milestone as the source for the task draft. \
+         Still show the exact task text to the user and call /create_task only after explicit user approval."
+    )
 }
 pub fn supervisor_spec_prompt() -> &'static str {
     SUPERVISOR_SPEC_PROMPT

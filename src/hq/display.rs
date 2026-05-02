@@ -51,6 +51,12 @@ impl Display {
         if state.review_cycles > 0 {
             self.info(format!("cycles     : {}", state.review_cycles));
         }
+        if let Some(spec) = &state.selected_spec {
+            self.info(format!("spec       : {spec}"));
+        }
+        if let Some(milestone) = &state.selected_milestone {
+            self.info(format!("milestone  : {milestone}"));
+        }
         if agents.agents.is_empty() {
             self.info("agents     : none");
         } else {
@@ -80,9 +86,46 @@ impl Display {
     }
 
     pub fn confirm(&self, prompt: impl Into<String>) -> oneshot::Receiver<bool> {
+        self.confirm_custom(prompt, "[y/N]", false, &['y'], &['n'])
+    }
+
+    pub fn confirm_yes(&self, prompt: impl Into<String>) -> oneshot::Receiver<bool> {
+        self.confirm_custom(prompt, "[Y/n]", true, &['y'], &['n'])
+    }
+
+    pub fn confirm_continue(&self, prompt: impl Into<String>) -> oneshot::Receiver<bool> {
+        self.confirm_custom(prompt, "[c/N]", false, &['c'], &['n'])
+    }
+
+    fn confirm_custom(
+        &self,
+        prompt: impl Into<String>,
+        suffix: impl Into<String>,
+        default: bool,
+        accept_keys: &[char],
+        reject_keys: &[char],
+    ) -> oneshot::Receiver<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self.0.send(UiMessage::ConfirmationRequest {
             prompt: prompt.into(),
+            suffix: suffix.into(),
+            default,
+            accept_keys: accept_keys.to_vec(),
+            reject_keys: reject_keys.to_vec(),
+            reply: reply_tx,
+        });
+        reply_rx
+    }
+
+    pub fn select(
+        &self,
+        prompt: impl Into<String>,
+        options: Vec<String>,
+    ) -> oneshot::Receiver<Option<usize>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.0.send(UiMessage::SelectionRequest {
+            prompt: prompt.into(),
+            options,
             reply: reply_tx,
         });
         reply_rx

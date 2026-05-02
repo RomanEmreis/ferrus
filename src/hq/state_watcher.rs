@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 
+use crate::specs::{self, SelectedMilestoneState};
 use crate::state::{
     machine::{StateData, TaskState},
     store,
@@ -21,6 +22,8 @@ pub struct WatchedState {
     pub state: StateData,
     pub state_elapsed: Duration,
     pub transition: Option<TransitionSnapshot>,
+    pub selected_spec_display: Option<String>,
+    pub selected_milestone_display: Option<String>,
 }
 
 /// Poll STATE.json every 250 ms and refresh elapsed timers every second.
@@ -87,12 +90,34 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
             last_sent_state_elapsed_secs = Some(state_elapsed_secs);
             last_sent_task_elapsed_secs = task_elapsed_secs;
             last_state = Some(state.clone());
+            let (selected_spec_display, selected_milestone_display) =
+                selected_milestone_display(&state).await;
             let _ = tx.send(Some(WatchedState {
                 state,
                 state_elapsed,
                 transition,
+                selected_spec_display,
+                selected_milestone_display,
             }));
         }
+    }
+}
+
+async fn selected_milestone_display(state: &StateData) -> (Option<String>, Option<String>) {
+    match specs::resolve_selected(state).await {
+        Ok(SelectedMilestoneState::Found(selected)) => (
+            Some(specs::compact_spec_display_name(&selected.spec_display)),
+            Some(selected.milestone.marker),
+        ),
+        _ => (
+            state
+                .selected_spec
+                .as_deref()
+                .map(specs::spec_display_name)
+                .map(|name| specs::compact_spec_display_name(&name))
+                .filter(|name| !name.is_empty()),
+            None,
+        ),
     }
 }
 

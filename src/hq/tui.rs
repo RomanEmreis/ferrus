@@ -26,6 +26,7 @@ const MAX_COMPLETIONS: usize = 8;
 const COMMANDS: &[(&str, &str)] = &[
     ("/plan", "spawn supervisor, plan a task"),
     ("/task", "define a task and run executor then review"),
+    ("/milestones", "select current spec and milestone"),
     ("/spec", "draft and save an approved feature spec"),
     ("/check", "run the Ferrus check gate from HQ"),
     ("/supervisor", "open an interactive supervisor session"),
@@ -62,7 +63,16 @@ pub enum UiMessage {
     Resume,
     ConfirmationRequest {
         prompt: String,
+        suffix: String,
+        default: bool,
+        accept_keys: Vec<char>,
+        reject_keys: Vec<char>,
         reply: oneshot::Sender<bool>,
+    },
+    SelectionRequest {
+        prompt: String,
+        options: Vec<String>,
+        reply: oneshot::Sender<Option<usize>>,
     },
 }
 
@@ -78,6 +88,8 @@ pub struct StatusSnapshot {
     pub cycles: u32,
     pub supervisor_status: String,
     pub executor_status: String,
+    pub selected_spec: Option<String>,
+    pub selected_milestone: Option<String>,
 }
 
 impl StatusSnapshot {
@@ -108,13 +120,26 @@ impl StatusSnapshot {
             cycles: state.review_cycles,
             supervisor_status: "none".to_string(),
             executor_status: "none".to_string(),
+            selected_spec: watched.selected_spec_display.clone(),
+            selected_milestone: watched.selected_milestone_display.clone(),
         }
     }
 }
 
 struct ConfirmationState {
     prompt: String,
+    suffix: String,
+    default: bool,
+    accept_keys: Vec<char>,
+    reject_keys: Vec<char>,
     reply: oneshot::Sender<bool>,
+}
+
+struct SelectionState {
+    prompt: String,
+    options: Vec<String>,
+    selected: usize,
+    reply: oneshot::Sender<Option<usize>>,
 }
 
 #[derive(Clone)]
@@ -147,10 +172,12 @@ pub struct App {
     completion_active: bool,
     completion_hidden: bool,
     confirmation: Option<ConfirmationState>,
+    selection: Option<SelectionState>,
     suspended: bool,
     should_quit: bool,
     ctrl_c_pending: bool,
     ctrl_c_at: Option<Instant>,
+    input_suppressed_until: Option<Instant>,
 }
 
 impl App {
@@ -169,10 +196,12 @@ impl App {
             completion_active: false,
             completion_hidden: false,
             confirmation: None,
+            selection: None,
             suspended: false,
             should_quit: false,
             ctrl_c_pending: false,
             ctrl_c_at: None,
+            input_suppressed_until: None,
         }
     }
 
@@ -342,7 +371,10 @@ impl App {
     }
 
     fn completion_popup_visible(&self) -> bool {
-        self.confirmation.is_none() && self.has_command_context() && !self.completion_hidden
+        self.confirmation.is_none()
+            && self.selection.is_none()
+            && self.has_command_context()
+            && !self.completion_hidden
     }
 
     fn compute_completions(&mut self) {
@@ -632,7 +664,17 @@ fn handle_event(
                 return Ok(());
             }
 
-            if app.confirmation.is_some() {
+            if app
+                .input_suppressed_until
+                .is_some_and(|until| Instant::now() < until)
+            {
+                return Ok(());
+            }
+            app.input_suppressed_until = None;
+
+            if app.selection.is_some() {
+                handle_selection_key(key, app);
+            } else if app.confirmation.is_some() {
                 handle_confirmation_key(key, app);
             } else {
                 match (key.code, key.modifiers) {
@@ -701,8 +743,22 @@ fn handle_event(
 
 fn handle_confirmation_key(key: KeyEvent, app: &mut App) {
     match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => confirm(app, true),
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => confirm(app, false),
+        KeyCode::Enter => {
+            if let Some(confirm_state) = app.confirmation.as_ref() {
+                confirm(app, confirm_state.default);
+            }
+        }
+        KeyCode::Char(ch) => {
+            if let Some(confirm_state) = app.confirmation.as_ref() {
+                let key = ch.to_ascii_lowercase();
+                if confirm_state.accept_keys.contains(&key) {
+                    confirm(app, true);
+                } else if confirm_state.reject_keys.contains(&key) {
+                    confirm(app, false);
+                }
+            }
+        }
+        KeyCode::Esc => confirm(app, false),
         _ => {}
     }
 }
@@ -710,6 +766,32 @@ fn handle_confirmation_key(key: KeyEvent, app: &mut App) {
 fn confirm(app: &mut App, accepted: bool) {
     if let Some(confirm) = app.confirmation.take() {
         let _ = confirm.reply.send(accepted);
+    }
+}
+
+fn handle_selection_key(key: KeyEvent, app: &mut App) {
+    let Some(selection) = app.selection.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::BackTab => {
+            selection.selected = selection.selected.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            selection.selected = (selection.selected + 1).min(selection.options.len() - 1);
+        }
+        KeyCode::Enter => {
+            let selected = selection.selected;
+            if let Some(selection) = app.selection.take() {
+                let _ = selection.reply.send(Some(selected));
+            }
+        }
+        KeyCode::Esc => {
+            if let Some(selection) = app.selection.take() {
+                let _ = selection.reply.send(None);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -782,6 +864,10 @@ fn handle_message(
         UiMessage::Resume => {
             enter_tui()?;
             flush_stdin_input_buffer();
+            app.input.clear();
+            app.cursor_pos = 0;
+            app.clear_completion();
+            app.input_suppressed_until = Some(Instant::now() + Duration::from_millis(500));
             app.suspended = false;
             ui.prompt_visible = false;
             ui.prompt_lines = 0;
@@ -790,8 +876,38 @@ fn handle_message(
             redraw_live_area(stdout, app, ui)?;
             return Ok(true);
         }
-        UiMessage::ConfirmationRequest { prompt, reply } => {
-            app.confirmation = Some(ConfirmationState { prompt, reply });
+        UiMessage::ConfirmationRequest {
+            prompt,
+            suffix,
+            default,
+            accept_keys,
+            reject_keys,
+            reply,
+        } => {
+            app.confirmation = Some(ConfirmationState {
+                prompt,
+                suffix,
+                default,
+                accept_keys,
+                reject_keys,
+                reply,
+            });
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
+            }
+        }
+        UiMessage::SelectionRequest {
+            prompt,
+            options,
+            reply,
+        } => {
+            app.selection = Some(SelectionState {
+                prompt,
+                options,
+                selected: 0,
+                reply,
+            });
             if !app.suspended {
                 clear_live_area(stdout, ui)?;
                 redraw_live_area(stdout, app, ui)?;
@@ -896,9 +1012,24 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
                 MoveToColumn(0),
                 Clear(ClearType::UntilNewLine),
                 Print(prompt_text.clone()),
-                Print(" [y/N]")
+                Print(" "),
+                Print(confirm.suffix.clone())
             )?;
-            (1, 0, prompt_text.chars().count() as u16 + 6)
+            (
+                1,
+                0,
+                prompt_text.chars().count() as u16 + confirm.suffix.chars().count() as u16 + 1,
+            )
+        } else if let Some(selection) = app.selection.as_ref() {
+            crlf(stdout)?;
+            let prompt_text = truncate_to_width(&selection.prompt, width.max(1));
+            queue!(
+                stdout,
+                MoveToColumn(0),
+                Clear(ClearType::UntilNewLine),
+                Print(prompt_text.clone())
+            )?;
+            (1, 0, prompt_text.chars().count() as u16)
         } else {
             let prompt = render_prompt(app, width);
             for (idx, line) in prompt.lines.iter().enumerate() {
@@ -985,8 +1116,8 @@ fn flush_stdin_input_buffer() {
     // Some agents restore the terminal by writing ANSI sequences as they exit.
     // Those bytes can already be decoded into crossterm events, or arrive just
     // after raw mode is re-enabled. Drain until the terminal stays quiet briefly.
-    const QUIET_WINDOW: Duration = Duration::from_millis(20);
-    const MAX_DRAIN_TIME: Duration = Duration::from_millis(150);
+    const QUIET_WINDOW: Duration = Duration::from_millis(40);
+    const MAX_DRAIN_TIME: Duration = Duration::from_millis(600);
 
     let deadline = Instant::now() + MAX_DRAIN_TIME;
     loop {
@@ -1370,6 +1501,18 @@ fn print_status_line(
         segments.push((branch.to_string(), Color::Grey));
     }
 
+    if let Some(spec) = status.selected_spec.as_deref() {
+        segments.push((" | ".to_string(), Color::DarkGrey));
+        segments.push(("spec: ".to_string(), Color::DarkGrey));
+        segments.push((spec.to_string(), Color::Grey));
+    }
+
+    if let Some(milestone) = status.selected_milestone.as_deref() {
+        segments.push((" | ".to_string(), Color::DarkGrey));
+        segments.push(("milestone: ".to_string(), Color::DarkGrey));
+        segments.push((milestone.to_string(), Color::Grey));
+    }
+
     segments.push((" | ".to_string(), Color::DarkGrey));
     segments.push(("retries: ".to_string(), Color::DarkGrey));
     segments.push((status.retries.to_string(), Color::Grey));
@@ -1452,6 +1595,10 @@ fn print_live_area_border(stdout: &mut Stdout, width: usize) -> Result<()> {
 
 enum LiveAreaLine {
     Status,
+    Selection {
+        selected: bool,
+        text: String,
+    },
     Completion {
         selected: bool,
         command: String,
@@ -1460,7 +1607,15 @@ enum LiveAreaLine {
 }
 
 fn render_lower_live_area(app: &App, width: usize) -> Vec<LiveAreaLine> {
-    if app.completion_popup_visible() {
+    if let Some(selection) = app.selection.as_ref() {
+        visible_selection_rows(selection)
+            .into_iter()
+            .map(|(selected, text)| LiveAreaLine::Selection {
+                selected,
+                text: truncate_to_width(text, width.max(1)),
+            })
+            .collect()
+    } else if app.completion_popup_visible() {
         visible_completion_rows(app)
             .into_iter()
             .map(
@@ -1474,6 +1629,24 @@ fn render_lower_live_area(app: &App, width: usize) -> Vec<LiveAreaLine> {
     } else {
         vec![LiveAreaLine::Status]
     }
+}
+
+fn visible_selection_rows(selection: &SelectionState) -> Vec<(bool, &String)> {
+    let total = selection.options.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let window = total.min(6);
+    let half = window / 2;
+    let start = selection
+        .selected
+        .saturating_sub(half)
+        .min(total.saturating_sub(window));
+    selection.options[start..start + window]
+        .iter()
+        .enumerate()
+        .map(|(offset, option)| (start + offset == selection.selected, option))
+        .collect()
 }
 
 fn visible_completion_rows(app: &App) -> Vec<(bool, &'static str, &'static str)> {
@@ -1504,12 +1677,39 @@ fn print_live_area_line(
 ) -> Result<()> {
     match line {
         LiveAreaLine::Status => print_status_line(stdout, status, ctrl_c_pending, debug, width),
+        LiveAreaLine::Selection { selected, text } => {
+            print_selection_line(stdout, *selected, text, width)
+        }
         LiveAreaLine::Completion {
             selected,
             command,
             description,
         } => print_completion_line(stdout, *selected, command, description, width),
     }
+}
+
+fn print_selection_line(
+    stdout: &mut Stdout,
+    selected: bool,
+    text: &str,
+    width: usize,
+) -> Result<()> {
+    let marker = if selected { "› " } else { "  " };
+    let text = truncate_to_width(text, width.saturating_sub(marker.chars().count()).max(1));
+    if selected {
+        queue!(
+            stdout,
+            PrintStyledContent(style(marker).with(Color::Yellow)),
+            PrintStyledContent(style(text).with(Color::Yellow).attribute(Attribute::Bold))
+        )?;
+    } else {
+        queue!(
+            stdout,
+            PrintStyledContent(style(marker).with(Color::DarkGrey)),
+            PrintStyledContent(style(text).with(Color::Grey))
+        )?;
+    }
+    Ok(())
 }
 
 fn print_completion_line(

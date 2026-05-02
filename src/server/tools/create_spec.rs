@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use tracing::info;
 
-use crate::{config::Config, state::store};
+use crate::{config::Config, specs, state::store};
 
 use super::tool_err;
 
@@ -28,7 +28,7 @@ pub async fn handler(markdown: String) -> Result<String, Error> {
 }
 
 async fn run(markdown: String) -> Result<String> {
-    let _state = store::read_state().await?;
+    let mut state = store::read_state().await?;
     store::clear_last_spec_path().await?;
 
     if markdown.trim().is_empty() {
@@ -56,9 +56,16 @@ async fn run(markdown: String) -> Result<String> {
 
     let display_path = path.display().to_string();
     store::write_last_spec_path(&display_path).await?;
+    specs::select_first_incomplete(&mut state, &display_path).await?;
+    store::write_state(&state).await?;
 
     info!("Spec created at {}", display_path);
-    Ok(format!("Spec created at {display_path}."))
+    let selection = state
+        .selected_milestone
+        .as_deref()
+        .map(|id| format!(" Selected milestone: {id}."))
+        .unwrap_or_else(|| " No incomplete milestone selected.".to_string());
+    Ok(format!("Spec created at {display_path}.{selection}"))
 }
 
 fn extract_title(markdown: &str) -> Option<&str> {
