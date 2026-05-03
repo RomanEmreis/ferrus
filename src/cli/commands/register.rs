@@ -478,12 +478,6 @@ fn normalize_model(model: Option<&str>) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    fn cwd_test_mutex() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     struct CurrentDirGuard {
         previous: std::path::PathBuf,
@@ -565,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_supervisor_registration_increments_index_in_same_role_file() {
-        let _lock = cwd_test_mutex().lock().unwrap();
+        let _lock = crate::test_support::cwd_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _cwd_guard = CurrentDirGuard::change_to(temp.path());
         tokio::fs::write("ferrus.toml", "[checks]\n[limits]\n")
@@ -594,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_executor_registration_is_role_scoped_and_does_not_change_supervisor_index() {
-        let _lock = cwd_test_mutex().lock().unwrap();
+        let _lock = crate::test_support::cwd_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _cwd_guard = CurrentDirGuard::change_to(temp.path());
         tokio::fs::write("ferrus.toml", "[checks]\n[limits]\n")
@@ -646,7 +640,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_registration_sets_default_mcp_isolation_when_missing() {
-        let _lock = cwd_test_mutex().lock().unwrap();
+        let _lock = crate::test_support::cwd_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _cwd_guard = CurrentDirGuard::change_to(temp.path());
         tokio::fs::write("ferrus.toml", "[checks]\n[limits]\n")
@@ -664,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_registration_does_not_overwrite_existing_mcp_isolation() {
-        let _lock = cwd_test_mutex().lock().unwrap();
+        let _lock = crate::test_support::cwd_lock().lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let _cwd_guard = CurrentDirGuard::change_to(temp.path());
         tokio::fs::write(

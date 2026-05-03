@@ -6,9 +6,20 @@ mod config;
 mod hq;
 mod platform;
 mod server;
+mod specs;
 mod state;
 mod templates;
 mod update_check;
+
+#[cfg(test)]
+mod test_support {
+    use std::sync::{Mutex, OnceLock};
+
+    pub(crate) fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+}
 
 use clap::Parser;
 
@@ -18,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let debug = args.debug_enabled();
 
     if args.is_hq_mode() {
-        init_hq_logger();
+        init_hq_logger(debug);
     } else {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("ferrus=info"));
@@ -31,11 +42,12 @@ async fn main() -> anyhow::Result<()> {
     args.run(debug).await
 }
 
-fn init_hq_logger() {
+fn init_hq_logger(debug: bool) {
     // Log to file in HQ mode so the terminal isn't cluttered.
     // Best-effort: if .ferrus/ doesn't exist yet, logging goes nowhere.
+    let default_filter = if debug { "ferrus=debug" } else { "off" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
     if let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

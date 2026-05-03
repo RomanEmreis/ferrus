@@ -13,6 +13,7 @@ use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::platform;
+use crate::specs::{self, SelectedMilestone, SelectedMilestoneState};
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
@@ -195,6 +196,8 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                     state,
                     state_elapsed: std::time::Duration::default(),
                     transition: None,
+                    selected_spec_display: None,
+                    selected_milestone_display: None,
                 }
             };
             ctx.display.status(&watched, &reg);
@@ -218,7 +221,9 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             ctx.display.info(concat!(
                 "ferrus HQ commands:\n",
                 "  /plan              Free-form planning session with the supervisor\n",
-                "  /task              Define a task with the supervisor, then run executor→review loop\n",
+                "  /task              Define a task from the selected milestone, then run executor→review loop\n",
+                "  /task --manual     Define a free-form task without selected milestone context\n",
+                "  /milestones        Select the current spec and milestone\n",
                 "  /spec              Draft, approve, and save a feature specification\n",
                 "  /check             Run the Ferrus check gate deterministically from HQ\n",
                 "  /check --force     Run configured checks from HQ without state requirements\n",
@@ -245,7 +250,8 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Reset => ctx.reset().await?,
         ShellCommand::Stop => ctx.stop().await?,
         ShellCommand::Plan => ctx.plan().await?,
-        ShellCommand::Task => ctx.task().await?,
+        ShellCommand::Task { manual } => ctx.task(manual, true).await?,
+        ShellCommand::Milestones => ctx.milestones().await?,
         ShellCommand::Spec => ctx.spec().await?,
         ShellCommand::Supervisor => ctx.supervisor_interactive().await?,
         ShellCommand::Executor => ctx.executor_interactive().await?,
@@ -337,6 +343,12 @@ impl Drop for ResumeGuard {
     fn drop(&mut self) {
         self.resume_now();
     }
+}
+
+enum TaskMilestoneSelection {
+    UseFallback,
+    Use(SelectedMilestone),
+    Stop,
 }
 
 impl ModelTarget {
@@ -467,8 +479,10 @@ impl HqContext {
                 self.handle_restart_executor_transition().await
             }
             TransitionAction::TaskComplete => {
-                self.handle_terminal_tip("Tip: Use /task to start a new task.")
-                    .await
+                self.handle_terminal_tip(
+                    "Tip: Use /spec to create a new spec or /task to start a new task.",
+                )
+                .await
             }
             TransitionAction::TaskFailed => {
                 self.handle_terminal_tip("Tip: Use /status for details, /reset to try again.")
@@ -627,6 +641,36 @@ impl HqContext {
         let _ = child.wait().await;
         guard.resume_now();
         self.mark_agent_suspended(name).await?;
+        Ok(())
+    }
+
+    async fn stop_interactive_child(
+        &self,
+        child: &mut tokio::process::Child,
+        message: &str,
+    ) -> Result<()> {
+        self.display.muted(message);
+        if tokio::time::timeout(std::time::Duration::from_millis(1500), child.wait())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        if let Some(pid) = child.id() {
+            platform::signal_process(pid, platform::ShutdownSignal::Terminate);
+        }
+        if tokio::time::timeout(std::time::Duration::from_millis(800), child.wait())
+            .await
+            .is_ok()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            return Ok(());
+        }
+
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         Ok(())
     }
 
@@ -836,8 +880,12 @@ impl HqContext {
         store::write_state(&state).await?;
 
         self.last_task_state = Some(TaskState::Idle);
-        self.display
-            .info("State reset to Idle. All task files cleared.");
+        if prompt {
+            self.display
+                .info("State reset to Idle. All task files cleared.");
+        } else {
+            tracing::debug!("state reset to Idle; task files cleared");
+        }
         Ok(())
     }
 
@@ -931,19 +979,19 @@ impl HqContext {
         .await
     }
 
-    async fn task(&mut self) -> Result<()> {
+    async fn task(&mut self, manual: bool, confirm_selected_milestone: bool) -> Result<()> {
         use std::process::Stdio;
         use tokio::process::Command;
 
         self.ensure_hq_config().await?;
 
-        let state = store::read_state().await?;
+        let mut state = store::read_state().await?;
         match state.state {
             TaskState::Idle => {}
             TaskState::Complete => {
-                self.display
-                    .info("Previous task complete — resetting for new task.");
+                tracing::debug!("previous task complete; resetting to Idle for new task");
                 self.do_reset(false).await?;
+                state = store::read_state().await?;
             }
             other => {
                 anyhow::bail!(
@@ -951,6 +999,28 @@ impl HqContext {
                 );
             }
         }
+
+        let selected = if manual {
+            TaskMilestoneSelection::UseFallback
+        } else {
+            self.selected_milestone_for_task(&state, confirm_selected_milestone)
+                .await?
+        };
+        let selected = match selected {
+            TaskMilestoneSelection::UseFallback => None,
+            TaskMilestoneSelection::Use(selected) => Some(selected),
+            TaskMilestoneSelection::Stop => return Ok(()),
+        };
+        let mut state = store::read_state().await?;
+        if let Some(selected) = selected.as_ref() {
+            state.set_pending_task_origin(
+                Some(selected.spec_path.clone()),
+                Some(selected.milestone.id.clone()),
+            );
+        } else {
+            state.set_pending_task_origin(None, None);
+        }
+        store::write_state(&state).await?;
 
         let supervisor = std::sync::Arc::clone(
             self.supervisor
@@ -960,13 +1030,25 @@ impl HqContext {
 
         self.display
             .info(format!("Spawning supervisor ({})…", supervisor.name()));
-        self.display
-            .info("Collaborate with the supervisor to define the task.");
+        if selected.is_none() {
+            self.display
+                .info("Collaborate with the supervisor to define the task.");
+        }
+
+        let prompt = selected.as_ref().map(|selected| {
+            agent_manager::supervisor_task_prompt_for_milestone(&selected_milestone_prompt_context(
+                selected,
+            ))
+        });
+        let prompt = match prompt.as_deref() {
+            Some(prompt) => prompt,
+            None => agent_manager::supervisor_task_prompt(),
+        };
 
         let mut cmd = Command::from(
             supervisor
                 .spawn(AgentRunMode::Interactive {
-                    prompt: Some(agent_manager::supervisor_task_prompt()),
+                    prompt: Some(prompt),
                 })
                 .with_context(|| {
                     format!(
@@ -1002,9 +1084,11 @@ impl HqContext {
                 _ = ticker.tick() => {
                     if let Ok(s) = store::read_state().await
                         && s.state == TaskState::Executing {
-                        self.display.muted("Task created — stopping supervisor…");
-                        let _ = child.kill().await;
-                        let _ = child.wait().await;
+                        self.stop_interactive_child(
+                            &mut child,
+                            "Task created — waiting for supervisor to exit…",
+                        )
+                        .await?;
                         break;
                     }
                 }
@@ -1018,10 +1102,141 @@ impl HqContext {
         if new_state.state == TaskState::Executing {
             // Let the state watcher handle Idle -> Executing consistently.
         } else {
+            let mut state = store::read_state().await?;
+            state.set_pending_task_origin(None, None);
+            store::write_state(&state).await?;
             self.display.info(format!(
                 "No task created (state is {:?}). Re-run /task when ready.",
                 new_state.state
             ));
+        }
+        Ok(())
+    }
+
+    async fn selected_milestone_for_task(
+        &self,
+        state: &StateData,
+        confirm: bool,
+    ) -> Result<TaskMilestoneSelection> {
+        match specs::resolve_selected(state).await? {
+            SelectedMilestoneState::MissingSelection => Ok(TaskMilestoneSelection::UseFallback),
+            SelectedMilestoneState::SpecMissing(path) => {
+                self.display.error(format!(
+                    "Selected spec no longer exists:\n{path}\n\nRun /milestones to select a valid milestone."
+                ));
+                Ok(TaskMilestoneSelection::Stop)
+            }
+            SelectedMilestoneState::MilestoneMissing(_) => {
+                self.display.error(
+                    "Selected milestone no longer exists in the spec.\nRun /milestones to select a valid milestone.",
+                );
+                Ok(TaskMilestoneSelection::Stop)
+            }
+            SelectedMilestoneState::Found(selected) if selected.milestone.completed => {
+                if !confirm {
+                    return Ok(TaskMilestoneSelection::Use(selected));
+                }
+                self.display.info(format!(
+                    "Selected milestone is already completed:\n{}",
+                    selected.milestone.display_title()
+                ));
+                let reply_rx = self.display.confirm_continue(
+                    "Choose another milestone with /milestones, or continue anyway?",
+                );
+                if reply_rx.await.unwrap_or(false) {
+                    Ok(TaskMilestoneSelection::Use(selected))
+                } else {
+                    self.display.muted("Task cancelled.");
+                    Ok(TaskMilestoneSelection::Stop)
+                }
+            }
+            SelectedMilestoneState::Found(selected) => {
+                if !confirm {
+                    return Ok(TaskMilestoneSelection::Use(selected));
+                }
+                self.display.muted(format!(
+                    "\n  • Using selected milestone\n  ╰─ {} / {}\n",
+                    selected.spec_path,
+                    selected.milestone.display_title()
+                ));
+                let reply_rx = self.display.confirm_yes("Proceed?");
+                if reply_rx.await.unwrap_or(true) {
+                    Ok(TaskMilestoneSelection::Use(selected))
+                } else {
+                    self.display.muted("Task cancelled.");
+                    Ok(TaskMilestoneSelection::Stop)
+                }
+            }
+        }
+    }
+
+    async fn milestones(&mut self) -> Result<()> {
+        let specs = specs::list_spec_paths().await?;
+        if specs.is_empty() {
+            self.display
+                .error("No specs found in the configured spec directory.");
+            return Ok(());
+        }
+
+        let options = specs
+            .iter()
+            .map(|path| format!("{}  ({path})", specs::spec_display_name(path)))
+            .collect();
+        let Some(spec_idx) = self
+            .display
+            .select("Select spec:", options)
+            .await
+            .unwrap_or(None)
+        else {
+            self.display.muted("Milestone selection cancelled.");
+            return Ok(());
+        };
+
+        let spec = specs::load_spec(&specs[spec_idx]).await?;
+        if spec.milestones.is_empty() {
+            self.display
+                .error("Selected spec has no milestones with IDs.");
+            return Ok(());
+        }
+
+        let options = spec
+            .milestones
+            .iter()
+            .map(|milestone| {
+                let check = if milestone.completed { "[x]" } else { "[ ]" };
+                format!(
+                    "{check} {}  ID: {}  Depends on: {}",
+                    milestone.display_title(),
+                    milestone.id,
+                    milestone.depends_on
+                )
+            })
+            .collect();
+        let Some(milestone_idx) = self
+            .display
+            .select("Select milestone:", options)
+            .await
+            .unwrap_or(None)
+        else {
+            self.display.muted("Milestone selection cancelled.");
+            return Ok(());
+        };
+
+        let milestone = &spec.milestones[milestone_idx];
+        let mut state = store::read_state().await?;
+        state.selected_spec = Some(spec.path.clone());
+        state.selected_milestone = Some(milestone.id.clone());
+        store::write_state(&state).await?;
+
+        self.display.muted(format!(
+            "\n  • Selected milestone\n  ├─ Spec: {}\n  ╰─ Milestone: {}\n",
+            spec.path,
+            milestone.display_title()
+        ));
+
+        let reply_rx = self.display.confirm("Create task from this milestone now?");
+        if reply_rx.await.unwrap_or(false) {
+            self.task(false, false).await?;
         }
         Ok(())
     }
@@ -1088,9 +1303,11 @@ impl HqContext {
                         let path = path.trim();
                         if !path.is_empty() {
                             created_path = Some(path.to_string());
-                            self.display.muted("Spec created — stopping supervisor…");
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
+                            self.stop_interactive_child(
+                                &mut child,
+                                "Spec created — waiting for supervisor to exit…",
+                            )
+                            .await?;
                             break;
                         }
                     }
@@ -1242,6 +1459,21 @@ async fn prepare_spec_session_files() -> Result<()> {
     store::clear_last_spec_path()
         .await
         .context("Failed to clear .ferrus/LAST_SPEC_PATH")
+}
+
+fn selected_milestone_prompt_context(selected: &SelectedMilestone) -> String {
+    format!(
+        "Spec: {}\nMilestone: {}\nMilestone ID: {}\nCompleted: {}\nDepends on: {}",
+        selected.spec_path,
+        selected.milestone.display_title(),
+        selected.milestone.id,
+        if selected.milestone.completed {
+            "yes"
+        } else {
+            "no"
+        },
+        selected.milestone.depends_on
+    )
 }
 
 async fn reconcile_agent_pids() {

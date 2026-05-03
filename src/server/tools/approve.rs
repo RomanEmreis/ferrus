@@ -2,7 +2,10 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::state::{machine::TaskState, store};
+use crate::{
+    specs,
+    state::{machine::TaskState, store},
+};
 
 use super::tool_err;
 
@@ -23,6 +26,7 @@ async fn run() -> Result<String> {
         );
     }
 
+    specs::complete_task_milestone_and_advance(&mut state).await?;
     state.approve()?;
     store::write_state(&state).await?;
 
