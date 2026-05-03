@@ -1328,9 +1328,10 @@ impl HqContext {
         }
 
         if let Some(path) = created_path {
-            self.display.info(format!(
-                "Specification ready: {path}\nUse /task to start implementing a selected part."
-            ));
+            self.display
+                .muted(format!("\n  • Specification ready\n  ╰─ {path}\n"));
+            self.display
+                .tip("Tip: Use /task to start implementing the selected milestone.");
         } else {
             self.display
                 .info("No specification created. Re-run /spec when ready.");
