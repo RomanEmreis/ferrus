@@ -26,7 +26,7 @@ async fn run() -> Result<String> {
         );
     }
 
-    specs::complete_selected_milestone_and_advance(&mut state).await?;
+    specs::complete_task_milestone_and_advance(&mut state).await?;
     state.approve()?;
     store::write_state(&state).await?;
 

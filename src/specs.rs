@@ -171,11 +171,11 @@ pub async fn resolve_selected(state: &StateData) -> Result<SelectedMilestoneStat
     }))
 }
 
-pub async fn complete_selected_milestone_and_advance(state: &mut StateData) -> Result<()> {
-    let Some(spec_path) = state.selected_spec.clone() else {
+pub async fn complete_task_milestone_and_advance(state: &mut StateData) -> Result<()> {
+    let Some(spec_path) = state.task_spec.clone() else {
         return Ok(());
     };
-    let Some(milestone_id) = state.selected_milestone.clone() else {
+    let Some(milestone_id) = state.task_milestone.clone() else {
         return Ok(());
     };
     if !Path::new(&spec_path).exists() {
@@ -197,12 +197,16 @@ pub async fn complete_selected_milestone_and_advance(state: &mut StateData) -> R
         write_spec_lines(&spec_path, &spec.lines).await?;
     }
 
-    state.selected_milestone = spec
-        .milestones
-        .iter()
-        .skip(current_idx + 1)
-        .find(|milestone| !milestone.completed)
-        .map(|milestone| milestone.id.clone());
+    if state.selected_spec.as_deref() == Some(spec_path.as_str())
+        && state.selected_milestone.as_deref() == Some(milestone_id.as_str())
+    {
+        state.selected_milestone = spec
+            .milestones
+            .iter()
+            .skip(current_idx + 1)
+            .find(|milestone| !milestone.completed)
+            .map(|milestone| milestone.id.clone());
+    }
     Ok(())
 }
 
@@ -339,7 +343,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completes_selected_milestone_and_advances_to_next_open() {
+    async fn completes_task_milestone_and_advances_when_selection_matches_origin() {
+        let (dir, path) = write_test_spec();
+        let mut state = StateData {
+            selected_spec: Some(path.display().to_string()),
+            selected_milestone: Some("m1.0".to_string()),
+            task_spec: Some(path.display().to_string()),
+            task_milestone: Some("m1.0".to_string()),
+            ..StateData::default()
+        };
+
+        complete_task_milestone_and_advance(&mut state)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("- [x] #1.0 Define spec workflow"));
+        assert_eq!(state.selected_milestone.as_deref(), Some("m1.1"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn leaves_milestones_untouched_for_manual_task_without_origin() {
+        let (dir, path) = write_test_spec();
+        let mut state = StateData {
+            selected_spec: Some(path.display().to_string()),
+            selected_milestone: Some("m1.0".to_string()),
+            ..StateData::default()
+        };
+
+        complete_task_milestone_and_advance(&mut state)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("- [ ] #1.0 Define spec workflow"));
+        assert_eq!(state.selected_milestone.as_deref(), Some("m1.0"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn does_not_advance_user_changed_selection_after_completing_origin() {
+        let (dir, path) = write_test_spec();
+        let mut state = StateData {
+            selected_spec: Some(path.display().to_string()),
+            selected_milestone: Some("m1.1".to_string()),
+            task_spec: Some(path.display().to_string()),
+            task_milestone: Some("m1.0".to_string()),
+            ..StateData::default()
+        };
+
+        complete_task_milestone_and_advance(&mut state)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("- [x] #1.0 Define spec workflow"));
+        assert_eq!(state.selected_milestone.as_deref(), Some("m1.1"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn write_test_spec() -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "ferrus-specs-test-{}",
             std::time::SystemTime::now()
@@ -360,21 +427,6 @@ mod tests {
                - Depends on: #1.0\n",
         )
         .unwrap();
-
-        let mut state = StateData {
-            selected_spec: Some(path.display().to_string()),
-            selected_milestone: Some("m1.0".to_string()),
-            ..StateData::default()
-        };
-
-        complete_selected_milestone_and_advance(&mut state)
-            .await
-            .unwrap();
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("- [x] #1.0 Define spec workflow"));
-        assert_eq!(state.selected_milestone.as_deref(), Some("m1.1"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
+        (dir, path)
     }
 }

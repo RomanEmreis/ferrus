@@ -54,6 +54,18 @@ pub struct StateData {
     /// Stable milestone ID selected inside `selected_spec`, e.g. "m1.1".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_milestone: Option<String>,
+    /// Spec selected as the origin for the next task being drafted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_task_spec: Option<String>,
+    /// Milestone selected as the origin for the next task being drafted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_task_milestone: Option<String>,
+    /// Spec that originated the currently active task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_spec: Option<String>,
+    /// Milestone that originated the currently active task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_milestone: Option<String>,
 }
 
 const fn default_schema_version() -> u32 {
@@ -79,6 +91,10 @@ impl Default for StateData {
             last_heartbeat: None,
             selected_spec: None,
             selected_milestone: None,
+            pending_task_spec: None,
+            pending_task_milestone: None,
+            task_spec: None,
+            task_milestone: None,
         }
     }
 }
@@ -110,6 +126,11 @@ impl StateData {
         *self = Self::default();
         self.selected_spec = selected_spec;
         self.selected_milestone = selected_milestone;
+    }
+
+    pub fn set_pending_task_origin(&mut self, spec: Option<String>, milestone: Option<String>) {
+        self.pending_task_spec = spec;
+        self.pending_task_milestone = milestone;
     }
 
     /// True if a non-expired lease exists (`lease_until` is set and in the future).
@@ -150,6 +171,8 @@ impl StateData {
             });
         }
         self.clear_lease();
+        self.task_spec = self.pending_task_spec.take();
+        self.task_milestone = self.pending_task_milestone.take();
         self.state = TaskState::Executing;
         self.check_retries = 0;
         self.review_cycles = 0;
@@ -367,6 +390,22 @@ mod tests {
         let mut s = idle();
         s.create_task().unwrap();
         assert_eq!(s.state, TaskState::Executing);
+    }
+
+    #[test]
+    fn create_task_promotes_pending_task_origin() {
+        let mut s = idle();
+        s.set_pending_task_origin(
+            Some("docs/specs/spec.md".to_string()),
+            Some("m1.0".to_string()),
+        );
+
+        s.create_task().unwrap();
+
+        assert_eq!(s.task_spec.as_deref(), Some("docs/specs/spec.md"));
+        assert_eq!(s.task_milestone.as_deref(), Some("m1.0"));
+        assert!(s.pending_task_spec.is_none());
+        assert!(s.pending_task_milestone.is_none());
     }
 
     #[test]

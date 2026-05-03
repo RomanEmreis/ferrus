@@ -57,7 +57,7 @@ src/
 
 **File locking**: `wait_for_task`, `wait_for_review`, and `/heartbeat` acquire an exclusive `flock` on `.ferrus/STATE.lock` (not `STATE.json`) for their read-check-write cycle. Use `store::open_lock_file()` + `tokio::task::spawn_blocking` for the blocking lock call.
 
-**Spec selection**: `STATE.json` stores `selected_spec` and `selected_milestone` as references only. Milestone display text is resolved from the spec Markdown by milestone `ID`. Keep milestone IDs stable across title edits.
+**Spec selection**: `STATE.json` stores `selected_spec` and `selected_milestone` as UI references only. Active task progress uses `task_spec` and `task_milestone`, copied from `pending_task_*` when `/create_task` succeeds. Milestone display text is resolved from the spec Markdown by milestone `ID`. Keep milestone IDs stable across title edits.
 
 ## Ferrus Executor
 

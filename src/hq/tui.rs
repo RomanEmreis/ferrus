@@ -935,7 +935,7 @@ fn print_startup_header(stdout: &mut Stdout, startup: &StartupHeader) -> Result<
 
     print_tip_line(
         stdout,
-        "Tip: /task to start a task · /status to check state · /help for all commands",
+        "Tip: /spec to create a spec · /task to start a task · /help for all commands",
         width,
     )?;
     crlf(stdout)?;

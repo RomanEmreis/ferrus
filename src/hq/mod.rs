@@ -479,8 +479,10 @@ impl HqContext {
                 self.handle_restart_executor_transition().await
             }
             TransitionAction::TaskComplete => {
-                self.handle_terminal_tip("Tip: Use /task to start a new task.")
-                    .await
+                self.handle_terminal_tip(
+                    "Tip: Use /spec to create a new spec or /task to start a new task.",
+                )
+                .await
             }
             TransitionAction::TaskFailed => {
                 self.handle_terminal_tip("Tip: Use /status for details, /reset to try again.")
@@ -1009,6 +1011,16 @@ impl HqContext {
             TaskMilestoneSelection::Use(selected) => Some(selected),
             TaskMilestoneSelection::Stop => return Ok(()),
         };
+        let mut state = store::read_state().await?;
+        if let Some(selected) = selected.as_ref() {
+            state.set_pending_task_origin(
+                Some(selected.spec_path.clone()),
+                Some(selected.milestone.id.clone()),
+            );
+        } else {
+            state.set_pending_task_origin(None, None);
+        }
+        store::write_state(&state).await?;
 
         let supervisor = std::sync::Arc::clone(
             self.supervisor
@@ -1090,6 +1102,9 @@ impl HqContext {
         if new_state.state == TaskState::Executing {
             // Let the state watcher handle Idle -> Executing consistently.
         } else {
+            let mut state = store::read_state().await?;
+            state.set_pending_task_origin(None, None);
+            store::write_state(&state).await?;
             self.display.info(format!(
                 "No task created (state is {:?}). Re-run /task when ready.",
                 new_state.state

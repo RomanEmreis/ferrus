@@ -1,6 +1,6 @@
 [package]
 name = "ferrus"
-version = "0.2.6-alpha.8"
+version = "0.2.7-alpha.1"
 edition = "2024"
 rust-version = "1.95.0"
 license = "Apache-2.0"
@@ -19,7 +19,7 @@ exclude = [
 ]
 
 [[bin]]
-name = "ferrus" 
+name = "ferrus"
 path = "src/main.rs"
 
 [dependencies]
