@@ -878,8 +878,12 @@ impl HqContext {
         store::write_state(&state).await?;
 
         self.last_task_state = Some(TaskState::Idle);
-        self.display
-            .info("State reset to Idle. All task files cleared.");
+        if prompt {
+            self.display
+                .info("State reset to Idle. All task files cleared.");
+        } else {
+            tracing::debug!("state reset to Idle; task files cleared");
+        }
         Ok(())
     }
 
@@ -983,8 +987,7 @@ impl HqContext {
         match state.state {
             TaskState::Idle => {}
             TaskState::Complete => {
-                self.display
-                    .info("Previous task complete — resetting for new task.");
+                tracing::debug!("previous task complete; resetting to Idle for new task");
                 self.do_reset(false).await?;
                 state = store::read_state().await?;
             }
@@ -1136,8 +1139,8 @@ impl HqContext {
                 if !confirm {
                     return Ok(TaskMilestoneSelection::Use(selected));
                 }
-                self.display.info(format!(
-                    "Using selected milestone:\n{} / {}",
+                self.display.muted(format!(
+                    "\n  • Using selected milestone\n  ╰─ {} / {}\n",
                     selected.spec_path,
                     selected.milestone.display_title()
                 ));
@@ -1210,8 +1213,8 @@ impl HqContext {
         state.selected_milestone = Some(milestone.id.clone());
         store::write_state(&state).await?;
 
-        self.display.info(format!(
-            "Selected:\nSpec: {}\nMilestone: {}",
+        self.display.muted(format!(
+            "\n  • Selected milestone\n  ├─ Spec: {}\n  ╰─ Milestone: {}\n",
             spec.path,
             milestone.display_title()
         ));
