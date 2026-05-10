@@ -27,6 +27,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/plan", "spawn supervisor, plan a task"),
     ("/task", "define a task and run executor then review"),
     ("/milestones", "select current spec and milestone"),
+    ("/reset-spec", "clear selected spec and milestone"),
     ("/spec", "draft and save an approved feature spec"),
     ("/check", "run the Ferrus check gate from HQ"),
     ("/supervisor", "open an interactive supervisor session"),
@@ -1932,7 +1933,7 @@ mod tui_tests {
                 .iter()
                 .map(|(cmd, _)| *cmd)
                 .collect::<Vec<_>>(),
-            vec!["/resume", "/review", "/reset", "/register"]
+            vec!["/reset-spec", "/resume", "/review", "/reset", "/register"]
         );
     }
 
@@ -1970,6 +1971,7 @@ mod tui_tests {
         assert!(commands.contains(&"/check"));
         assert!(commands.contains(&"/model"));
         assert!(commands.contains(&"/resume"));
+        assert!(commands.contains(&"/reset-spec"));
         assert!(commands.contains(&"/supervisor"));
         assert!(commands.contains(&"/executor"));
         assert!(!commands.contains(&"/execute"));

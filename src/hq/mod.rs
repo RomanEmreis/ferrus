@@ -224,6 +224,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /task              Define a task from the selected milestone, then run executor→review loop\n",
                 "  /task --manual     Define a free-form task without selected milestone context\n",
                 "  /milestones        Select the current spec and milestone\n",
+                "  /reset-spec        Clear the selected spec and milestone\n",
                 "  /spec              Draft, approve, and save a feature specification\n",
                 "  /check             Run the Ferrus check gate deterministically from HQ\n",
                 "  /check --force     Run configured checks from HQ without state requirements\n",
@@ -252,6 +253,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
         ShellCommand::Plan => ctx.plan().await?,
         ShellCommand::Task { manual } => ctx.task(manual, true).await?,
         ShellCommand::Milestones => ctx.milestones().await?,
+        ShellCommand::ResetSpec => ctx.reset_spec_selection().await?,
         ShellCommand::Spec => ctx.spec().await?,
         ShellCommand::Supervisor => ctx.supervisor_interactive().await?,
         ShellCommand::Executor => ctx.executor_interactive().await?,
@@ -1168,6 +1170,22 @@ impl HqContext {
                 }
             }
         }
+    }
+
+    async fn reset_spec_selection(&mut self) -> Result<()> {
+        let mut state = store::read_state().await?;
+        if state.selected_spec.is_none() && state.selected_milestone.is_none() {
+            self.display
+                .muted("No selected spec or milestone to reset.");
+            return Ok(());
+        }
+
+        state.clear_selected_spec_and_milestone();
+        store::write_state(&state).await?;
+
+        self.display
+            .muted("Selected spec reset. /task will use manual task definition.");
+        Ok(())
     }
 
     async fn milestones(&mut self) -> Result<()> {

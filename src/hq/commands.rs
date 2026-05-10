@@ -44,6 +44,8 @@ pub enum ShellCommand {
     },
     /// Select the current spec and milestone without creating a task.
     Milestones,
+    /// Clear the selected spec and milestone.
+    ResetSpec,
     /// Draft and approve a feature specification with the supervisor.
     Spec,
     /// Open an interactive supervisor session (no initial prompt, no state requirement).
@@ -176,6 +178,13 @@ mod tests {
         assert!(matches!(
             parse_command("/milestones").unwrap(),
             ShellCommand::Milestones
+        ));
+    }
+    #[test]
+    fn parse_reset_spec() {
+        assert!(matches!(
+            parse_command("/reset-spec").unwrap(),
+            ShellCommand::ResetSpec
         ));
     }
     #[test]

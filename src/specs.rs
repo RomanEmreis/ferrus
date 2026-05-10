@@ -343,6 +343,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_selected_treats_missing_spec_and_milestone_as_no_selection() {
+        let state = StateData::default();
+
+        let selected = resolve_selected(&state).await.unwrap();
+
+        assert_eq!(selected, SelectedMilestoneState::MissingSelection);
+    }
+
+    #[tokio::test]
+    async fn resolve_selected_treats_partial_selection_as_no_selection() {
+        let state = StateData {
+            selected_spec: Some("docs/specs/spec.md".to_string()),
+            ..StateData::default()
+        };
+
+        let selected = resolve_selected(&state).await.unwrap();
+
+        assert_eq!(selected, SelectedMilestoneState::MissingSelection);
+    }
+
+    #[tokio::test]
     async fn completes_task_milestone_and_advances_when_selection_matches_origin() {
         let (dir, path) = write_test_spec();
         let mut state = StateData {

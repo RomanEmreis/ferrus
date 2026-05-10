@@ -133,6 +133,11 @@ impl StateData {
         self.pending_task_milestone = milestone;
     }
 
+    pub fn clear_selected_spec_and_milestone(&mut self) {
+        self.selected_spec = None;
+        self.selected_milestone = None;
+    }
+
     /// True if a non-expired lease exists (`lease_until` is set and in the future).
     #[allow(dead_code)]
     pub fn is_claimed(&self) -> bool {
@@ -365,7 +370,7 @@ impl StateData {
                 state: self.state.clone(),
             });
         }
-        *self = Self::default();
+        self.force_reset();
         Ok(())
     }
 }
@@ -513,6 +518,8 @@ mod tests {
     #[test]
     fn reset_from_failed() {
         let mut s = idle();
+        s.selected_spec = Some("docs/specs/spec.md".to_string());
+        s.selected_milestone = Some("m1.0".to_string());
         s.create_task().unwrap();
         for i in 1..=5 {
             let _ = s.check_failed(format!("fail {i}"), 5);
@@ -521,6 +528,33 @@ mod tests {
         s.reset().unwrap();
         assert_eq!(s.state, TaskState::Idle);
         assert_eq!(s.check_retries, 0);
+        assert_eq!(s.selected_spec.as_deref(), Some("docs/specs/spec.md"));
+        assert_eq!(s.selected_milestone.as_deref(), Some("m1.0"));
+    }
+
+    #[test]
+    fn clear_selected_spec_and_milestone_only_clears_selection() {
+        let mut s = StateData {
+            selected_spec: Some("docs/specs/spec.md".to_string()),
+            selected_milestone: Some("m1.0".to_string()),
+            pending_task_spec: Some("docs/specs/pending.md".to_string()),
+            pending_task_milestone: Some("m2.0".to_string()),
+            task_spec: Some("docs/specs/task.md".to_string()),
+            task_milestone: Some("m3.0".to_string()),
+            ..StateData::default()
+        };
+
+        s.clear_selected_spec_and_milestone();
+
+        assert!(s.selected_spec.is_none());
+        assert!(s.selected_milestone.is_none());
+        assert_eq!(
+            s.pending_task_spec.as_deref(),
+            Some("docs/specs/pending.md")
+        );
+        assert_eq!(s.pending_task_milestone.as_deref(), Some("m2.0"));
+        assert_eq!(s.task_spec.as_deref(), Some("docs/specs/task.md"));
+        assert_eq!(s.task_milestone.as_deref(), Some("m3.0"));
     }
 
     #[test]
