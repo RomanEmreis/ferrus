@@ -10,7 +10,8 @@ on:
 jobs:
   mirror:
     runs-on: ubuntu-latest
-
+    environment: CICD
+    
     steps:
       - uses: actions/checkout@v4
         with:
