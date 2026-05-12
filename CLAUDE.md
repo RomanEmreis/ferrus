@@ -49,6 +49,9 @@ ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor 
 | `/task --manual` | Define a free-form task without selected milestone context |
 | `/spec` | Draft, approve, and save a feature specification |
 | `/milestones` | Select the current spec and milestone |
+| `/reset-spec` | Clear the selected spec and milestone |
+| `/check` | Run the Ferrus check gate from HQ, using the normal task-state rules |
+| `/check --force` | Run configured checks from HQ without modifying state |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt, no state requirement) |
 | `/executor` | Open an interactive executor session (no initial prompt, no state requirement) |
 | `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both consultant and executor |
@@ -58,8 +61,9 @@ ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor 
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
-| `/register` | Register agent configs (same as `ferrus register`) |
-| `/model` | Update the supervisor or executor model override |
+| `/register [--supervisor <agent>] [--executor <agent>]` | Register Claude Code or Codex configs from HQ |
+| `/model <supervisor|executor> <model>` | Update the supervisor or executor model override |
+| `/model <supervisor|executor> --clear` | Clear the supervisor or executor model override |
 | `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
@@ -124,6 +128,7 @@ model = ""             # optional override; empty = agent default
 | `/review_pending` | Reviewing | — | Read task + context for review |
 | `/approve` | Reviewing | Complete | Accept the submission |
 | `/reject` | Reviewing | Addressing | Reject with notes; resets Executor retry counter |
+| `/respond_consult` | Consultation | — | Record the Supervisor consultation response in `CONSULT_RESPONSE.md` |
 
 ### Executor tools
 
@@ -141,7 +146,6 @@ model = ""             # optional override; empty = agent default
 | Tool | From state | To state | Description |
 |---|---|---|---|
 | `/ask_human` | Executing, Addressing, Consultation, Reviewing | AwaitingHuman | Last-resort human fallback. Write question to QUESTION.md; agent must immediately call `/wait_for_answer` (executor) or wait for HQ to answer |
-| `/respond_consult` | Consultation | — | Record the Supervisor consultation response in `CONSULT_RESPONSE.md` |
 | `/answer` | AwaitingHuman | (previous state) | Provide answer to a pending question; restores previous state |
 | `/heartbeat` | any claimed | — | Renew lease; call every ~30s while working |
 | `/status` | any | — | Print current state + retry counters |
@@ -206,6 +210,7 @@ Executor verification is TDD-friendly: `/check` can be run as often as needed du
 |---|---|
 | `STATE.json` | Current `TaskState`, lease fields (`claimed_by`, `lease_until`, `last_heartbeat`), retry/cycle counters, failure reason, schema version, last-write timestamp and PID |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
+| `agents.json` | Runtime registry for agent sessions, statuses, PIDs, and log ownership |
 | `TASK.md` | Task description written by Supervisor |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor's submission notes (summary, verification steps, known limitations) |
@@ -225,8 +230,18 @@ Executor verification is TDD-friendly: `/check` can be run as often as needed du
 ```
 src/
   main.rs                    # CLI entry, tracing init, HQ logger
-  cli/                       # clap subcommands (init, serve, register)
-  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig, HqConfig)
+  cli/                       # clap entry and command implementations (init, serve, register)
+  config/mod.rs              # Deserialize/update ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig, SpecConfig, HqConfig)
+  config/claude.rs           # Claude MCP isolation config helpers
+  templates.rs               # Embedded Markdown templates written by init/resource fallback
+  specs.rs                   # Spec discovery, milestone parsing, selected milestone resolution
+  agent_id.rs                # Stable agent IDs and MCP server names
+  agents/                    # Agent launcher/config adapters for Claude Code, Codex, Qwen Code
+  agents/mod.rs              # SupervisorAgent/ExecutorAgent traits, AgentRunMode, MCP config entry helpers, agent parsing
+  agents/claude/mod.rs       # Claude Code launchers, model override handling, MCP isolation, role-scoped config paths
+  agents/codex/mod.rs        # Codex launchers, stdin prompt transport, TOML MCP config and tool approvals
+  agents/qwen/mod.rs         # Qwen Code launchers, model override handling, JSON settings tool approvals
+  platform/                  # OS-specific process, shell, and parent-lifecycle helpers
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
@@ -234,21 +249,27 @@ src/
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, sends on watch channel
-  hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, status line, confirmation dialogs
+  hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, spec/milestone status line, confirmation/selection dialogs, AwaitingHuman answer hint
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
   hq/agent_manager.rs        # agent spawn helpers (headless for executor, reviewer, consultant); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
-  server/tools/              # One file per MCP tool
+  server/tools/              # One file per MCP tool; check_gate.rs is the shared check runner/report helper
+    answer.rs                # /answer — writes ANSWER.md and restores AwaitingHuman state
     heartbeat.rs             # /heartbeat — lease renewal
     wait_for_task.rs         # /wait_for_task — atomic claim loop (STATE.lock + fs2)
     wait_for_review.rs       # /wait_for_review — same pattern for Supervisor
+    check_gate.rs            # Shared final/diagnostic check execution and report formatting
     consult.rs               # /consult — writes CONSULT_REQUEST.md and transitions to Consultation
     respond_consult.rs       # /respond_consult — records the supervisor consultation response
     wait_for_consult.rs      # /wait_for_consult — polls CONSULT_RESPONSE.md, restores state, returns answer
     ask_human.rs             # /ask_human — writes QUESTION.md, transitions to AwaitingHuman
     wait_for_answer.rs       # /wait_for_answer — polls ANSWER.md, restores state, returns answer
 ```
+
+## Agent Adapter Pattern
+
+Backend-specific CLI behavior belongs in `src/agents/{claude,codex,qwen}`. Shared orchestration should use the `SupervisorAgent` and `ExecutorAgent` traits from `src/agents/mod.rs` instead of matching on a concrete CLI. New agents need both role adapters, model normalization, headless prompt transport if needed, version/config entry behavior, registration wiring, and focused tests.
 
 <!-- ferrus-supervisor-instructions -->
 ## Ferrus Supervisor
