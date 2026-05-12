@@ -569,15 +569,16 @@ pub async fn run_tui(
                 match maybe_event {
                     Some(Ok(event)) => handle_event(event, &mut app, &cmd_tx, &mut stdout, &mut ui)?,
                     Some(Err(err)) => {
+                        let line = TranscriptLine {
+                            text: format!("Event error: {err}"),
+                            kind: TranscriptKind::Error,
+                            continuation: false,
+                        };
                         print_message_and_restore_prompt(
                             &mut stdout,
                             &app,
                             &mut ui,
-                            vec![TranscriptLine {
-                                text: format!("Event error: {err}"),
-                                kind: TranscriptKind::Error,
-                                continuation: false,
-                            }],
+                            std::slice::from_ref(&line),
                         )?;
                     }
                     None => app.should_quit = true,
@@ -805,8 +806,8 @@ fn handle_message(
     match msg {
         UiMessage::Info(text) => {
             let lines = split_transcript(&text, TranscriptKind::Info);
-            app.messages.extend(lines.clone());
-            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+            app.messages.extend(lines.iter().cloned());
+            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
         }
         UiMessage::Tip(text) => {
             let line = TranscriptLine {
@@ -815,17 +816,17 @@ fn handle_message(
                 continuation: false,
             };
             app.messages.push(line.clone());
-            print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
+            print_message_and_restore_prompt(stdout, app, ui, std::slice::from_ref(&line))?;
         }
         UiMessage::Muted(text) => {
             let lines = split_transcript(&text, TranscriptKind::Muted);
-            app.messages.extend(lines.clone());
-            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+            app.messages.extend(lines.iter().cloned());
+            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
         }
         UiMessage::Error(text) => {
             let lines = split_transcript(&text, TranscriptKind::Error);
-            app.messages.extend(lines.clone());
-            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+            app.messages.extend(lines.iter().cloned());
+            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
         }
         UiMessage::Transition { from, to } => {
             let line = TranscriptLine {
@@ -837,7 +838,7 @@ fn handle_message(
                 continuation: false,
             };
             app.messages.push(line.clone());
-            print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
+            print_message_and_restore_prompt(stdout, app, ui, std::slice::from_ref(&line))?;
         }
         UiMessage::StatusUpdate(status) => {
             let mut next = status;
@@ -1081,11 +1082,11 @@ fn print_message_and_restore_prompt(
     stdout: &mut Stdout,
     app: &App,
     ui: &mut TerminalUi,
-    lines: Vec<TranscriptLine>,
+    lines: &[TranscriptLine],
 ) -> Result<()> {
     clear_live_area(stdout, ui)?;
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-    for line in &lines {
+    for line in lines {
         print_transcript_line(stdout, line)?;
     }
     ui.prompt_visible = false;
