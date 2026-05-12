@@ -33,7 +33,7 @@ Internally, agent support is normalized through `src/agents/`: `mod.rs` defines 
 
 > 💡 **Status**: ferrus is currently in alpha and not ready for production.
 
-[Tutorial](https://romanemreis.github.io/ferrus-docs/) | [Roadmap](https://github.com/RomanEmreis/ferrus/blob/main/docs/milestones.md)
+[Tutorial](https://ferrus.dev) | [Roadmap](https://github.com/RomanEmreis/ferrus/blob/main/docs/milestones.md)
 
 ---
 
