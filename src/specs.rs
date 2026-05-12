@@ -365,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn completes_task_milestone_and_advances_when_selection_matches_origin() {
-        let (dir, path) = write_test_spec();
+        let (_dir, path) = write_test_spec();
         let mut state = StateData {
             selected_spec: Some(path.display().to_string()),
             selected_milestone: Some("m1.0".to_string()),
@@ -381,13 +381,11 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("- [x] #1.0 Define spec workflow"));
         assert_eq!(state.selected_milestone.as_deref(), Some("m1.1"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn leaves_milestones_untouched_for_manual_task_without_origin() {
-        let (dir, path) = write_test_spec();
+        let (_dir, path) = write_test_spec();
         let mut state = StateData {
             selected_spec: Some(path.display().to_string()),
             selected_milestone: Some("m1.0".to_string()),
@@ -401,13 +399,11 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("- [ ] #1.0 Define spec workflow"));
         assert_eq!(state.selected_milestone.as_deref(), Some("m1.0"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn does_not_advance_user_changed_selection_after_completing_origin() {
-        let (dir, path) = write_test_spec();
+        let (_dir, path) = write_test_spec();
         let mut state = StateData {
             selected_spec: Some(path.display().to_string()),
             selected_milestone: Some("m1.1".to_string()),
@@ -423,20 +419,11 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("- [x] #1.0 Define spec workflow"));
         assert_eq!(state.selected_milestone.as_deref(), Some("m1.1"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    fn write_test_spec() -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "ferrus-specs-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("2026-04-26-spec-workflow.md");
+    fn write_test_spec() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("2026-04-26-spec-workflow.md");
         std::fs::write(
             &path,
             "## Milestones\n\
