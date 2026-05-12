@@ -1,6 +1,6 @@
 # ferrus
 
-[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.7--alpha.3-orange)](https://crates.io/crates/ferrus)
+[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.7--alpha.4-orange)](https://crates.io/crates/ferrus)
 [![Rust version](https://img.shields.io/badge/rustc-1.95+-964B00)](https://releases.rs/docs/1.95.0/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/RomanEmreis/ferrus/blob/main/LICENSE)
 [![Rust](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml)
@@ -28,6 +28,8 @@ Ferrus works with existing coding agents:
 - **Qwen Code** (experimental)
 
 Agents are treated as interchangeable workers — ferrus provides the runtime, coordination, and state.
+
+Internally, agent support is normalized through `src/agents/`: `mod.rs` defines the shared Supervisor/Executor contracts and MCP config entry shape, while `claude/`, `codex/`, and `qwen/` adapt each CLI's launch flags, model overrides, headless prompt transport, and local permission/config conventions.
 
 > 💡 **Status**: ferrus is currently in alpha and not ready for production.
 
@@ -98,6 +100,9 @@ On Linux and macOS for `x86_64` and `aarch64`/`arm64`, `install.sh` downloads th
 | `/task --manual` | Define a free-form task without selected milestone context |
 | `/spec` | Draft, approve, and save a feature specification |
 | `/milestones` | Select the current spec and milestone |
+| `/reset-spec` | Clear the selected spec and milestone |
+| `/check` | Run the Ferrus check gate from HQ, using the normal task-state rules |
+| `/check --force` | Run configured checks from HQ without modifying state |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both supervisor and executor |
@@ -107,8 +112,9 @@ On Linux and macOS for `x86_64` and `aarch64`/`arm64`, `install.sh` downloads th
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
 | `/init [--agents-path]` | Initialize ferrus in the current directory |
-| `/register` | Register agent configs (same as `ferrus register`) |
-| `/model` | Update the supervisor or executor model override |
+| `/register [--supervisor <agent>] [--executor <agent>]` | Register Claude Code or Codex configs from HQ |
+| `/model <supervisor|executor> <model>` | Update the supervisor or executor model override |
+| `/model <supervisor|executor> --clear` | Clear the supervisor or executor model override |
 | `/help` | List all HQ commands |
 | `/quit` | Exit HQ |
 
@@ -151,7 +157,7 @@ Idle
                    └─► Reviewing            ← submit (final check passed)
 ```
 
-Any active Executor work state (Executing, Addressing, Checking) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`.
+Any active Executor work state (Executing, Addressing) can pause to `Consultation` via `/consult`. HQ spawns the configured Supervisor in consultation mode, and the executor immediately calls `/wait_for_consult` to block until the Supervisor answers via `/respond_consult`.
 
 Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human`. The agent immediately calls `/wait_for_answer` to block until the human responds. The human types their answer in the HQ terminal (raw text, no slash prefix). `/wait_for_answer` restores the previous state and returns the answer.
 
@@ -166,8 +172,9 @@ Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/a
 
 Scaffolds ferrus in the current project (default `--agents-path .agents`):
 
-- Creates `ferrus.toml` with default check commands and limits
+- Creates `ferrus.toml` with default limits and an empty check command list
 - Creates `.ferrus/` runtime directory with all state files and `logs/`
+- Creates `docs/specs/` for approved feature specifications
 - Creates skill files agents load to understand their role:
   - `<agents-path>/skills/ferrus/SKILL.md` — general overview
   - `<agents-path>/skills/ferrus-supervisor/SKILL.md` + `ROLE.md`
@@ -184,13 +191,13 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 | `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
-### `ferrus register --supervisor <agent> [--supervisor-model <model>] --executor <agent> [--executor-model <model>]`
+### `ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor <agent>] [--executor-model <model>]`
 
-Writes agent config files so they automatically load `ferrus serve` as a tool server, and adds only the selected agents' local files to `.gitignore`. Supported agents:
+Writes agent config files so they automatically load `ferrus serve` as a tool server, and adds only the selected agents' local files to `.gitignore`. At least one of `--supervisor` or `--executor` is required; each model flag requires the matching role flag. Supported agents:
 
 | Agent | Config written |
 |---|---|
-| `claude-code` | `.mcp.json` + `.claude/settings.local.json` permissions |
+| `claude-code` | `.claude/mcp-supervisor.json` or `.claude/mcp-executor.json` + `.claude/settings.local.json` permissions |
 | `codex` | `.codex/config.toml` |
 | `qwen-code` | `.qwen/settings.json` |
 
@@ -238,6 +245,7 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 |---|---|
 | `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
+| `agents.json` | Runtime registry for agent sessions, statuses, PIDs, and log ownership |
 | `TASK.md` | Task description written by Supervisor |
 | `REVIEW.md` | Supervisor rejection notes |
 | `SUBMISSION.md` | Executor submission notes |

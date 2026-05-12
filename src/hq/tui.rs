@@ -515,6 +515,7 @@ struct TerminalUi {
     prompt_visible: bool,
     prompt_lines: u16,
     prompt_cursor_row: u16,
+    prompt_cursor_col: u16,
     lower_lines: u16,
 }
 
@@ -557,6 +558,7 @@ pub async fn run_tui(
         prompt_visible: false,
         prompt_lines: 0,
         prompt_cursor_row: 0,
+        prompt_cursor_col: 0,
         lower_lines: 0,
     };
     redraw_live_area(&mut stdout, &app, &mut ui)?;
@@ -569,15 +571,16 @@ pub async fn run_tui(
                 match maybe_event {
                     Some(Ok(event)) => handle_event(event, &mut app, &cmd_tx, &mut stdout, &mut ui)?,
                     Some(Err(err)) => {
+                        let line = TranscriptLine {
+                            text: format!("Event error: {err}"),
+                            kind: TranscriptKind::Error,
+                            continuation: false,
+                        };
                         print_message_and_restore_prompt(
                             &mut stdout,
                             &app,
                             &mut ui,
-                            vec![TranscriptLine {
-                                text: format!("Event error: {err}"),
-                                kind: TranscriptKind::Error,
-                                continuation: false,
-                            }],
+                            std::slice::from_ref(&line),
                         )?;
                     }
                     None => app.should_quit = true,
@@ -603,7 +606,7 @@ pub async fn run_tui(
                 {
                     app.ctrl_c_pending = false;
                     app.ctrl_c_at = None;
-                    if !app.suspended {
+                    if !app.suspended && !refresh_status_line(&mut stdout, &app, &ui)? {
                         clear_live_area(&mut stdout, &ui)?;
                         redraw_live_area(&mut stdout, &app, &mut ui)?;
                     }
@@ -622,7 +625,7 @@ pub async fn run_tui(
                     next.directory = directory;
                     next.branch = branch;
                     app.status = next;
-                    if !app.suspended {
+                    if !app.suspended && !refresh_status_line(&mut stdout, &app, &ui)? {
                         clear_live_area(&mut stdout, &ui)?;
                         redraw_live_area(&mut stdout, &app, &mut ui)?;
                     }
@@ -805,8 +808,8 @@ fn handle_message(
     match msg {
         UiMessage::Info(text) => {
             let lines = split_transcript(&text, TranscriptKind::Info);
-            app.messages.extend(lines.clone());
-            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+            app.messages.extend(lines.iter().cloned());
+            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
         }
         UiMessage::Tip(text) => {
             let line = TranscriptLine {
@@ -815,17 +818,17 @@ fn handle_message(
                 continuation: false,
             };
             app.messages.push(line.clone());
-            print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
+            print_message_and_restore_prompt(stdout, app, ui, std::slice::from_ref(&line))?;
         }
         UiMessage::Muted(text) => {
             let lines = split_transcript(&text, TranscriptKind::Muted);
-            app.messages.extend(lines.clone());
-            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+            app.messages.extend(lines.iter().cloned());
+            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
         }
         UiMessage::Error(text) => {
             let lines = split_transcript(&text, TranscriptKind::Error);
-            app.messages.extend(lines.clone());
-            print_message_and_restore_prompt(stdout, app, ui, lines)?;
+            app.messages.extend(lines.iter().cloned());
+            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
         }
         UiMessage::Transition { from, to } => {
             let line = TranscriptLine {
@@ -837,7 +840,7 @@ fn handle_message(
                 continuation: false,
             };
             app.messages.push(line.clone());
-            print_message_and_restore_prompt(stdout, app, ui, vec![line])?;
+            print_message_and_restore_prompt(stdout, app, ui, std::slice::from_ref(&line))?;
         }
         UiMessage::StatusUpdate(status) => {
             let mut next = status;
@@ -848,7 +851,7 @@ fn handle_message(
                 next.branch = app.status.branch.clone();
             }
             app.status = next;
-            if !app.suspended {
+            if !app.suspended && !refresh_status_line(stdout, app, ui)? {
                 clear_live_area(stdout, ui)?;
                 redraw_live_area(stdout, app, ui)?;
             }
@@ -873,6 +876,7 @@ fn handle_message(
             ui.prompt_visible = false;
             ui.prompt_lines = 0;
             ui.prompt_cursor_row = 0;
+            ui.prompt_cursor_col = 0;
             ui.lower_lines = 0;
             redraw_live_area(stdout, app, ui)?;
             return Ok(true);
@@ -1072,25 +1076,73 @@ fn redraw_live_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
     ui.prompt_visible = true;
     ui.prompt_lines = prompt_lines;
     ui.prompt_cursor_row = prompt_cursor_row;
+    ui.prompt_cursor_col = prompt_cursor_col;
     ui.lower_lines = lower_lines.len() as u16;
     stdout.flush()?;
     Ok(())
+}
+
+fn refresh_status_line(stdout: &mut Stdout, app: &App, ui: &TerminalUi) -> Result<bool> {
+    let Some(move_down) = status_line_refresh_offset(app, ui) else {
+        return Ok(false);
+    };
+
+    let width = terminal_width() as usize;
+    queue!(
+        stdout,
+        MoveDown(move_down),
+        MoveToColumn(0),
+        Clear(ClearType::UntilNewLine)
+    )?;
+    print_live_area_line(
+        stdout,
+        &LiveAreaLine::Status,
+        app.ctrl_c_pending,
+        &app.status,
+        app.debug,
+        width,
+    )?;
+    queue!(
+        stdout,
+        MoveUp(move_down),
+        MoveToColumn(ui.prompt_cursor_col)
+    )?;
+    stdout.flush()?;
+    Ok(true)
+}
+
+fn status_line_refresh_offset(app: &App, ui: &TerminalUi) -> Option<u16> {
+    if !ui.prompt_visible
+        || ui.prompt_lines == 0
+        || ui.lower_lines != 1
+        || app.selection.is_some()
+        || app.completion_popup_visible()
+    {
+        return None;
+    }
+
+    Some(
+        ui.prompt_lines
+            .saturating_sub(ui.prompt_cursor_row.saturating_add(1))
+            + 2,
+    )
 }
 
 fn print_message_and_restore_prompt(
     stdout: &mut Stdout,
     app: &App,
     ui: &mut TerminalUi,
-    lines: Vec<TranscriptLine>,
+    lines: &[TranscriptLine],
 ) -> Result<()> {
     clear_live_area(stdout, ui)?;
     queue!(stdout, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
-    for line in &lines {
+    for line in lines {
         print_transcript_line(stdout, line)?;
     }
     ui.prompt_visible = false;
     ui.prompt_lines = 0;
     ui.prompt_cursor_row = 0;
+    ui.prompt_cursor_col = 0;
     ui.lower_lines = 0;
     redraw_live_area(stdout, app, ui)
 }
@@ -2001,6 +2053,37 @@ mod tui_tests {
         assert_eq!(prompt.lines, vec!["abcd", ""]);
         assert_eq!(prompt.cursor_row, 1);
         assert_eq!(prompt.cursor_col, 2);
+    }
+
+    #[test]
+    fn status_line_refresh_offset_targets_status_line_below_prompt() {
+        let app = App::new();
+        let ui = TerminalUi {
+            prompt_visible: true,
+            prompt_lines: 3,
+            prompt_cursor_row: 1,
+            prompt_cursor_col: 5,
+            lower_lines: 1,
+        };
+
+        assert_eq!(status_line_refresh_offset(&app, &ui), Some(3));
+    }
+
+    #[test]
+    fn status_line_refresh_offset_skips_completion_popup() {
+        let mut app = App::new();
+        app.input = "/".into();
+        app.cursor_pos = app.input.len();
+        app.next_completion();
+        let ui = TerminalUi {
+            prompt_visible: true,
+            prompt_lines: 1,
+            prompt_cursor_row: 0,
+            prompt_cursor_col: 2,
+            lower_lines: 3,
+        };
+
+        assert_eq!(status_line_refresh_offset(&app, &ui), None);
     }
 
     #[test]

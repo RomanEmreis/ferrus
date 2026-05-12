@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
@@ -26,6 +26,36 @@ pub struct WatchedState {
     pub selected_milestone_display: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SelectedDisplayCacheKey {
+    selected_spec: Option<String>,
+    selected_milestone: Option<String>,
+    spec_fingerprint: Option<(Option<SystemTime>, u64)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SelectedDisplayCache {
+    key: Option<SelectedDisplayCacheKey>,
+    value: (Option<String>, Option<String>),
+}
+
+impl SelectedDisplayCache {
+    async fn get(&mut self, state: &StateData) -> (Option<String>, Option<String>) {
+        let key = SelectedDisplayCacheKey {
+            selected_spec: state.selected_spec.clone(),
+            selected_milestone: state.selected_milestone.clone(),
+            spec_fingerprint: selected_spec_fingerprint(state).await,
+        };
+
+        if self.key.as_ref() != Some(&key) {
+            self.value = selected_milestone_display(state).await;
+            self.key = Some(key);
+        }
+
+        self.value.clone()
+    }
+}
+
 /// Poll STATE.json every 250 ms and refresh elapsed timers every second.
 ///
 /// `updated_at` is the source of truth for how long the current state has been
@@ -36,6 +66,7 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
     let mut last_sent_state_elapsed_secs = None;
     let mut last_sent_task_elapsed_secs = None;
     let mut task_started_at = None;
+    let mut selected_display_cache = SelectedDisplayCache::default();
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
@@ -91,7 +122,7 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
             last_sent_task_elapsed_secs = task_elapsed_secs;
             last_state = Some(state.clone());
             let (selected_spec_display, selected_milestone_display) =
-                selected_milestone_display(&state).await;
+                selected_display_cache.get(&state).await;
             let _ = tx.send(Some(WatchedState {
                 state,
                 state_elapsed,
@@ -101,6 +132,16 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
             }));
         }
     }
+}
+
+async fn selected_spec_fingerprint(state: &StateData) -> Option<(Option<SystemTime>, u64)> {
+    let path = state.selected_spec.as_deref()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    Some((metadata.modified().ok(), metadata.len()))
 }
 
 async fn selected_milestone_display(state: &StateData) -> (Option<String>, Option<String>) {

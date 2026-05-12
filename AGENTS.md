@@ -28,8 +28,18 @@ All three checks must pass before submitting: `clippy -D warnings`, `fmt --check
 ```
 src/
   main.rs                    # CLI entry, tracing init, HQ logger
-  cli/                       # clap subcommands (init, serve, register)
-  config/mod.rs              # Deserialize ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig, HqConfig)
+  cli/                       # clap entry and command implementations (init, serve, register)
+  config/mod.rs              # Deserialize/update ferrus.toml (ChecksConfig, LimitsConfig, LeaseConfig, SpecConfig, HqConfig)
+  config/claude.rs           # Claude MCP isolation config helpers
+  templates.rs               # Embedded Markdown templates written by init/resource fallback
+  specs.rs                   # Spec discovery, milestone parsing, selected milestone resolution
+  agent_id.rs                # Stable agent IDs and MCP server names
+  agents/                    # Agent launcher/config adapters for Claude Code, Codex, Qwen Code
+  agents/mod.rs              # SupervisorAgent/ExecutorAgent traits, AgentRunMode, MCP config entry helpers, agent parsing
+  agents/claude/mod.rs       # Claude Code launchers, model override handling, MCP isolation, role-scoped config paths
+  agents/codex/mod.rs        # Codex launchers, stdin prompt transport, TOML MCP config and tool approvals
+  agents/qwen/mod.rs         # Qwen Code launchers, model override handling, JSON settings tool approvals
+  platform/                  # OS-specific process, shell, and parent-lifecycle helpers
   state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
@@ -37,12 +47,12 @@ src/
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
   hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
-  hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, spec/milestone status line, confirmation/selection dialogs; double-Ctrl+C-to-quit (2-second window)
+  hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, spec/milestone status line, confirmation/selection dialogs, AwaitingHuman answer hint; double-Ctrl+C-to-quit
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
   hq/agent_manager.rs        # agent spawn helpers (headless for executor, reviewer, consultant); HeadlessHandle; agents.json updates
   server/mod.rs              # neva App setup; constructs agent_id, wires closures
-  server/tools/              # One file per MCP tool (one module = one tool)
+  server/tools/              # One file per MCP tool (one module = one tool); check_gate.rs is the shared check runner/report helper
   server/resources.rs        # MCP resource handler (ferrus://{file})
   server/prompts.rs          # MCP prompt handlers
 ```
@@ -58,6 +68,12 @@ src/
 **File locking**: `wait_for_task`, `wait_for_review`, and `/heartbeat` acquire an exclusive `flock` on `.ferrus/STATE.lock` (not `STATE.json`) for their read-check-write cycle. Use `store::open_lock_file()` + `tokio::task::spawn_blocking` for the blocking lock call.
 
 **Spec selection**: `STATE.json` stores `selected_spec` and `selected_milestone` as UI references only. Active task progress uses `task_spec` and `task_milestone`, copied from `pending_task_*` when `/create_task` succeeds. Milestone display text is resolved from the spec Markdown by milestone `ID`. Keep milestone IDs stable across title edits.
+
+**Agent adapters**: keep backend-specific CLI behavior inside `src/agents/{claude,codex,qwen}`. Shared orchestration should depend on the `SupervisorAgent` and `ExecutorAgent` traits, not on a concrete agent CLI. When adding an agent, implement both role adapters, model normalization, headless prompt transport if needed, version/config entry behavior, registration wiring, and focused tests.
+
+**HQ checks**: `/check` calls the same MCP check handler as an Executor and therefore updates retry state. `/check --force` runs configured commands directly from HQ and does not modify `STATE.json`.
+
+**HQ reset vs MCP reset**: HQ `/reset` force-resets from any state after confirmation when active agents may be running, clears task/answer/consultation files, and preserves selected spec/milestone. The MCP `/reset` tool is only valid from `Failed`.
 
 ## Ferrus Executor
 

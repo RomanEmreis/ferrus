@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -104,7 +105,40 @@ fn build_report(commands: &[CommandResult], max_lines: usize, log_path: &Path) -
 }
 
 fn last_n_lines(s: &str, n: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..].join("\n")
+    if n == 0 {
+        return String::new();
+    }
+
+    let mut tail = VecDeque::with_capacity(n);
+    for line in s.lines() {
+        if tail.len() == n {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    }
+    tail.into_iter().collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_n_lines_returns_only_tail() {
+        let input = "one\ntwo\nthree\nfour";
+
+        assert_eq!(last_n_lines(input, 2), "three\nfour");
+    }
+
+    #[test]
+    fn last_n_lines_handles_longer_limit() {
+        let input = "one\ntwo";
+
+        assert_eq!(last_n_lines(input, 10), "one\ntwo");
+    }
+
+    #[test]
+    fn last_n_lines_zero_limit_is_empty() {
+        assert_eq!(last_n_lines("one\ntwo", 0), "");
+    }
 }
