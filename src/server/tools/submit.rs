@@ -4,6 +4,7 @@ use tracing::info;
 
 use crate::{
     config::Config,
+    project,
     state::{machine::TaskState, machine::TransitionError, store},
 };
 
@@ -61,6 +62,13 @@ async fn run(content: String) -> Result<String> {
         state.submit()?;
         store::write_submission(&content).await?;
         store::write_state(&state).await?;
+        project::record_current_task_status_best_effort("reviewing").await;
+        project::record_runtime_event_best_effort(
+            None,
+            "submitted",
+            serde_json::json!({ "content_bytes": content.len(), "check_gate": "skipped" }),
+        )
+        .await;
 
         return Ok(
             "Submitted for review. Warning: no check commands are configured in ferrus.toml, so the final check gate was treated as a pass. State: Reviewing."
@@ -75,6 +83,13 @@ async fn run(content: String) -> Result<String> {
             state.submit()?;
             store::write_submission(&content).await?;
             store::write_state(&state).await?;
+            project::record_current_task_status_best_effort("reviewing").await;
+            project::record_runtime_event_best_effort(
+                None,
+                "submitted",
+                serde_json::json!({ "content_bytes": content.len(), "check_gate": "passed" }),
+            )
+            .await;
 
             info!("Work submitted for review, state → Reviewing");
             Ok(
@@ -86,6 +101,16 @@ async fn run(content: String) -> Result<String> {
             match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
                 Ok(()) => {
                     store::write_state(&state).await?;
+                    project::record_runtime_event_best_effort(
+                        None,
+                        "submit_check_failed",
+                        serde_json::json!({
+                            "retries": state.check_retries,
+                            "max_retries": config.limits.max_check_retries,
+                            "state": format!("{:?}", state.state),
+                        }),
+                    )
+                    .await;
                     Ok(format!(
                         "Final review gate failed during /submit (retry {}/{}).\n\n{}\n\nState remains {:?}. Fix the issues and run /check or /submit again.",
                         state.check_retries,
@@ -96,6 +121,16 @@ async fn run(content: String) -> Result<String> {
                 }
                 Err(TransitionError::CheckLimitExceeded { retries }) => {
                     store::write_state(&state).await?;
+                    project::record_current_task_status_best_effort("failed").await;
+                    project::record_runtime_event_best_effort(
+                        None,
+                        "submit_check_limit_exceeded",
+                        serde_json::json!({
+                            "retries": retries,
+                            "max_retries": config.limits.max_check_retries,
+                        }),
+                    )
+                    .await;
                     Ok(format!(
                         "Final review gate failed during /submit and hit the retry limit ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
                         config.limits.max_check_retries, failure.report,

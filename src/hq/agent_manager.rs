@@ -461,6 +461,7 @@ async fn spawn_headless(
     }
 
     let pid = child.id();
+    let db_run_id = crate::project::record_run_started_best_effort(role, agent_type, pid).await;
     let platform_guard = match platform::attach_headless_process(pid) {
         Ok(guard) => Some(guard),
         Err(err) => {
@@ -518,11 +519,14 @@ async fn spawn_headless(
         let _ = exit_tx.send(Some(code));
     });
     let name_owned = name.to_string();
+    let db_run_id_for_exit = db_run_id.clone();
     let mut registry_exit_rx = exit_rx.clone();
     tokio::spawn(async move {
         if registry_exit_rx.changed().await.is_err() {
             return;
         }
+
+        let exit_code = *registry_exit_rx.borrow();
 
         if let Ok(mut reg) = read_agents().await {
             if let Some(e) = reg.by_name_mut(&name_owned) {
@@ -530,6 +534,10 @@ async fn spawn_headless(
                 e.status = AgentStatus::Suspended;
             }
             let _ = write_agents(&reg).await;
+        }
+
+        if let (Some(run_id), Some(exit_code)) = (db_run_id_for_exit, exit_code) {
+            crate::project::record_run_finished_best_effort(&run_id, exit_code).await;
         }
     });
 

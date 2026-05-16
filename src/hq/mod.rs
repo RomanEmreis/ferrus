@@ -25,6 +25,11 @@ use display::Display;
 use state_watcher::WatchedState;
 
 pub async fn run(debug: bool) -> Result<()> {
+    if let Ok(interrupted) = crate::project::recover_interrupted_runs().await
+        && interrupted > 0
+    {
+        tracing::info!(interrupted, "recovered interrupted ferrus.db runs");
+    }
     reconcile_agent_pids().await;
 
     let (state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);

@@ -4,6 +4,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::Config,
+    project,
     state::{
         machine::{TaskState, TransitionError},
         store,
@@ -46,6 +47,17 @@ async fn run(notes: String) -> Result<String> {
     match state.reject(config.limits.max_review_cycles) {
         Ok(()) => {
             store::write_state(&state).await?;
+            project::record_current_task_status_best_effort("addressing").await;
+            project::record_runtime_event_best_effort(
+                None,
+                "rejected",
+                serde_json::json!({
+                    "review_cycles": state.review_cycles,
+                    "max_review_cycles": config.limits.max_review_cycles,
+                    "notes_bytes": notes.len(),
+                }),
+            )
+            .await;
             info!(
                 review_cycles = state.review_cycles,
                 "Submission rejected, state → Addressing"
@@ -59,6 +71,17 @@ async fn run(notes: String) -> Result<String> {
         }
         Err(TransitionError::ReviewLimitExceeded { cycles }) => {
             store::write_state(&state).await?;
+            project::record_current_task_status_best_effort("failed").await;
+            project::record_runtime_event_best_effort(
+                None,
+                "review_limit_exceeded",
+                serde_json::json!({
+                    "review_cycles": cycles,
+                    "max_review_cycles": config.limits.max_review_cycles,
+                    "notes_bytes": notes.len(),
+                }),
+            )
+            .await;
             warn!(cycles, "Review cycle limit reached, state → Failed");
             Ok(format!(
                 "Review cycle limit reached ({cycles}/{}).\n\nState is now Failed. \

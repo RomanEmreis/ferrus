@@ -392,7 +392,9 @@ Ferrus separates project-local artifacts from machine-local runtime state:
 - `~/.ferrus/projects/<project-id>/` stores machine-local metadata, `ferrus.db`, and logs.
 
 The current single-task loop still uses `.ferrus/STATE.json` for live coordination. `ferrus.db`
-is initialized as the durable substrate for multi-task and multi-executor coordination.
+mirrors task status, lifecycle events, and HQ-spawned headless runs as the durable substrate for
+multi-task and multi-executor coordination. On HQ startup, stale running DB rows whose PIDs are gone
+are marked `interrupted`.
 
 ### `.ferrus/`
 
@@ -420,7 +422,7 @@ is initialized as the durable substrate for multi-task and multi-executor coordi
 | File | Contents |
 |---|---|
 | `project.toml` | Project id, name, workspace path, git metadata, timestamps, version |
-| `ferrus.db` | SQLite database with `tasks`, `runs`, and `events` tables |
+| `ferrus.db` | SQLite database with mirrored `tasks`, `runs`, and `events` runtime records |
 | `logs/` | Machine-local logs that should not be committed |
 "#;
 
@@ -430,6 +432,7 @@ pub async fn run(agents_path: String) -> Result<()> {
     create_spec_dir().await?;
     create_skill_files(&agents_path).await?;
     let registration = crate::project::register_current_project().await?;
+    crate::project::record_current_task_status_best_effort("idle").await;
     update_gitignore().await?;
     println!(
         "Registered project {} in {}",

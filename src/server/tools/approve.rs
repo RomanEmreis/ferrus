@@ -3,7 +3,7 @@ use neva::prelude::*;
 use tracing::info;
 
 use crate::{
-    specs,
+    project, specs,
     state::{machine::TaskState, store},
 };
 
@@ -29,6 +29,8 @@ async fn run() -> Result<String> {
     specs::complete_task_milestone_and_advance(&mut state).await?;
     state.approve()?;
     store::write_state(&state).await?;
+    project::record_current_task_status_best_effort("complete").await;
+    project::record_runtime_event_best_effort(None, "approved", serde_json::json!({})).await;
 
     info!("Task approved, state → Complete");
     Ok("Task approved. State: Complete. Well done!".to_string())

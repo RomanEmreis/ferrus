@@ -4,6 +4,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::Config,
+    project,
     state::{
         machine::{TaskState, TransitionError},
         store,
@@ -40,6 +41,12 @@ async fn run() -> Result<String> {
     if config.checks.commands.is_empty() {
         state.check_passed()?;
         store::write_state(&state).await?;
+        project::record_runtime_event_best_effort(
+            None,
+            "check_passed",
+            serde_json::json!({ "commands": 0 }),
+        )
+        .await;
         info!("No check commands configured; treating /check as pass");
         return Ok(
             "All checks passed. Warning: no check commands are configured in ferrus.toml. State remains unchanged."
@@ -52,6 +59,12 @@ async fn run() -> Result<String> {
         CheckGateResult::Passed => {
             state.check_passed()?;
             store::write_state(&state).await?;
+            project::record_runtime_event_best_effort(
+                None,
+                "check_passed",
+                serde_json::json!({ "commands": config.checks.commands.len() }),
+            )
+            .await;
             info!(state = ?state.state, "All checks passed; staying in current work state");
             Ok(format!(
                 "All checks passed. State remains {:?}. Continue working or call /submit when the task is ready for review.",
@@ -62,6 +75,16 @@ async fn run() -> Result<String> {
             match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
                 Ok(()) => {
                     store::write_state(&state).await?;
+                    project::record_runtime_event_best_effort(
+                        None,
+                        "check_failed",
+                        serde_json::json!({
+                            "retries": state.check_retries,
+                            "max_retries": config.limits.max_check_retries,
+                            "state": format!("{:?}", state.state),
+                        }),
+                    )
+                    .await;
                     warn!(
                         retries = state.check_retries,
                         state = ?state.state,
@@ -77,6 +100,16 @@ async fn run() -> Result<String> {
                 }
                 Err(TransitionError::CheckLimitExceeded { retries }) => {
                     store::write_state(&state).await?;
+                    project::record_current_task_status_best_effort("failed").await;
+                    project::record_runtime_event_best_effort(
+                        None,
+                        "check_limit_exceeded",
+                        serde_json::json!({
+                            "retries": retries,
+                            "max_retries": config.limits.max_check_retries,
+                        }),
+                    )
+                    .await;
                     warn!(retries, "Check retry limit reached, state → Failed");
                     Ok(format!(
                         "Check retry limit reached ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",

@@ -2,7 +2,10 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::state::{machine::TaskState, store};
+use crate::{
+    project,
+    state::{machine::TaskState, store},
+};
 
 use super::tool_err;
 
@@ -40,6 +43,16 @@ async fn run(description: String) -> Result<String> {
     store::clear_consult_request().await?;
     store::clear_consult_response().await?;
     store::write_state(&state).await?;
+    project::record_current_task_status_best_effort("executing").await;
+    project::record_runtime_event_best_effort(
+        None,
+        "task_created",
+        serde_json::json!({
+            "path": ".ferrus/TASK.md",
+            "description_bytes": description.len(),
+        }),
+    )
+    .await;
 
     info!("Task created, state → Executing");
     Ok("Task created. State: Executing. The Executor can now call /wait_for_task.".to_string())

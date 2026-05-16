@@ -7,12 +7,17 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::SecondsFormat;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+use tracing::warn;
+
+use crate::{platform, state::machine::TaskState};
 
 const PROJECT_VERSION: u32 = 1;
 const LOCAL_PROJECT_TOML: &str = ".ferrus/project.toml";
+const CURRENT_TASK_ID: &str = "current";
+const CURRENT_TASK_PATH: &str = ".ferrus/TASK.md";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalProjectRef {
@@ -54,6 +59,17 @@ pub struct DoctorReport {
 pub struct DoctorCheck {
     pub ok: bool,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunRecord {
+    pub id: String,
+    pub task_id: String,
+    pub role: String,
+    pub agent: String,
+    pub status: String,
+    pub pid: Option<u32>,
+    pub workspace_path: String,
 }
 
 impl DoctorReport {
@@ -147,6 +163,9 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
         .await
         .context("Failed to create .ferrus/runs")?;
     copy_legacy_artifacts().await?;
+    if let Ok(state) = crate::state::store::read_state().await {
+        record_current_task_status_best_effort(task_status_for_state(&state.state)).await;
+    }
     Ok(registration)
 }
 
@@ -206,44 +225,218 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
     })
 }
 
+pub async fn record_current_task_status(status: &str) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let status = status.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        upsert_task(&connection, CURRENT_TASK_ID, CURRENT_TASK_PATH, &status)?;
+        insert_event(
+            &connection,
+            None,
+            "task_status_changed",
+            &serde_json::json!({
+                "task_id": CURRENT_TASK_ID,
+                "status": status,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn record_current_task_status_best_effort(status: &str) {
+    if let Err(err) = record_current_task_status(status).await {
+        warn!(error = ?err, status, "failed to mirror task status into ferrus.db");
+    }
+}
+
+pub async fn record_runtime_event(
+    run_id: Option<String>,
+    event_type: &str,
+    payload: serde_json::Value,
+) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let event_type = event_type.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        insert_event(&connection, run_id.as_deref(), &event_type, &payload)?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn record_runtime_event_best_effort(
+    run_id: Option<String>,
+    event_type: &str,
+    payload: serde_json::Value,
+) {
+    if let Err(err) = record_runtime_event(run_id, event_type, payload).await {
+        warn!(error = ?err, event_type, "failed to write runtime event into ferrus.db");
+    }
+}
+
+pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<RunRecord> {
+    let database_path = current_database_path().await?;
+    let workspace_path = path_string(&canonical_current_dir().await?);
+    let role = role.to_string();
+    let agent = agent.to_string();
+    let run_id = generate_run_id(&role, &agent, pid);
+    let started_at = timestamp();
+    let updated_at = started_at.clone();
+    let record = RunRecord {
+        id: run_id.clone(),
+        task_id: CURRENT_TASK_ID.to_string(),
+        role,
+        agent,
+        status: "running".to_string(),
+        pid: Some(pid),
+        workspace_path,
+    };
+    let record_for_insert = record.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        ensure_task_exists(&connection, CURRENT_TASK_ID, CURRENT_TASK_PATH)?;
+        connection.execute(
+            r#"
+            INSERT INTO runs (
+                id, task_id, role, agent, status, started_at, updated_at, pid, workspace_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                pid = excluded.pid,
+                workspace_path = excluded.workspace_path
+            "#,
+            params![
+                record_for_insert.id,
+                record_for_insert.task_id,
+                record_for_insert.role,
+                record_for_insert.agent,
+                record_for_insert.status,
+                started_at,
+                updated_at,
+                record_for_insert.pid.map(i64::from),
+                record_for_insert.workspace_path,
+            ],
+        )?;
+        insert_event(
+            &connection,
+            Some(&run_id),
+            "run_started",
+            &serde_json::json!({
+                "role": record_for_insert.role,
+                "agent": record_for_insert.agent,
+                "pid": record_for_insert.pid,
+            }),
+        )?;
+        Ok(())
+    })
+    .await??;
+    Ok(record)
+}
+
+pub async fn record_run_started_best_effort(role: &str, agent: &str, pid: u32) -> Option<String> {
+    match record_run_started(role, agent, pid).await {
+        Ok(record) => Some(record.id),
+        Err(err) => {
+            warn!(error = ?err, role, agent, pid, "failed to mirror run start into ferrus.db");
+            None
+        }
+    }
+}
+
+pub async fn record_run_finished(run_id: &str, exit_code: i32) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let run_id = run_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        let status = if exit_code == 0 {
+            "completed"
+        } else {
+            "failed"
+        };
+        connection.execute(
+            "UPDATE runs SET status = ?1, updated_at = ?2, pid = NULL WHERE id = ?3",
+            params![status, timestamp(), run_id],
+        )?;
+        insert_event(
+            &connection,
+            Some(&run_id),
+            "run_finished",
+            &serde_json::json!({
+                "exit_code": exit_code,
+                "status": status,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn record_run_finished_best_effort(run_id: &str, exit_code: i32) {
+    if let Err(err) = record_run_finished(run_id, exit_code).await {
+        warn!(error = ?err, run_id, exit_code, "failed to mirror run finish into ferrus.db");
+    }
+}
+
+pub async fn recover_interrupted_runs() -> Result<usize> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<usize> {
+        let connection = open_runtime_database(&database_path)?;
+        let mut statement = connection.prepare(
+            "SELECT id, pid FROM runs WHERE status IN ('running', 'checking', 'reviewing')",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })?;
+
+        let mut interrupted = Vec::new();
+        for row in rows {
+            let (run_id, pid) = row?;
+            if pid.is_none_or(|pid| !process_is_alive(pid as u32)) {
+                interrupted.push(run_id);
+            }
+        }
+
+        for run_id in &interrupted {
+            connection.execute(
+                "UPDATE runs SET status = 'interrupted', updated_at = ?1, pid = NULL WHERE id = ?2",
+                params![timestamp(), run_id],
+            )?;
+            insert_event(
+                &connection,
+                Some(run_id),
+                "run_interrupted",
+                &serde_json::json!({}),
+            )?;
+        }
+
+        Ok(interrupted.len())
+    })
+    .await?
+}
+
+pub fn task_status_for_state(state: &TaskState) -> &'static str {
+    match state {
+        TaskState::Idle => "idle",
+        TaskState::Executing => "executing",
+        TaskState::Consultation => "consultation",
+        TaskState::Reviewing => "reviewing",
+        TaskState::Addressing => "addressing",
+        TaskState::Complete => "complete",
+        TaskState::Failed => "failed",
+        TaskState::AwaitingHuman => "awaiting_human",
+    }
+}
+
 async fn initialize_database(path: &Path) -> Result<()> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = Connection::open(&path)
             .with_context(|| format!("Failed to open {}", path.display()))?;
-        connection.execute_batch(
-            r#"
-            PRAGMA foreign_keys = ON;
-
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                path TEXT NOT NULL,
-                status TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS runs (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                agent TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                pid INTEGER,
-                workspace_path TEXT NOT NULL,
-                FOREIGN KEY(task_id) REFERENCES tasks(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT,
-                type TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(run_id) REFERENCES runs(id)
-            );
-            "#,
-        )?;
+        initialize_schema(&connection)?;
         Ok(())
     })
     .await?
@@ -267,6 +460,106 @@ async fn validate_database_schema(path: &Path) -> Result<bool> {
         Ok(true)
     })
     .await?
+}
+
+async fn current_database_path() -> Result<PathBuf> {
+    let local_ref = read_local_project_ref()
+        .await
+        .context(".ferrus/project.toml not found — run `ferrus migrate`")?;
+    Ok(PathBuf::from(local_ref.data_dir).join("ferrus.db"))
+}
+
+fn open_runtime_database(path: &Path) -> Result<Connection> {
+    let connection =
+        Connection::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    initialize_schema(&connection)?;
+    Ok(connection)
+}
+
+fn initialize_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            status TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS runs (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            pid INTEGER,
+            workspace_path TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT,
+            type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id)
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
+fn upsert_task(connection: &Connection, id: &str, path: &str, status: &str) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT INTO tasks (id, path, status)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(id) DO UPDATE SET
+            path = excluded.path,
+            status = excluded.status
+        "#,
+        params![id, path, status],
+    )?;
+    Ok(())
+}
+
+fn ensure_task_exists(connection: &Connection, id: &str, path: &str) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO tasks (id, path, status) VALUES (?1, ?2, 'unknown')",
+        params![id, path],
+    )?;
+    Ok(())
+}
+
+fn insert_event(
+    connection: &Connection,
+    run_id: Option<&str>,
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    if let Some(run_id) = run_id {
+        let exists = connection
+            .query_row("SELECT 1 FROM runs WHERE id = ?1", [run_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            anyhow::bail!("Cannot insert event for unknown run id {run_id}");
+        }
+    }
+    connection.execute(
+        "INSERT INTO events (run_id, type, payload_json, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            run_id,
+            event_type,
+            serde_json::to_string(payload)?,
+            timestamp()
+        ],
+    )?;
+    Ok(())
 }
 
 async fn copy_legacy_artifacts() -> Result<()> {
@@ -363,6 +656,20 @@ fn generate_project_id(workspace_dir: &Path) -> String {
     format!("P{:012X}{:016X}", millis & 0xFFFFFFFFFFFF, hash)
 }
 
+fn generate_run_id(role: &str, agent: &str, pid: u32) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut hasher = DefaultHasher::new();
+    role.hash(&mut hasher);
+    agent.hash(&mut hasher);
+    pid.hash(&mut hasher);
+    millis.hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("r-{:012x}-{:016x}", millis & 0xFFFFFFFFFFFF, hash)
+}
+
 fn validate_project_id(project_id: &str) -> Result<()> {
     let valid = !project_id.is_empty()
         && project_id
@@ -412,4 +719,8 @@ async fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    platform::pid_is_alive(pid)
 }
