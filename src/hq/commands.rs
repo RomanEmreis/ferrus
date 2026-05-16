@@ -22,6 +22,23 @@ pub enum ModelTarget {
 pub enum ShellCommand {
     /// Show task state and agent list.
     Status,
+    /// List task runtime rows from ferrus.db.
+    Tasks,
+    /// List run attempts from ferrus.db.
+    Runs {
+        /// Maximum number of run rows to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// List runtime events from ferrus.db.
+    Events {
+        /// Maximum number of event rows to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Only show events for one run id.
+        #[arg(long = "run-id", alias = "run", value_name = "RUN_ID")]
+        run_id: Option<String>,
+    },
     /// Run the Ferrus /check gate deterministically from HQ.
     Check {
         /// Run checks directly from HQ without requiring Executing or Addressing state.
@@ -116,6 +133,30 @@ mod tests {
             parse_command("/status").unwrap(),
             ShellCommand::Status
         ));
+    }
+    #[test]
+    fn parse_tasks() {
+        assert!(matches!(
+            parse_command("/tasks").unwrap(),
+            ShellCommand::Tasks
+        ));
+    }
+    #[test]
+    fn parse_runs() {
+        assert!(matches!(
+            parse_command("/runs --limit 5").unwrap(),
+            ShellCommand::Runs { limit: 5 }
+        ));
+    }
+    #[test]
+    fn parse_events() {
+        match parse_command("/events --limit 7 --run r-123").unwrap() {
+            ShellCommand::Events { limit, run_id } => {
+                assert_eq!(limit, 7);
+                assert_eq!(run_id.as_deref(), Some("r-123"));
+            }
+            _ => panic!("expected Events"),
+        }
     }
     #[test]
     fn parse_check() {

@@ -108,6 +108,9 @@ On Linux and macOS for `x86_64` and `aarch64`/`arm64`, `install.sh` downloads th
 | `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both supervisor and executor |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and session log paths |
+| `/tasks` | List SQLite task runtime rows |
+| `/runs [--limit N]` | List SQLite run attempts |
+| `/events [--limit N] [--run <id>]` | List SQLite runtime events |
 | `/attach <name>` | Show log path for a running headless agent |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |

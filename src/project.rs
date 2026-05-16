@@ -68,8 +68,19 @@ pub struct RunRecord {
     pub role: String,
     pub agent: String,
     pub status: String,
+    pub started_at: String,
+    pub updated_at: String,
     pub pid: Option<u32>,
     pub workspace_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRecord {
+    pub id: i64,
+    pub run_id: Option<String>,
+    pub event_type: String,
+    pub payload_json: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -334,6 +345,89 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
     .await?
 }
 
+pub async fn list_runs(limit: usize) -> Result<Vec<RunRecord>> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<Vec<RunRecord>> {
+        let connection = open_runtime_database(&database_path)?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, task_id, role, agent, status, started_at, updated_at, pid, workspace_path
+            FROM runs
+            ORDER BY updated_at DESC, started_at DESC, id DESC
+            LIMIT ?1
+            "#,
+        )?;
+        let rows = statement.query_map([limit as i64], |row| {
+            Ok(RunRecord {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                role: row.get(2)?,
+                agent: row.get(3)?,
+                status: row.get(4)?,
+                started_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                pid: row.get::<_, Option<i64>>(7)?.map(|pid| pid as u32),
+                workspace_path: row.get(8)?,
+            })
+        })?;
+
+        let mut runs = Vec::new();
+        for row in rows {
+            runs.push(row?);
+        }
+        Ok(runs)
+    })
+    .await?
+}
+
+pub async fn list_events(limit: usize, run_id: Option<String>) -> Result<Vec<EventRecord>> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<Vec<EventRecord>> {
+        let connection = open_runtime_database(&database_path)?;
+        let mut events = Vec::new();
+        if let Some(run_id) = run_id {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT id, run_id, type, payload_json, created_at
+                FROM events
+                WHERE run_id = ?1
+                ORDER BY id DESC
+                LIMIT ?2
+                "#,
+            )?;
+            let rows = statement.query_map(params![run_id, limit as i64], event_from_row)?;
+            for row in rows {
+                events.push(row?);
+            }
+        } else {
+            let mut statement = connection.prepare(
+                r#"
+                SELECT id, run_id, type, payload_json, created_at
+                FROM events
+                ORDER BY id DESC
+                LIMIT ?1
+                "#,
+            )?;
+            let rows = statement.query_map([limit as i64], event_from_row)?;
+            for row in rows {
+                events.push(row?);
+            }
+        }
+        Ok(events)
+    })
+    .await?
+}
+
+fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
+    Ok(EventRecord {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        event_type: row.get(2)?,
+        payload_json: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
 pub async fn record_current_task_status(status: &str) -> Result<()> {
     let (task_id, task_path) = current_task_identity().await;
     record_task_status(&task_id, &task_path, status).await
@@ -543,6 +637,8 @@ pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<Run
         role,
         agent,
         status: "running".to_string(),
+        started_at: started_at.clone(),
+        updated_at: updated_at.clone(),
         pid: Some(pid),
         workspace_path,
     };
@@ -1179,6 +1275,51 @@ mod tests {
         assert_eq!(tasks[0].status, "executing");
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(tasks[0].lease_until.is_some());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn list_runs_and_events_reads_runtime_rows() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        let run = record_run_started("executor", "codex", std::process::id())
+            .await
+            .unwrap();
+        record_runtime_event(
+            Some(run.id.clone()),
+            "test_event",
+            serde_json::json!({ "ok": true }),
+        )
+        .await
+        .unwrap();
+        record_run_finished(&run.id, 0).await.unwrap();
+
+        let runs = list_runs(10).await.unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, run.id);
+        assert_eq!(runs[0].task_id, "t-001");
+        assert_eq!(runs[0].role, "executor");
+        assert_eq!(runs[0].agent, "codex");
+        assert_eq!(runs[0].status, "completed");
+        assert!(runs[0].pid.is_none());
+        assert!(!runs[0].started_at.is_empty());
+        assert!(!runs[0].updated_at.is_empty());
+
+        let events = list_events(10, Some(run.id.clone())).await.unwrap();
+        assert!(events.iter().any(|event| event.event_type == "run_started"));
+        assert!(events.iter().any(|event| event.event_type == "test_event"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "run_finished")
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.run_id.as_deref() == Some(run.id.as_str()))
+        );
 
         teardown(previous);
     }

@@ -295,6 +295,9 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |
 | `/resume` | Resume the executor headlessly; also recovers Consultation by relaunching both consultant and executor |
 | `/status` | Show task state, agent list, and session log paths |
+| `/tasks` | List SQLite task runtime rows |
+| `/runs [--limit N]` | List SQLite run attempts |
+| `/events [--limit N] [--run <id>]` | List SQLite runtime events |
 | `/attach <name>` | Show log path for a running headless agent |
 | `/stop` | Stop all running agent sessions |
 | `/reset` | Reset state to Idle (clears task files) |

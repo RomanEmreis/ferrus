@@ -221,6 +221,81 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 }
             }
         }
+        ShellCommand::Tasks => {
+            let tasks = crate::project::list_tasks().await?;
+            if tasks.is_empty() {
+                ctx.display.info("No tasks recorded in ferrus.db.");
+            } else {
+                ctx.display.info(format!(
+                    "{:<14} {:<14} {:<24} {:<22} {:<22} Path",
+                    "ID", "Status", "Claimed by", "Lease until", "Heartbeat"
+                ));
+                for task in tasks {
+                    ctx.display.info(format!(
+                        "{:<14} {:<14} {:<24} {:<22} {:<22} {}",
+                        task.id,
+                        task.status,
+                        task.claimed_by.as_deref().unwrap_or("-"),
+                        task.lease_until.as_deref().unwrap_or("-"),
+                        task.last_heartbeat.as_deref().unwrap_or("-"),
+                        task.path
+                    ));
+                }
+            }
+        }
+        ShellCommand::Runs { limit } => {
+            let runs = crate::project::list_runs(limit).await?;
+            if runs.is_empty() {
+                ctx.display.info("No runs recorded in ferrus.db.");
+            } else {
+                ctx.display.info(format!(
+                    "{:<31} {:<10} {:<10} {:<12} {:<12} {:<8} {:<20} {:<20} Workspace",
+                    "ID", "Task", "Role", "Agent", "Status", "PID", "Started", "Updated"
+                ));
+                for run in runs {
+                    ctx.display.info(format!(
+                        "{:<31} {:<10} {:<10} {:<12} {:<12} {:<8} {:<20} {:<20} {}",
+                        run.id,
+                        run.task_id,
+                        run.role,
+                        compact(&run.agent, 12),
+                        run.status,
+                        run.pid
+                            .map(|pid| pid.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        run.started_at,
+                        run.updated_at,
+                        run.workspace_path
+                    ));
+                }
+            }
+        }
+        ShellCommand::Events { limit, run_id } => {
+            let events = crate::project::list_events(limit, run_id.clone()).await?;
+            if events.is_empty() {
+                match run_id {
+                    Some(run_id) => ctx
+                        .display
+                        .info(format!("No events recorded for run {run_id}.")),
+                    None => ctx.display.info("No events recorded in ferrus.db."),
+                }
+            } else {
+                ctx.display.info(format!(
+                    "{:<6} {:<31} {:<24} {:<20} Payload",
+                    "ID", "Run", "Type", "Created"
+                ));
+                for event in events {
+                    ctx.display.info(format!(
+                        "{:<6} {:<31} {:<24} {:<20} {}",
+                        event.id,
+                        event.run_id.as_deref().unwrap_or("-"),
+                        event.event_type,
+                        event.created_at,
+                        compact(&event.payload_json, 96)
+                    ));
+                }
+            }
+        }
         ShellCommand::Check { force } => ctx.check(force).await?,
         ShellCommand::Help => {
             ctx.display.info(concat!(
@@ -238,6 +313,11 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /resume            Resume the executor headlessly; recovers Consultation too\n",
                 "  /review            Manually spawn supervisor in review mode\n",
                 "  /status            Show task state, agent list, and session log paths\n",
+                "  /tasks             List SQLite task runtime rows\n",
+                "  /runs [--limit N]  List SQLite run attempts\n",
+                "  /events [--limit N]\n",
+                "                     List SQLite runtime events\n",
+                "  /events --run <id> List SQLite runtime events for one run\n",
                 "  /attach <name>     Show log path for a running headless agent\n",
                 "  /stop              Stop all running agent sessions\n",
                 "  /reset             Reset state to Idle (clears task files)\n",
@@ -323,6 +403,15 @@ fn parse_agent_type(s: &str) -> Option<crate::cli::commands::register::Agent> {
         "codex" => Some(Agent::Codex),
         _ => None,
     }
+}
+
+fn compact(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut shortened: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        shortened.push_str("...");
+    }
+    shortened
 }
 
 struct ResumeGuard {

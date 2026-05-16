@@ -38,6 +38,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("/review", "spawn supervisor in review mode"),
     ("/status", "show task state and agents"),
+    ("/tasks", "list SQLite task runtime rows"),
+    ("/runs", "list SQLite run attempts"),
+    ("/events", "list SQLite runtime events"),
     ("/attach", "show log path for a running headless session"),
     ("/stop", "stop all running sessions"),
     ("/reset", "reset state to Idle"),
@@ -1973,19 +1976,19 @@ mod tui_tests {
     #[test]
     fn tab_extends_to_shared_prefix_before_cycling() {
         let mut app = App::new();
-        app.input = "/r".into();
+        app.input = "/rese".into();
         app.cursor_pos = app.input.len();
 
         app.next_completion();
 
-        assert_eq!(app.input, "/re");
+        assert_eq!(app.input, "/reset");
         assert!(app.completion_active);
         assert_eq!(
             app.completion_candidates
                 .iter()
                 .map(|(cmd, _)| *cmd)
                 .collect::<Vec<_>>(),
-            vec!["/reset-spec", "/resume", "/review", "/reset", "/register"]
+            vec!["/reset-spec", "/reset"]
         );
     }
 
@@ -2021,6 +2024,9 @@ mod tui_tests {
         assert!(commands.contains(&"/task"));
         assert!(commands.contains(&"/spec"));
         assert!(commands.contains(&"/check"));
+        assert!(commands.contains(&"/tasks"));
+        assert!(commands.contains(&"/runs"));
+        assert!(commands.contains(&"/events"));
         assert!(commands.contains(&"/model"));
         assert!(commands.contains(&"/resume"));
         assert!(commands.contains(&"/reset-spec"));
