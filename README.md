@@ -260,14 +260,14 @@ Ferrus now separates human-readable project artifacts from machine-local runtime
 | `.ferrus/` | Project-local Markdown artifacts, templates, and current compatibility state files |
 | `~/.ferrus/projects/<project-id>/` | Machine-local project metadata, SQLite runtime database, and global logs |
 
-The current release still uses `.ferrus/STATE.json` as the live coordination source for the single-task Supervisor/Executor loop. `ferrus.db` mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, stale running DB rows whose PIDs are gone are marked `interrupted`.
+The current release still uses `.ferrus/STATE.json` as the compatibility state-machine snapshot for the single-task Supervisor/Executor loop. Executor task claims and heartbeat renewals are coordinated through `ferrus.db` task lease columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, stale running DB rows whose PIDs are gone are marked `interrupted`.
 
 ### `.ferrus/`
 
 | File | Contents |
 |---|---|
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
-| `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
+| `STATE.json` | Compatibility state snapshot, mirrored lease fields, retry/cycle counters, schema version, timestamp |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `agents.json` | Runtime registry for agent sessions, statuses, PIDs, and log ownership |
 | `TASK.md` | Compatibility mirror of the active task description |
@@ -291,7 +291,7 @@ The current release still uses `.ferrus/STATE.json` as the live coordination sou
 | File | Contents |
 |---|---|
 | `project.toml` | Project id, name, workspace path, `.ferrus` path, git metadata, timestamps, schema version |
-| `ferrus.db` | SQLite database with mirrored `tasks`, `runs`, and `events` runtime records |
+| `ferrus.db` | SQLite database with `tasks` lease fields plus mirrored `runs` and `events` runtime records |
 | `logs/` | Reserved for machine-local logs that should not be committed |
 
 ---

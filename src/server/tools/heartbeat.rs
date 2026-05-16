@@ -6,6 +6,7 @@ use tracing::info;
 
 use crate::{
     config::Config,
+    project::{self, LeaseRenewal},
     state::{machine::TaskState, store},
 };
 
@@ -53,6 +54,71 @@ async fn run(agent_id: &str) -> Result<String> {
 
     let mut state = store::read_state().await?;
 
+    // State must still be leasable in the compatibility state machine.
+    if !LEASABLE_STATES.contains(&state.state) {
+        drop(lock_file);
+        return Ok(json!({
+            "status": "error",
+            "code": "invalid_state",
+            "message": format!("State {:?} cannot hold a lease", state.state)
+        })
+        .to_string());
+    }
+
+    match project::renew_current_task_lease(agent_id, ttl_secs).await {
+        Ok(LeaseRenewal::Renewed {
+            claimed_by,
+            lease_until,
+        }) => {
+            state.claimed_by = Some(claimed_by.clone());
+            state.lease_until = Some(lease_until);
+            state.last_heartbeat = Some(chrono::Utc::now());
+            store::write_state(&state).await?;
+            drop(lock_file);
+
+            info!(agent_id, "Lease renewed");
+            return Ok(json!({
+                "status": "renewed",
+                "claimed_by": claimed_by,
+                "lease_until": lease_until,
+            })
+            .to_string());
+        }
+        Ok(LeaseRenewal::NotClaimed) => {
+            drop(lock_file);
+            return Ok(json!({
+                "status": "error",
+                "code": "not_claimed",
+                "message": "No active lease exists"
+            })
+            .to_string());
+        }
+        Ok(LeaseRenewal::ClaimedByOther { claimed_by }) => {
+            drop(lock_file);
+            return Ok(json!({
+                "status": "error",
+                "code": "claimed_by_other",
+                "message": format!("Lease is held by {claimed_by}")
+            })
+            .to_string());
+        }
+        Ok(LeaseRenewal::Expired) => {
+            drop(lock_file);
+            return Ok(json!({
+                "status": "error",
+                "code": "expired",
+                "message": "Your lease expired before renewal"
+            })
+            .to_string());
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                "failed to renew lease in ferrus.db; falling back to STATE.json lease"
+            );
+        }
+    }
+
     // Step 1: identity check (ignoring expiry) — determines not_claimed vs claimed_by_other.
     let identity_match = state.claimed_by.as_deref() == Some(agent_id);
     if !identity_match {
@@ -79,17 +145,6 @@ async fn run(agent_id: &str) -> Result<String> {
             "status": "error",
             "code": "expired",
             "message": "Your lease expired before renewal"
-        })
-        .to_string());
-    }
-
-    // Step 3: state must be leasable.
-    if !LEASABLE_STATES.contains(&state.state) {
-        drop(lock_file);
-        return Ok(json!({
-            "status": "error",
-            "code": "invalid_state",
-            "message": format!("State {:?} cannot hold a lease", state.state)
         })
         .to_string());
     }

@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use chrono::SecondsFormat;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use chrono::{DateTime, SecondsFormat, Utc};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
@@ -77,6 +77,34 @@ pub struct TaskArtifact {
     pub id: String,
     pub path: String,
     pub run_dir: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskClaim {
+    Claimed {
+        claimed_by: String,
+        lease_until: DateTime<Utc>,
+    },
+    AlreadyClaimed {
+        claimed_by: String,
+        lease_until: DateTime<Utc>,
+    },
+    ClaimedByOther {
+        claimed_by: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum LeaseRenewal {
+    Renewed {
+        claimed_by: String,
+        lease_until: DateTime<Utc>,
+    },
+    NotClaimed,
+    ClaimedByOther {
+        claimed_by: String,
+    },
+    Expired,
 }
 
 impl DoctorReport {
@@ -276,6 +304,9 @@ pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) ->
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
         upsert_task(&connection, &task_id, &task_path, &status)?;
+        if matches!(status.as_str(), "idle" | "reset" | "complete" | "failed") {
+            clear_task_lease(&connection, &task_id)?;
+        }
         insert_event(
             &connection,
             None,
@@ -286,6 +317,133 @@ pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) ->
             }),
         )?;
         Ok(())
+    })
+    .await?
+}
+
+pub async fn claim_current_task(agent_id: &str, ttl_secs: u64) -> Result<TaskClaim> {
+    let database_path = current_database_path().await?;
+    let (task_id, task_path) = current_task_identity().await;
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<TaskClaim> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        ensure_task_exists(&transaction, &task_id, &task_path)?;
+        let existing: Option<(Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT claimed_by, lease_until FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (claimed_by, lease_until) = existing.unwrap_or((None, None));
+        let now = Utc::now();
+        let existing_lease = lease_until
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+        let lease_active = existing_lease.is_some_and(|lease_until| now < lease_until);
+
+        if lease_active && claimed_by.as_deref() == Some(agent_id.as_str()) {
+            transaction.commit()?;
+            return Ok(TaskClaim::AlreadyClaimed {
+                claimed_by: agent_id,
+                lease_until: existing_lease.expect("active lease exists"),
+            });
+        }
+        if lease_active {
+            transaction.commit()?;
+            return Ok(TaskClaim::ClaimedByOther {
+                claimed_by: claimed_by.unwrap_or_else(|| "unknown".to_string()),
+            });
+        }
+
+        let lease_until =
+            now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
+        let lease_until_text = lease_until.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let now_text = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+        transaction.execute(
+            "UPDATE tasks SET claimed_by = ?1, lease_until = ?2, last_heartbeat = ?3 WHERE id = ?4",
+            params![agent_id, lease_until_text, now_text, task_id],
+        )?;
+        insert_event_in_transaction(
+            &transaction,
+            None,
+            "task_claimed",
+            &serde_json::json!({
+                "task_id": task_id,
+                "claimed_by": agent_id,
+                "lease_until": lease_until,
+            }),
+        )?;
+        transaction.commit()?;
+        Ok(TaskClaim::Claimed {
+            claimed_by: agent_id,
+            lease_until,
+        })
+    })
+    .await?
+}
+
+pub async fn renew_current_task_lease(agent_id: &str, ttl_secs: u64) -> Result<LeaseRenewal> {
+    let database_path = current_database_path().await?;
+    let (task_id, _) = current_task_identity().await;
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<LeaseRenewal> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let existing: Option<(Option<String>, Option<String>)> = transaction
+            .query_row(
+                "SELECT claimed_by, lease_until FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((claimed_by, lease_until)) = existing else {
+            transaction.commit()?;
+            return Ok(LeaseRenewal::NotClaimed);
+        };
+        let Some(claimed_by) = claimed_by else {
+            transaction.commit()?;
+            return Ok(LeaseRenewal::NotClaimed);
+        };
+        if claimed_by != agent_id {
+            transaction.commit()?;
+            return Ok(LeaseRenewal::ClaimedByOther { claimed_by });
+        }
+        let now = Utc::now();
+        let existing_lease = lease_until
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+        if existing_lease.is_none_or(|lease_until| now >= lease_until) {
+            transaction.commit()?;
+            return Ok(LeaseRenewal::Expired);
+        }
+
+        let lease_until =
+            now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
+        let lease_until_text = lease_until.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let now_text = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+        transaction.execute(
+            "UPDATE tasks SET lease_until = ?1, last_heartbeat = ?2 WHERE id = ?3",
+            params![lease_until_text, now_text, task_id],
+        )?;
+        insert_event_in_transaction(
+            &transaction,
+            None,
+            "task_lease_renewed",
+            &serde_json::json!({
+                "task_id": task_id,
+                "claimed_by": agent_id,
+                "lease_until": lease_until,
+            }),
+        )?;
+        transaction.commit()?;
+        Ok(LeaseRenewal::Renewed {
+            claimed_by: agent_id,
+            lease_until,
+        })
     })
     .await?
 }
@@ -584,7 +742,10 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
             path TEXT NOT NULL,
-            status TEXT NOT NULL
+            status TEXT NOT NULL,
+            claimed_by TEXT,
+            lease_until TEXT,
+            last_heartbeat TEXT
         );
 
         CREATE TABLE IF NOT EXISTS runs (
@@ -610,6 +771,9 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    ensure_column(connection, "tasks", "claimed_by", "TEXT")?;
+    ensure_column(connection, "tasks", "lease_until", "TEXT")?;
+    ensure_column(connection, "tasks", "last_heartbeat", "TEXT")?;
     Ok(())
 }
 
@@ -631,6 +795,14 @@ fn ensure_task_exists(connection: &Connection, id: &str, path: &str) -> Result<(
     connection.execute(
         "INSERT OR IGNORE INTO tasks (id, path, status) VALUES (?1, ?2, 'unknown')",
         params![id, path],
+    )?;
+    Ok(())
+}
+
+fn clear_task_lease(connection: &Connection, task_id: &str) -> Result<()> {
+    connection.execute(
+        "UPDATE tasks SET claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL WHERE id = ?1",
+        [task_id],
     )?;
     Ok(())
 }
@@ -658,6 +830,44 @@ fn insert_event(
             serde_json::to_string(payload)?,
             timestamp()
         ],
+    )?;
+    Ok(())
+}
+
+fn insert_event_in_transaction(
+    transaction: &Transaction<'_>,
+    run_id: Option<&str>,
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO events (run_id, type, payload_json, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            run_id,
+            event_type,
+            serde_json::to_string(payload)?,
+            timestamp()
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_type: &str,
+) -> Result<()> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == column_name {
+            return Ok(());
+        }
+    }
+    connection.execute(
+        &format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"),
+        [],
     )?;
     Ok(())
 }
@@ -827,4 +1037,76 @@ async fn git_output<const N: usize>(args: [&str; N]) -> Option<String> {
 
 fn process_is_alive(pid: u32) -> bool {
     platform::pid_is_alive(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{machine::StateData, store};
+    use tempfile::TempDir;
+
+    async fn setup_project() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        let workspace = dir.path();
+        let data_dir = workspace.join(".ferrus/projects/test-project");
+        std::fs::create_dir_all(workspace.join(".ferrus")).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            workspace.join(".ferrus/project.toml"),
+            format!(
+                "project_id = \"test-project\"\nname = \"test\"\ndata_dir = \"{}\"\n",
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+        std::env::set_current_dir(workspace).unwrap();
+        initialize_database(&data_dir.join("ferrus.db"))
+            .await
+            .unwrap();
+
+        let mut state = StateData::default();
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
+            .await
+            .unwrap();
+
+        (dir, previous)
+    }
+
+    fn teardown(previous: PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_task_claim_is_exclusive_and_renewable() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        let first = claim_current_task("executor:codex:1", 60).await.unwrap();
+        assert!(matches!(first, TaskClaim::Claimed { .. }));
+
+        let second = claim_current_task("executor:codex:1", 60).await.unwrap();
+        assert!(matches!(second, TaskClaim::AlreadyClaimed { .. }));
+
+        let other = claim_current_task("executor:codex:2", 60).await.unwrap();
+        match other {
+            TaskClaim::ClaimedByOther { claimed_by } => {
+                assert_eq!(claimed_by, "executor:codex:1");
+            }
+            _ => panic!("expected claimed_by_other"),
+        }
+
+        let renewed = renew_current_task_lease("executor:codex:1", 60)
+            .await
+            .unwrap();
+        assert!(matches!(renewed, LeaseRenewal::Renewed { .. }));
+
+        teardown(previous);
+    }
 }

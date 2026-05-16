@@ -391,17 +391,19 @@ Ferrus separates project-local artifacts from machine-local runtime state:
 - `.ferrus/` stores human-readable project files and current compatibility state.
 - `~/.ferrus/projects/<project-id>/` stores machine-local metadata, `ferrus.db`, and logs.
 
-The current single-task loop still uses `.ferrus/STATE.json` for live coordination. `ferrus.db`
-mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable
-substrate for multi-task and multi-executor coordination. On HQ startup, stale running DB rows whose
-PIDs are gone are marked `interrupted`.
+The current single-task loop still uses `.ferrus/STATE.json` as a compatibility state-machine
+snapshot. Executor task claims and heartbeat renewals are coordinated through `ferrus.db` task lease
+columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task
+status, lifecycle events, reset events, and HQ-spawned headless runs as the durable substrate for
+multi-task and multi-executor coordination. On HQ startup, stale running DB rows whose PIDs are gone
+are marked `interrupted`.
 
 ### `.ferrus/`
 
 | File | Contents |
 |---|---|
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
-| `STATE.json` | State, counters, schema version, timestamp, PID, selected spec/milestone IDs |
+| `STATE.json` | Compatibility state snapshot, mirrored lease fields, counters, schema version, timestamp, PID, selected spec/milestone IDs |
 | `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Compatibility mirror of the active task description |
 | `REVIEW.md` | Compatibility mirror of active review notes |
@@ -422,7 +424,7 @@ PIDs are gone are marked `interrupted`.
 | File | Contents |
 |---|---|
 | `project.toml` | Project id, name, workspace path, git metadata, timestamps, version |
-| `ferrus.db` | SQLite database with mirrored `tasks`, `runs`, and `events` runtime records |
+| `ferrus.db` | SQLite database with `tasks` lease fields plus mirrored `runs` and `events` runtime records |
 | `logs/` | Machine-local logs that should not be committed |
 "#;
 

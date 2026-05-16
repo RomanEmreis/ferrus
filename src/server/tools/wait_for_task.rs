@@ -8,6 +8,7 @@ use tracing::info;
 
 use crate::{
     config::Config,
+    project::{self, TaskClaim},
     state::{machine::TaskState, store},
 };
 
@@ -48,12 +49,39 @@ async fn run(agent_id: &str) -> Result<String> {
             let mut state = store::read_state().await?;
 
             let claimable = matches!(state.state, TaskState::Executing | TaskState::Addressing);
-            let claimed = if claimable && !state.is_claimed() {
-                store::claim_state(agent_id, ttl_secs, &mut state).await?;
-                true
-            } else if claimable && state.is_claimed_by(agent_id) {
-                // Idempotent re-entry: this agent already holds the lease.
-                true
+            let claimed = if claimable {
+                match project::claim_current_task(agent_id, ttl_secs).await {
+                    Ok(TaskClaim::Claimed {
+                        claimed_by,
+                        lease_until,
+                    })
+                    | Ok(TaskClaim::AlreadyClaimed {
+                        claimed_by,
+                        lease_until,
+                    }) => {
+                        state.claimed_by = Some(claimed_by);
+                        state.lease_until = Some(lease_until);
+                        state.last_heartbeat = Some(chrono::Utc::now());
+                        store::write_state(&state).await?;
+                        true
+                    }
+                    Ok(TaskClaim::ClaimedByOther { claimed_by }) => {
+                        tracing::debug!(agent_id, claimed_by, "task is claimed by another agent");
+                        false
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = ?err,
+                            "failed to claim task in ferrus.db; falling back to STATE.json lease"
+                        );
+                        if !state.is_claimed() {
+                            store::claim_state(agent_id, ttl_secs, &mut state).await?;
+                            true
+                        } else {
+                            state.is_claimed_by(agent_id)
+                        }
+                    }
+                }
             } else {
                 false
             };
@@ -73,6 +101,7 @@ async fn run(agent_id: &str) -> Result<String> {
             info!(agent_id, "Executor claimed task");
             let response = json!({
                 "status": "claimed",
+                "task_id": state.active_task_id,
                 "claimed_by": state.claimed_by,
                 "lease_until": state.lease_until,
                 "state": format!("{:?}", state.state),
