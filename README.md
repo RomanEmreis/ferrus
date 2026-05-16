@@ -209,6 +209,10 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 
 Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.toml`, and `ferrus.db` are present and agree with the current workspace.
 
+### `ferrus tasks list`
+
+Prints task runtime rows from `ferrus.db`, including task status, active claim owner, lease expiry, and artifact path.
+
 ### `ferrus migrate` / `ferrus upgrade`
 
 Registers an existing pre-registry project in `~/.ferrus/projects/<project-id>/`, initializes the SQLite database, creates `.ferrus/tasks/` and `.ferrus/runs/`, and copies non-empty legacy task/review/submission artifacts into the new artifact layout.

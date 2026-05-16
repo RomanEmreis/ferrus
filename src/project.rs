@@ -80,6 +80,16 @@ pub struct TaskArtifact {
 }
 
 #[derive(Debug, Clone)]
+pub struct TaskRecord {
+    pub id: String,
+    pub path: String,
+    pub status: String,
+    pub claimed_by: Option<String>,
+    pub lease_until: Option<String>,
+    pub last_heartbeat: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum TaskClaim {
     Claimed {
         claimed_by: String,
@@ -277,7 +287,7 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
         ok: validate_database_schema(&database_path)
             .await
             .unwrap_or(false),
-        message: "database has tasks, runs, and events tables".to_string(),
+        message: "database has tasks, runs, events, and task lease columns".to_string(),
     });
 
     Ok(DoctorReport {
@@ -289,6 +299,39 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
         },
         checks,
     })
+}
+
+pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<Vec<TaskRecord>> {
+        let connection = open_runtime_database(&database_path)?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, path, status, claimed_by, lease_until, last_heartbeat
+            FROM tasks
+            ORDER BY
+                CASE WHEN id = 'current' THEN 0 ELSE 1 END,
+                id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(TaskRecord {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                status: row.get(2)?,
+                claimed_by: row.get(3)?,
+                lease_until: row.get(4)?,
+                last_heartbeat: row.get(5)?,
+            })
+        })?;
+
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row?);
+        }
+        Ok(tasks)
+    })
+    .await?
 }
 
 pub async fn record_current_task_status(status: &str) -> Result<()> {
@@ -667,6 +710,11 @@ async fn validate_database_schema(path: &Path) -> Result<bool> {
                 return Ok(false);
             }
         }
+        for column in ["claimed_by", "lease_until", "last_heartbeat"] {
+            if !column_exists(&connection, "tasks", column)? {
+                return Ok(false);
+            }
+        }
         Ok(true)
     })
     .await?
@@ -858,18 +906,25 @@ fn ensure_column(
     column_name: &str,
     column_type: &str,
 ) -> Result<()> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
-    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-    for column in columns {
-        if column? == column_name {
-            return Ok(());
-        }
+    if column_exists(connection, table_name, column_name)? {
+        return Ok(());
     }
     connection.execute(
         &format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"),
         [],
     )?;
     Ok(())
+}
+
+fn column_exists(connection: &Connection, table_name: &str, column_name: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for column in columns {
+        if column? == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 async fn copy_legacy_artifacts() -> Result<()> {
@@ -1106,6 +1161,24 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(renewed, LeaseRenewal::Renewed { .. }));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn list_tasks_reads_runtime_rows() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        claim_current_task("executor:codex:1", 60).await.unwrap();
+
+        let tasks = list_tasks().await.unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "t-001");
+        assert_eq!(tasks[0].path, ".ferrus/tasks/t-001.md");
+        assert_eq!(tasks[0].status, "executing");
+        assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
+        assert!(tasks[0].lease_until.is_some());
 
         teardown(previous);
     }
