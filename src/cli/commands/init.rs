@@ -271,9 +271,11 @@ to block until the human responds). The human types their answer in the HQ termi
 ## CLI
 
 ```sh
-ferrus init [--agents-path <path>]              # scaffold project files and skill files
+ferrus init [--agents-path <path>]              # scaffold project files and register ~/.ferrus state
 ferrus serve [--role supervisor|executor]       # start MCP server on stdio
 ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executor-model <m> # write MCP config for agents
+ferrus doctor                                   # verify local/global project metadata
+ferrus migrate                                  # upgrade an existing project registration
 ```
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
@@ -382,10 +384,21 @@ agent = "codex"         # agent for executor role: claude-code | codex | qwen-co
 model = ""              # optional override; empty = agent default
 ```
 
-## Runtime files (`.ferrus/`)
+## Runtime files
+
+Ferrus separates project-local artifacts from machine-local runtime state:
+
+- `.ferrus/` stores human-readable project files and current compatibility state.
+- `~/.ferrus/projects/<project-id>/` stores machine-local metadata, `ferrus.db`, and logs.
+
+The current single-task loop still uses `.ferrus/STATE.json` for live coordination. `ferrus.db`
+is initialized as the durable substrate for multi-task and multi-executor coordination.
+
+### `.ferrus/`
 
 | File | Contents |
 |---|---|
+| `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
 | `STATE.json` | State, counters, schema version, timestamp, PID, selected spec/milestone IDs |
 | `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Task description |
@@ -397,8 +410,18 @@ model = ""              # optional override; empty = agent default
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
+| `tasks/` | Task artifact directory for migrated and future multi-task workflows |
+| `runs/` | Execution-attempt artifact directory for migrated and future multi-task workflows |
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `logs/check_<n>_<ts>.txt` | Full check output |
+
+### `~/.ferrus/projects/<project-id>/`
+
+| File | Contents |
+|---|---|
+| `project.toml` | Project id, name, workspace path, git metadata, timestamps, version |
+| `ferrus.db` | SQLite database with `tasks`, `runs`, and `events` tables |
+| `logs/` | Machine-local logs that should not be committed |
 "#;
 
 pub async fn run(agents_path: String) -> Result<()> {
@@ -406,7 +429,13 @@ pub async fn run(agents_path: String) -> Result<()> {
     create_ferrus_dir().await?;
     create_spec_dir().await?;
     create_skill_files(&agents_path).await?;
+    let registration = crate::project::register_current_project().await?;
     update_gitignore().await?;
+    println!(
+        "Registered project {} in {}",
+        registration.local_ref.project_id,
+        registration.data_dir.display()
+    );
     println!("\nferrus initialized. Run `ferrus serve` to start the MCP server.");
     Ok(())
 }
@@ -432,6 +461,12 @@ async fn create_ferrus_dir() -> Result<()> {
     tokio::fs::create_dir_all(dir.join("logs"))
         .await
         .context("Failed to create .ferrus/logs/ directory")?;
+    tokio::fs::create_dir_all(dir.join("tasks"))
+        .await
+        .context("Failed to create .ferrus/tasks/ directory")?;
+    tokio::fs::create_dir_all(dir.join("runs"))
+        .await
+        .context("Failed to create .ferrus/runs/ directory")?;
 
     let consult_template_path = dir.join("CONSULT_TEMPLATE.md");
     if !consult_template_path.exists() {

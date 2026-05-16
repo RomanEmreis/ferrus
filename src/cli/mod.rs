@@ -55,6 +55,11 @@ enum Commands {
         #[arg(long, value_name = "MODEL")]
         executor_model: Option<String>,
     },
+    /// Check that local and global ferrus project metadata are consistent
+    Doctor,
+    /// Migrate an existing ferrus project to the global project registry
+    #[command(visible_alias = "upgrade")]
+    Migrate,
 }
 
 impl Cli {
@@ -86,6 +91,8 @@ impl Cli {
                 commands::register::run(supervisor, supervisor_model, executor, executor_model)
                     .await
             }
+            Some(Commands::Doctor) => commands::doctor::run().await,
+            Some(Commands::Migrate) => commands::migrate::run().await,
             None => crate::hq::run(debug).await,
         }
     }

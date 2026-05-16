@@ -78,7 +78,7 @@ iwr https://github.com/RomanEmreis/ferrus/releases/latest/download/install.ps1 -
 Run:
 
 ```sh
-ferrus init                                                # scaffold ferrus.toml + .ferrus/
+ferrus init                                                # scaffold ferrus.toml, .ferrus/, and ~/.ferrus project state
 ferrus register --supervisor claude-code --executor codex  # write agent configs and tool permissions
 ferrus                                                     # enter HQ
 ```
@@ -174,6 +174,10 @@ Scaffolds ferrus in the current project (default `--agents-path .agents`):
 
 - Creates `ferrus.toml` with default limits and an empty check command list
 - Creates `.ferrus/` runtime directory with all state files and `logs/`
+- Registers the project in `~/.ferrus/projects/<project-id>/`
+- Writes `.ferrus/project.toml` with the project id and local data directory
+- Creates `~/.ferrus/projects/<project-id>/project.toml` with project metadata
+- Creates `~/.ferrus/projects/<project-id>/ferrus.db` with `tasks`, `runs`, and `events` tables
 - Creates `docs/specs/` for approved feature specifications
 - Creates skill files agents load to understand their role:
   - `<agents-path>/skills/ferrus/SKILL.md` — general overview
@@ -200,6 +204,14 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 | `claude-code` | `.claude/mcp-supervisor.json` or `.claude/mcp-executor.json` + `.claude/settings.local.json` permissions |
 | `codex` | `.codex/config.toml` |
 | `qwen-code` | `.qwen/settings.json` |
+
+### `ferrus doctor`
+
+Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.toml`, and `ferrus.db` are present and agree with the current workspace.
+
+### `ferrus migrate` / `ferrus upgrade`
+
+Registers an existing pre-registry project in `~/.ferrus/projects/<project-id>/`, initializes the SQLite database, creates `.ferrus/tasks/` and `.ferrus/runs/`, and copies non-empty legacy task/review/submission artifacts into the new artifact layout.
 
 ---
 
@@ -239,10 +251,22 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 
 ---
 
-## Runtime files (`.ferrus/`)
+## Runtime files
+
+Ferrus now separates human-readable project artifacts from machine-local runtime state:
+
+| Path | Contents |
+|---|---|
+| `.ferrus/` | Project-local Markdown artifacts, templates, and current compatibility state files |
+| `~/.ferrus/projects/<project-id>/` | Machine-local project metadata, SQLite runtime database, and global logs |
+
+The current release still uses `.ferrus/STATE.json` as the live coordination source for the single-task Supervisor/Executor loop. `ferrus.db` is initialized as the durable coordination substrate for the upcoming multi-task, multi-executor runtime.
+
+### `.ferrus/`
 
 | File | Contents |
 |---|---|
+| `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
 | `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `agents.json` | Runtime registry for agent sessions, statuses, PIDs, and log ownership |
@@ -256,9 +280,19 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
+| `tasks/` | New task artifact directory used by migration and future multi-task workflows |
+| `runs/` | New execution-attempt artifact directory used by migration and future multi-task workflows |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.
+
+### `~/.ferrus/projects/<project-id>/`
+
+| File | Contents |
+|---|---|
+| `project.toml` | Project id, name, workspace path, `.ferrus` path, git metadata, timestamps, schema version |
+| `ferrus.db` | SQLite database with `tasks`, `runs`, and `events` tables |
+| `logs/` | Reserved for machine-local logs that should not be committed |
 
 ---
 

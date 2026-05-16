@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod hq;
 mod platform;
+mod project;
 mod server;
 mod specs;
 mod state;
