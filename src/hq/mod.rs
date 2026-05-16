@@ -875,16 +875,27 @@ impl HqContext {
         }
         agents::write_agents(&reg).await?;
 
-        store::clear_task().await?;
-        store::clear_submission().await?;
+        let active_task = state
+            .active_task_id
+            .clone()
+            .zip(state.active_task_path.clone());
+
+        store::clear_task_for_state(&state).await?;
+        store::clear_submission_for_state(&state).await?;
         store::clear_answer().await?;
         store::clear_consult_request().await?;
         store::clear_consult_response().await?;
         store::clear_question().await?;
-        store::clear_review().await?;
+        store::clear_review_for_state(&state).await?;
 
         state.force_reset();
         store::write_state(&state).await?;
+        if let Some((task_id, task_path)) = active_task {
+            crate::project::record_task_status_best_effort(&task_id, &task_path, "reset").await;
+        }
+        crate::project::record_current_task_status_best_effort("idle").await;
+        crate::project::record_runtime_event_best_effort(None, "hq_reset", serde_json::json!({}))
+            .await;
 
         self.last_task_state = Some(TaskState::Idle);
         if prompt {

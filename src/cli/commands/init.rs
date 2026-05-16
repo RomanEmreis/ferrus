@@ -392,9 +392,9 @@ Ferrus separates project-local artifacts from machine-local runtime state:
 - `~/.ferrus/projects/<project-id>/` stores machine-local metadata, `ferrus.db`, and logs.
 
 The current single-task loop still uses `.ferrus/STATE.json` for live coordination. `ferrus.db`
-mirrors task status, lifecycle events, and HQ-spawned headless runs as the durable substrate for
-multi-task and multi-executor coordination. On HQ startup, stale running DB rows whose PIDs are gone
-are marked `interrupted`.
+mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable
+substrate for multi-task and multi-executor coordination. On HQ startup, stale running DB rows whose
+PIDs are gone are marked `interrupted`.
 
 ### `.ferrus/`
 
@@ -412,8 +412,8 @@ are marked `interrupted`.
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
-| `tasks/` | Task descriptions such as `tasks/t-001.md` |
-| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md` |
+| `tasks/` | Task descriptions such as `tasks/t-001.md`; active task files are cleared on reset |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md`; active review/submission files are cleared on reset |
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `logs/check_<n>_<ts>.txt` | Full check output |
 

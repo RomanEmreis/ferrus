@@ -264,8 +264,14 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
 }
 
 pub async fn record_current_task_status(status: &str) -> Result<()> {
-    let database_path = current_database_path().await?;
     let (task_id, task_path) = current_task_identity().await;
+    record_task_status(&task_id, &task_path, status).await
+}
+
+pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let task_path = task_path.to_string();
     let status = status.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
@@ -287,6 +293,12 @@ pub async fn record_current_task_status(status: &str) -> Result<()> {
 pub async fn record_current_task_status_best_effort(status: &str) {
     if let Err(err) = record_current_task_status(status).await {
         warn!(error = ?err, status, "failed to mirror task status into ferrus.db");
+    }
+}
+
+pub async fn record_task_status_best_effort(task_id: &str, task_path: &str, status: &str) {
+    if let Err(err) = record_task_status(task_id, task_path, status).await {
+        warn!(error = ?err, task_id, status, "failed to mirror task status into ferrus.db");
     }
 }
 

@@ -2,7 +2,10 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::state::{machine::TaskState, store};
+use crate::{
+    project,
+    state::{machine::TaskState, store},
+};
 
 use super::tool_err;
 
@@ -23,12 +26,23 @@ async fn run() -> Result<String> {
         );
     }
 
-    state.reset()?;
-    store::write_state(&state).await?;
-    store::clear_review().await?;
-    store::clear_submission().await?;
+    let active_task = state
+        .active_task_id
+        .clone()
+        .zip(state.active_task_path.clone());
+
+    store::clear_review_for_state(&state).await?;
+    store::clear_submission_for_state(&state).await?;
     store::clear_consult_request().await?;
     store::clear_consult_response().await?;
+    state.reset()?;
+    store::write_state(&state).await?;
+
+    if let Some((task_id, task_path)) = active_task {
+        project::record_task_status_best_effort(&task_id, &task_path, "reset").await;
+    }
+    project::record_current_task_status_best_effort("idle").await;
+    project::record_runtime_event_best_effort(None, "reset", serde_json::json!({})).await;
 
     info!("State reset, Idle");
     Ok("State reset to Idle. REVIEW.md, SUBMISSION.md, and consultation files cleared. Ready for a new task.".to_string())

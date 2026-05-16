@@ -71,13 +71,6 @@ pub async fn read_task() -> Result<String> {
     read_file("TASK.md").await
 }
 
-pub async fn write_task(content: &str) -> Result<()> {
-    if let Ok(state) = read_state().await {
-        return write_task_for_state(&state, content).await;
-    }
-    write_file("TASK.md", content).await
-}
-
 pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()> {
     if let Some(path) = state.active_task_path.as_deref() {
         write_path(Path::new(path), content).await?;
@@ -85,8 +78,8 @@ pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()
     write_file("TASK.md", content).await
 }
 
-pub async fn clear_task() -> Result<()> {
-    write_task("").await
+pub async fn clear_task_for_state(state: &StateData) -> Result<()> {
+    write_task_for_state(state, "").await
 }
 
 pub async fn read_review() -> Result<String> {
@@ -103,6 +96,13 @@ pub async fn write_review(content: &str) -> Result<()> {
     if let Ok(state) = read_state().await
         && let Some(path) = active_run_file(&state, "REVIEW.md")
     {
+        write_path(&path, content).await?;
+    }
+    write_file("REVIEW.md", content).await
+}
+
+pub async fn write_review_for_state(state: &StateData, content: &str) -> Result<()> {
+    if let Some(path) = active_run_file(state, "REVIEW.md") {
         write_path(&path, content).await?;
     }
     write_file("REVIEW.md", content).await
@@ -127,6 +127,13 @@ pub async fn write_submission(content: &str) -> Result<()> {
     write_file("SUBMISSION.md", content).await
 }
 
+pub async fn write_submission_for_state(state: &StateData, content: &str) -> Result<()> {
+    if let Some(path) = active_run_file(state, "SUBMISSION.md") {
+        write_path(&path, content).await?;
+    }
+    write_file("SUBMISSION.md", content).await
+}
+
 /// Write a full check log to `.ferrus/logs/check_{attempt}_{ts}.txt`.
 /// Creates the logs directory if it doesn't exist. Returns the file path.
 pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<PathBuf> {
@@ -142,12 +149,12 @@ pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<Pat
     Ok(p)
 }
 
-pub async fn clear_review() -> Result<()> {
-    write_review("").await
+pub async fn clear_review_for_state(state: &StateData) -> Result<()> {
+    write_review_for_state(state, "").await
 }
 
-pub async fn clear_submission() -> Result<()> {
-    write_submission("").await
+pub async fn clear_submission_for_state(state: &StateData) -> Result<()> {
+    write_submission_for_state(state, "").await
 }
 
 pub async fn read_question() -> Result<String> {
@@ -274,7 +281,7 @@ mod tests {
         );
         write_state(&state).await.unwrap();
 
-        write_task("task body").await.unwrap();
+        write_task_for_state(&state, "task body").await.unwrap();
         write_review("review body").await.unwrap();
         write_submission("submission body").await.unwrap();
 

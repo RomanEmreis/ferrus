@@ -260,7 +260,7 @@ Ferrus now separates human-readable project artifacts from machine-local runtime
 | `.ferrus/` | Project-local Markdown artifacts, templates, and current compatibility state files |
 | `~/.ferrus/projects/<project-id>/` | Machine-local project metadata, SQLite runtime database, and global logs |
 
-The current release still uses `.ferrus/STATE.json` as the live coordination source for the single-task Supervisor/Executor loop. `ferrus.db` mirrors task status, lifecycle events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, stale running DB rows whose PIDs are gone are marked `interrupted`.
+The current release still uses `.ferrus/STATE.json` as the live coordination source for the single-task Supervisor/Executor loop. `ferrus.db` mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, stale running DB rows whose PIDs are gone are marked `interrupted`.
 
 ### `.ferrus/`
 
@@ -280,8 +280,8 @@ The current release still uses `.ferrus/STATE.json` as the live coordination sou
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
-| `tasks/` | Task descriptions such as `tasks/t-001.md` |
-| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md` |
+| `tasks/` | Task descriptions such as `tasks/t-001.md`; active task files are cleared on reset |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md`; active review/submission files are cleared on reset |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.

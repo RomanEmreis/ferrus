@@ -45,7 +45,7 @@ async fn run(description: String) -> Result<String> {
         artifact.run_dir.clone(),
     );
     store::write_task_for_state(&state, &description).await?;
-    store::clear_submission().await?;
+    store::clear_submission_for_state(&state).await?;
     store::clear_consult_request().await?;
     store::clear_consult_response().await?;
     store::write_state(&state).await?;
