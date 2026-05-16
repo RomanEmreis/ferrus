@@ -270,9 +270,9 @@ The current release still uses `.ferrus/STATE.json` as the live coordination sou
 | `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `agents.json` | Runtime registry for agent sessions, statuses, PIDs, and log ownership |
-| `TASK.md` | Task description written by Supervisor |
-| `REVIEW.md` | Supervisor rejection notes |
-| `SUBMISSION.md` | Executor submission notes |
+| `TASK.md` | Compatibility mirror of the active task description |
+| `REVIEW.md` | Compatibility mirror of active review notes |
+| `SUBMISSION.md` | Compatibility mirror of active submission notes |
 | `QUESTION.md` | Pending human question (written by `/ask_human`) |
 | `ANSWER.md` | Human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
@@ -280,8 +280,8 @@ The current release still uses `.ferrus/STATE.json` as the live coordination sou
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
-| `tasks/` | New task artifact directory used by migration and future multi-task workflows |
-| `runs/` | New execution-attempt artifact directory used by migration and future multi-task workflows |
+| `tasks/` | Task descriptions such as `tasks/t-001.md` |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md` |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.

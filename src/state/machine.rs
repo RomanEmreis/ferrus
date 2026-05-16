@@ -66,6 +66,15 @@ pub struct StateData {
     /// Milestone that originated the currently active task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_milestone: Option<String>,
+    /// Stable task artifact id for the active task, e.g. "t-001".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_task_id: Option<String>,
+    /// Markdown path for the active task description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_task_path: Option<String>,
+    /// Directory containing active run artifacts such as REVIEW.md and SUBMISSION.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_dir: Option<String>,
 }
 
 const fn default_schema_version() -> u32 {
@@ -95,6 +104,9 @@ impl Default for StateData {
             pending_task_milestone: None,
             task_spec: None,
             task_milestone: None,
+            active_task_id: None,
+            active_task_path: None,
+            active_run_dir: None,
         }
     }
 }
@@ -136,6 +148,17 @@ impl StateData {
     pub fn clear_selected_spec_and_milestone(&mut self) {
         self.selected_spec = None;
         self.selected_milestone = None;
+    }
+
+    pub fn set_active_task_artifacts(
+        &mut self,
+        task_id: String,
+        task_path: String,
+        run_dir: String,
+    ) {
+        self.active_task_id = Some(task_id);
+        self.active_task_path = Some(task_path);
+        self.active_run_dir = Some(run_dir);
     }
 
     /// True if a non-expired lease exists (`lease_until` is set and in the future).

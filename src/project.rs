@@ -72,6 +72,13 @@ pub struct RunRecord {
     pub workspace_path: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskArtifact {
+    pub id: String,
+    pub path: String,
+    pub run_dir: String,
+}
+
 impl DoctorReport {
     pub fn has_errors(&self) -> bool {
         self.checks.iter().any(|check| !check.ok)
@@ -169,6 +176,37 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
     Ok(registration)
 }
 
+pub async fn allocate_task_artifact() -> Result<TaskArtifact> {
+    let tasks_dir = Path::new(".ferrus/tasks");
+    let runs_dir = Path::new(".ferrus/runs");
+    tokio::fs::create_dir_all(tasks_dir)
+        .await
+        .context("Failed to create .ferrus/tasks")?;
+    tokio::fs::create_dir_all(runs_dir)
+        .await
+        .context("Failed to create .ferrus/runs")?;
+
+    let mut max_number = max_task_number_from_files(tasks_dir).await?;
+    if let Ok(database_path) = current_database_path().await {
+        max_number = max_number.max(max_task_number_from_database(&database_path).await?);
+    }
+
+    let mut number = max_number + 1;
+    loop {
+        let id = format!("t-{number:03}");
+        let task_path = tasks_dir.join(format!("{id}.md"));
+        if !task_path.exists() {
+            let run_dir = runs_dir.join(&id);
+            return Ok(TaskArtifact {
+                id,
+                path: path_string(&task_path),
+                run_dir: path_string(&run_dir),
+            });
+        }
+        number += 1;
+    }
+}
+
 pub async fn doctor_current_project() -> Result<DoctorReport> {
     let local_ref = read_local_project_ref()
         .await
@@ -227,16 +265,17 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
 
 pub async fn record_current_task_status(status: &str) -> Result<()> {
     let database_path = current_database_path().await?;
+    let (task_id, task_path) = current_task_identity().await;
     let status = status.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
-        upsert_task(&connection, CURRENT_TASK_ID, CURRENT_TASK_PATH, &status)?;
+        upsert_task(&connection, &task_id, &task_path, &status)?;
         insert_event(
             &connection,
             None,
             "task_status_changed",
             &serde_json::json!({
-                "task_id": CURRENT_TASK_ID,
+                "task_id": task_id,
                 "status": status,
             }),
         )?;
@@ -279,6 +318,7 @@ pub async fn record_runtime_event_best_effort(
 pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<RunRecord> {
     let database_path = current_database_path().await?;
     let workspace_path = path_string(&canonical_current_dir().await?);
+    let (task_id, task_path) = current_task_identity().await;
     let role = role.to_string();
     let agent = agent.to_string();
     let run_id = generate_run_id(&role, &agent, pid);
@@ -286,7 +326,7 @@ pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<Run
     let updated_at = started_at.clone();
     let record = RunRecord {
         id: run_id.clone(),
-        task_id: CURRENT_TASK_ID.to_string(),
+        task_id: task_id.clone(),
         role,
         agent,
         status: "running".to_string(),
@@ -296,7 +336,7 @@ pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<Run
     let record_for_insert = record.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
-        ensure_task_exists(&connection, CURRENT_TASK_ID, CURRENT_TASK_PATH)?;
+        ensure_task_exists(&connection, &task_id, &task_path)?;
         connection.execute(
             r#"
             INSERT INTO runs (
@@ -462,11 +502,59 @@ async fn validate_database_schema(path: &Path) -> Result<bool> {
     .await?
 }
 
+async fn max_task_number_from_files(tasks_dir: &Path) -> Result<u32> {
+    let mut max_number = 0;
+    let mut entries = tokio::fs::read_dir(tasks_dir)
+        .await
+        .with_context(|| format!("Failed to read {}", tasks_dir.display()))?;
+    while let Some(entry) = entries.next_entry().await? {
+        let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(number) = parse_task_number(file_name.strip_suffix(".md").unwrap_or(&file_name))
+        {
+            max_number = max_number.max(number);
+        }
+    }
+    Ok(max_number)
+}
+
+async fn max_task_number_from_database(path: &Path) -> Result<u32> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<u32> {
+        let connection = open_runtime_database(&path)?;
+        let mut statement = connection.prepare("SELECT id FROM tasks WHERE id LIKE 't-%'")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut max_number = 0;
+        for row in rows {
+            if let Some(number) = parse_task_number(&row?) {
+                max_number = max_number.max(number);
+            }
+        }
+        Ok(max_number)
+    })
+    .await?
+}
+
 async fn current_database_path() -> Result<PathBuf> {
     let local_ref = read_local_project_ref()
         .await
         .context(".ferrus/project.toml not found — run `ferrus migrate`")?;
     Ok(PathBuf::from(local_ref.data_dir).join("ferrus.db"))
+}
+
+async fn current_task_identity() -> (String, String) {
+    let Ok(state) = crate::state::store::read_state().await else {
+        return (CURRENT_TASK_ID.to_string(), CURRENT_TASK_PATH.to_string());
+    };
+    (
+        state
+            .active_task_id
+            .unwrap_or_else(|| CURRENT_TASK_ID.to_string()),
+        state
+            .active_task_path
+            .unwrap_or_else(|| CURRENT_TASK_PATH.to_string()),
+    )
 }
 
 fn open_runtime_database(path: &Path) -> Result<Connection> {
@@ -668,6 +756,10 @@ fn generate_run_id(role: &str, agent: &str, pid: u32) -> String {
     millis.hash(&mut hasher);
     let hash = hasher.finish();
     format!("r-{:012x}-{:016x}", millis & 0xFFFFFFFFFFFF, hash)
+}
+
+fn parse_task_number(task_id: &str) -> Option<u32> {
+    task_id.strip_prefix("t-")?.parse().ok()
 }
 
 fn validate_project_id(project_id: &str) -> Result<()> {

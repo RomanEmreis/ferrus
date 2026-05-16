@@ -37,8 +37,14 @@ async fn run(description: String) -> Result<String> {
         );
     }
 
+    let artifact = project::allocate_task_artifact().await?;
     state.create_task()?;
-    store::write_task(&description).await?;
+    state.set_active_task_artifacts(
+        artifact.id.clone(),
+        artifact.path.clone(),
+        artifact.run_dir.clone(),
+    );
+    store::write_task_for_state(&state, &description).await?;
     store::clear_submission().await?;
     store::clear_consult_request().await?;
     store::clear_consult_response().await?;
@@ -48,7 +54,9 @@ async fn run(description: String) -> Result<String> {
         None,
         "task_created",
         serde_json::json!({
-            "path": ".ferrus/TASK.md",
+            "task_id": artifact.id,
+            "path": artifact.path,
+            "run_dir": artifact.run_dir,
             "description_bytes": description.len(),
         }),
     )
@@ -56,4 +64,53 @@ async fn run(description: String) -> Result<String> {
 
     info!("Task created, state → Executing");
     Ok("Task created. State: Executing. The Executor can now call /wait_for_task.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{machine::StateData, store};
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        store::write_state(&StateData::default()).await.unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_task_writes_numbered_task_artifact_and_legacy_mirror() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+
+        run("Build the thing".to_string()).await.unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Executing);
+        assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
+        assert_eq!(
+            state.active_task_path.as_deref(),
+            Some(".ferrus/tasks/t-001.md")
+        );
+        assert_eq!(state.active_run_dir.as_deref(), Some(".ferrus/runs/t-001"));
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/tasks/t-001.md")
+                .await
+                .unwrap(),
+            "Build the thing"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),
+            "Build the thing"
+        );
+
+        teardown(previous);
+    }
 }

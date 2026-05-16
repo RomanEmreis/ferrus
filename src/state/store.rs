@@ -62,10 +62,26 @@ pub async fn claim_state(agent_id: &str, ttl_secs: u64, state: &mut StateData) -
 }
 
 pub async fn read_task() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = state.active_task_path.as_deref()
+        && let Ok(contents) = read_path(Path::new(path)).await
+    {
+        return Ok(contents);
+    }
     read_file("TASK.md").await
 }
 
 pub async fn write_task(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await {
+        return write_task_for_state(&state, content).await;
+    }
+    write_file("TASK.md", content).await
+}
+
+pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()> {
+    if let Some(path) = state.active_task_path.as_deref() {
+        write_path(Path::new(path), content).await?;
+    }
     write_file("TASK.md", content).await
 }
 
@@ -74,18 +90,40 @@ pub async fn clear_task() -> Result<()> {
 }
 
 pub async fn read_review() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "REVIEW.md")
+        && let Ok(contents) = read_path(&path).await
+    {
+        return Ok(contents);
+    }
     read_file("REVIEW.md").await
 }
 
 pub async fn write_review(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "REVIEW.md")
+    {
+        write_path(&path, content).await?;
+    }
     write_file("REVIEW.md", content).await
 }
 
 pub async fn read_submission() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "SUBMISSION.md")
+        && let Ok(contents) = read_path(&path).await
+    {
+        return Ok(contents);
+    }
     read_file("SUBMISSION.md").await
 }
 
 pub async fn write_submission(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "SUBMISSION.md")
+    {
+        write_path(&path, content).await?;
+    }
     write_file("SUBMISSION.md", content).await
 }
 
@@ -175,14 +213,97 @@ pub async fn clear_answer() -> Result<()> {
 
 async fn read_file(filename: &str) -> Result<String> {
     let p = path(filename);
-    tokio::fs::read_to_string(&p)
-        .await
-        .with_context(|| format!("Failed to read {}", p.display()))
+    read_path(&p).await
 }
 
 async fn write_file(filename: &str, content: &str) -> Result<()> {
     let p = path(filename);
-    tokio::fs::write(&p, content)
+    write_path(&p, content).await
+}
+
+async fn read_path(path: &Path) -> Result<String> {
+    tokio::fs::read_to_string(path)
         .await
-        .with_context(|| format!("Failed to write {}", p.display()))
+        .with_context(|| format!("Failed to read {}", path.display()))
+}
+
+async fn write_path(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    tokio::fs::write(path, content)
+        .await
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+fn active_run_file(state: &StateData, filename: &str) -> Option<PathBuf> {
+    state
+        .active_run_dir
+        .as_deref()
+        .map(|dir| Path::new(dir).join(filename))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn active_task_artifacts_are_written_with_legacy_mirror() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = StateData::default();
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        write_state(&state).await.unwrap();
+
+        write_task("task body").await.unwrap();
+        write_review("review body").await.unwrap();
+        write_submission("submission body").await.unwrap();
+
+        assert_eq!(read_task().await.unwrap(), "task body");
+        assert_eq!(read_review().await.unwrap(), "review body");
+        assert_eq!(read_submission().await.unwrap(), "submission body");
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),
+            "task body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/tasks/t-001.md")
+                .await
+                .unwrap(),
+            "task body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/REVIEW.md")
+                .await
+                .unwrap(),
+            "review body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/SUBMISSION.md")
+                .await
+                .unwrap(),
+            "submission body"
+        );
+
+        teardown(previous);
+    }
 }

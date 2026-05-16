@@ -403,17 +403,17 @@ are marked `interrupted`.
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
 | `STATE.json` | State, counters, schema version, timestamp, PID, selected spec/milestone IDs |
 | `STATE.lock` | Advisory lock file for atomic claiming |
-| `TASK.md` | Task description |
-| `REVIEW.md` | Rejection notes |
-| `SUBMISSION.md` | Submission notes |
+| `TASK.md` | Compatibility mirror of the active task description |
+| `REVIEW.md` | Compatibility mirror of active review notes |
+| `SUBMISSION.md` | Compatibility mirror of active submission notes |
 | `QUESTION.md` | Pending human question |
 | `ANSWER.md` | Human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `CONSULT_REQUEST.md` | Pending supervisor consultation request |
 | `CONSULT_RESPONSE.md` | Supervisor consultation response |
-| `tasks/` | Task artifact directory for migrated and future multi-task workflows |
-| `runs/` | Execution-attempt artifact directory for migrated and future multi-task workflows |
+| `tasks/` | Task descriptions such as `tasks/t-001.md` |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md` |
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `logs/check_<n>_<ts>.txt` | Full check output |
 
