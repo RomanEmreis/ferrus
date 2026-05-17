@@ -242,6 +242,62 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
     Ok(registration)
 }
 
+pub async fn touch_current_project() -> Result<ProjectRegistration> {
+    let local_ref = read_local_project_ref()
+        .await
+        .context(".ferrus/project.toml not found or invalid — run `ferrus migrate`")?;
+    validate_project_id(&local_ref.project_id)?;
+    let data_dir = PathBuf::from(&local_ref.data_dir);
+    tokio::fs::create_dir_all(data_dir.join("logs"))
+        .await
+        .with_context(|| format!("Failed to create {}", data_dir.join("logs").display()))?;
+
+    let metadata_path = data_dir.join("project.toml");
+    let previous_metadata = read_project_metadata_from(&metadata_path)
+        .await
+        .with_context(|| format!("Failed to read {}", metadata_path.display()))?;
+    if previous_metadata.id != local_ref.project_id {
+        anyhow::bail!(
+            "local project_id {} does not match global metadata id {}",
+            local_ref.project_id,
+            previous_metadata.id
+        );
+    }
+
+    let workspace_dir = canonical_current_dir()
+        .await
+        .context("Failed to resolve current workspace directory")?;
+    let ferrus_dir = workspace_dir.join(".ferrus");
+    let name = workspace_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let git = read_git_metadata().await;
+    let metadata = ProjectMetadata {
+        id: local_ref.project_id.clone(),
+        name,
+        workspace_dir: path_string(&workspace_dir),
+        ferrus_dir: path_string(&ferrus_dir),
+        vcs: git.as_ref().map(|_| "git".to_string()),
+        origin_repo: git.as_ref().and_then(|git| git.origin_repo.clone()),
+        default_branch: git.as_ref().and_then(|git| git.default_branch.clone()),
+        current_head: git.as_ref().and_then(|git| git.current_head.clone()),
+        created_at: previous_metadata.created_at,
+        last_opened_at: timestamp(),
+        version: PROJECT_VERSION,
+    };
+    write_toml(&metadata_path, &metadata).await?;
+    initialize_database(&data_dir.join("ferrus.db")).await?;
+
+    Ok(ProjectRegistration {
+        local_ref,
+        metadata,
+        database_path: data_dir.join("ferrus.db"),
+        data_dir,
+    })
+}
+
 pub async fn allocate_task_artifact() -> Result<TaskArtifact> {
     let tasks_dir = Path::new(".ferrus/tasks");
     let runs_dir = Path::new(".ferrus/runs");
@@ -1531,5 +1587,52 @@ mod tests {
         assert!(invalid.name.is_none());
         assert!(!invalid.database_exists);
         assert!(invalid.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn touch_current_project_updates_last_opened_without_rewriting_local_ref() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup_project().await;
+        let workspace = dir.path();
+        let data_dir = workspace.join(".ferrus/projects/test-project");
+        let metadata_path = data_dir.join("project.toml");
+        let created_at = "2026-05-16T10:00:00Z";
+        write_toml(
+            &metadata_path,
+            &ProjectMetadata {
+                id: "test-project".to_string(),
+                name: "old-name".to_string(),
+                workspace_dir: "/old/workspace".to_string(),
+                ferrus_dir: "/old/workspace/.ferrus".to_string(),
+                vcs: None,
+                origin_repo: None,
+                default_branch: None,
+                current_head: None,
+                created_at: created_at.to_string(),
+                last_opened_at: "2026-05-16T11:00:00Z".to_string(),
+                version: PROJECT_VERSION,
+            },
+        )
+        .await
+        .unwrap();
+        let local_ref_before = tokio::fs::read_to_string(workspace.join(".ferrus/project.toml"))
+            .await
+            .unwrap();
+
+        let registration = touch_current_project().await.unwrap();
+        let metadata = read_project_metadata_from(&metadata_path).await.unwrap();
+        let local_ref_after = tokio::fs::read_to_string(workspace.join(".ferrus/project.toml"))
+            .await
+            .unwrap();
+        let canonical_workspace = tokio::fs::canonicalize(workspace).await.unwrap();
+
+        assert_eq!(registration.local_ref.project_id, "test-project");
+        assert_eq!(metadata.id, "test-project");
+        assert_eq!(metadata.created_at, created_at);
+        assert_ne!(metadata.last_opened_at, "2026-05-16T11:00:00Z");
+        assert_eq!(metadata.workspace_dir, path_string(&canonical_workspace));
+        assert_eq!(local_ref_after, local_ref_before);
+
+        teardown(previous);
     }
 }

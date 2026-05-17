@@ -25,6 +25,9 @@ use display::Display;
 use state_watcher::WatchedState;
 
 pub async fn run(debug: bool) -> Result<()> {
+    if let Err(err) = crate::project::touch_current_project().await {
+        tracing::debug!(error = ?err, "skipped ferrus project touch");
+    }
     if let Ok(recovery) = crate::project::recover_runtime_state().await
         && (recovery.interrupted_runs > 0 || recovery.expired_task_leases > 0)
     {
