@@ -82,6 +82,10 @@ pub async fn clear_task_for_state(state: &StateData) -> Result<()> {
     write_task_for_state(state, "").await
 }
 
+pub async fn clear_task_mirror() -> Result<()> {
+    write_file("TASK.md", "").await
+}
+
 pub async fn read_review() -> Result<String> {
     if let Ok(state) = read_state().await
         && let Some(path) = active_run_file(&state, "REVIEW.md")
@@ -153,8 +157,16 @@ pub async fn clear_review_for_state(state: &StateData) -> Result<()> {
     write_review_for_state(state, "").await
 }
 
+pub async fn clear_review_mirror() -> Result<()> {
+    write_file("REVIEW.md", "").await
+}
+
 pub async fn clear_submission_for_state(state: &StateData) -> Result<()> {
     write_submission_for_state(state, "").await
+}
+
+pub async fn clear_submission_mirror() -> Result<()> {
+    write_file("SUBMISSION.md", "").await
 }
 
 pub async fn read_question() -> Result<String> {
