@@ -747,8 +747,34 @@ fn clears_task_lease_for_status(status: &str) -> bool {
 }
 
 pub async fn claim_current_task(agent_id: &str, ttl_secs: u64) -> Result<TaskClaim> {
-    let database_path = current_database_path().await?;
     let (task_id, task_path) = current_task_identity().await;
+    claim_task(&task_id, &task_path, agent_id, ttl_secs).await
+}
+
+pub async fn claim_task(
+    task_id: &str,
+    task_path: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> Result<TaskClaim> {
+    let database_path = current_database_path().await?;
+    claim_task_in_database(
+        database_path,
+        task_id.to_string(),
+        task_path.to_string(),
+        agent_id,
+        ttl_secs,
+    )
+    .await
+}
+
+async fn claim_task_in_database(
+    database_path: PathBuf,
+    task_id: String,
+    task_path: String,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> Result<TaskClaim> {
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || -> Result<TaskClaim> {
         let mut connection = open_runtime_database(&database_path)?;
@@ -1745,6 +1771,37 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(renewed, LeaseRenewal::Renewed { .. }));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_task_claim_can_target_non_current_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        let first = claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
+            .await
+            .unwrap();
+        assert!(matches!(first, TaskClaim::Claimed { .. }));
+
+        let second = claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:3", 60)
+            .await
+            .unwrap();
+        match second {
+            TaskClaim::ClaimedByOther { claimed_by } => {
+                assert_eq!(claimed_by, "executor:codex:2");
+            }
+            _ => panic!("expected claimed_by_other"),
+        }
+
+        let tasks = list_tasks().await.unwrap();
+        let current = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        let targeted = tasks.iter().find(|task| task.id == "t-002").unwrap();
+        assert_eq!(current.claimed_by, None);
+        assert_eq!(targeted.path, ".ferrus/tasks/t-002.md");
+        assert_eq!(targeted.status, "unknown");
+        assert_eq!(targeted.claimed_by.as_deref(), Some("executor:codex:2"));
 
         teardown(previous);
     }
