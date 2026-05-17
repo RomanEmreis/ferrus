@@ -373,6 +373,7 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
             .unwrap_or(false),
         message: "database has tasks, runs, events, and task lease columns".to_string(),
     });
+    add_runtime_doctor_checks(&mut checks, &database_path).await;
 
     Ok(DoctorReport {
         registration: ProjectRegistration {
@@ -383,6 +384,112 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
         },
         checks,
     })
+}
+
+async fn add_runtime_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path: &Path) {
+    let state = match crate::state::store::read_state().await {
+        Ok(state) => {
+            checks.push(DoctorCheck {
+                ok: true,
+                message: "STATE.json is readable".to_string(),
+            });
+            state
+        }
+        Err(err) => {
+            checks.push(DoctorCheck {
+                ok: false,
+                message: format!("STATE.json is readable ({err})"),
+            });
+            return;
+        }
+    };
+
+    let active_fields = [
+        state.active_task_id.as_ref(),
+        state.active_task_path.as_ref(),
+        state.active_run_dir.as_ref(),
+    ];
+    let active_field_count = active_fields.iter().filter(|field| field.is_some()).count();
+    let active_metadata_complete = active_field_count == 0 || active_field_count == 3;
+    checks.push(DoctorCheck {
+        ok: active_metadata_complete,
+        message: "active task metadata is complete when present".to_string(),
+    });
+
+    if state.state == TaskState::Idle {
+        checks.push(DoctorCheck {
+            ok: active_field_count == 0,
+            message: "Idle STATE.json has no active task artifacts".to_string(),
+        });
+    } else {
+        checks.push(DoctorCheck {
+            ok: active_field_count == 3,
+            message: format!("{:?} STATE.json has active task artifacts", state.state),
+        });
+    }
+
+    if let Some(task_path) = state.active_task_path.as_deref() {
+        checks.push(DoctorCheck {
+            ok: tokio::fs::metadata(task_path).await.is_ok(),
+            message: format!("active task path exists at {task_path}"),
+        });
+    }
+    if let Some(run_dir) = state.active_run_dir.as_deref() {
+        let run_dir_exists = tokio::fs::metadata(run_dir)
+            .await
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        checks.push(DoctorCheck {
+            ok: run_dir_exists,
+            message: format!("active run directory exists at {run_dir}"),
+        });
+    }
+
+    let Some(task_id) = state.active_task_id.as_deref() else {
+        return;
+    };
+    let task_row = match read_task_record_from_database(database_path, task_id).await {
+        Ok(row) => row,
+        Err(err) => {
+            checks.push(DoctorCheck {
+                ok: false,
+                message: format!("active task row can be read from ferrus.db ({err})"),
+            });
+            return;
+        }
+    };
+    let Some(task_row) = task_row else {
+        checks.push(DoctorCheck {
+            ok: false,
+            message: format!("active task row exists in ferrus.db for {task_id}"),
+        });
+        return;
+    };
+
+    checks.push(DoctorCheck {
+        ok: true,
+        message: format!("active task row exists in ferrus.db for {task_id}"),
+    });
+    if let Some(active_task_path) = state.active_task_path.as_deref() {
+        checks.push(DoctorCheck {
+            ok: task_row.path == active_task_path,
+            message: format!("active task DB path matches STATE.json ({active_task_path})"),
+        });
+    }
+    if !matches!(
+        state.state,
+        TaskState::Consultation | TaskState::AwaitingHuman
+    ) {
+        let expected_status = task_status_for_state(&state.state);
+        checks.push(DoctorCheck {
+            ok: task_row.status == expected_status,
+            message: format!("active task DB status matches STATE.json ({expected_status})"),
+        });
+    }
+    checks.push(DoctorCheck {
+        ok: task_row.claimed_by == state.claimed_by,
+        message: "active task DB claim owner matches STATE.json".to_string(),
+    });
 }
 
 pub async fn list_registered_projects() -> Result<Vec<ProjectListEntry>> {
@@ -1042,6 +1149,37 @@ async fn max_task_number_from_database(path: &Path) -> Result<u32> {
     .await?
 }
 
+async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Option<TaskRecord>> {
+    let path = path.to_path_buf();
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<TaskRecord>> {
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("Failed to open {}", path.display()))?;
+        let task = connection
+            .query_row(
+                r#"
+                SELECT id, path, status, claimed_by, lease_until, last_heartbeat
+                FROM tasks
+                WHERE id = ?1
+                "#,
+                [task_id],
+                |row| {
+                    Ok(TaskRecord {
+                        id: row.get(0)?,
+                        path: row.get(1)?,
+                        status: row.get(2)?,
+                        claimed_by: row.get(3)?,
+                        lease_until: row.get(4)?,
+                        last_heartbeat: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(task)
+    })
+    .await?
+}
+
 async fn current_database_path() -> Result<PathBuf> {
     let local_ref = read_local_project_ref()
         .await
@@ -1409,6 +1547,7 @@ mod tests {
             .unwrap();
 
         let mut state = StateData::default();
+        state.state = TaskState::Executing;
         state.set_active_task_artifacts(
             "t-001".to_string(),
             ".ferrus/tasks/t-001.md".to_string(),
@@ -1467,6 +1606,54 @@ mod tests {
         assert_eq!(tasks[0].status, "executing");
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(tasks[0].lease_until.is_some());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn runtime_doctor_checks_detect_missing_active_artifacts() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        let database_path = current_database_path().await.unwrap();
+        let mut checks = Vec::new();
+
+        add_runtime_doctor_checks(&mut checks, &database_path).await;
+
+        assert!(checks.iter().any(|check| {
+            !check.ok && check.message == "active task path exists at .ferrus/tasks/t-001.md"
+        }));
+        assert!(checks.iter().any(|check| {
+            !check.ok && check.message == "active run directory exists at .ferrus/runs/t-001"
+        }));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn runtime_doctor_checks_accept_consistent_active_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        tokio::fs::create_dir_all(".ferrus/tasks").await.unwrap();
+        tokio::fs::write(".ferrus/tasks/t-001.md", "task")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(".ferrus/runs/t-001")
+            .await
+            .unwrap();
+        let database_path = current_database_path().await.unwrap();
+        let mut checks = Vec::new();
+
+        add_runtime_doctor_checks(&mut checks, &database_path).await;
+
+        assert!(
+            checks.iter().all(|check| check.ok),
+            "unexpected failed checks: {:?}",
+            checks
+                .iter()
+                .filter(|check| !check.ok)
+                .map(|check| check.message.as_str())
+                .collect::<Vec<_>>()
+        );
 
         teardown(previous);
     }
