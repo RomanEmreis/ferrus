@@ -276,7 +276,7 @@ ferrus serve [--role supervisor|executor]       # start MCP server on stdio
 ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executor-model <m> # write MCP config for agents
 ferrus doctor                                   # verify project metadata, artifacts, and runtime DB
 ferrus projects list                            # inspect ~/.ferrus project registry
-ferrus recover                                  # recover interrupted runs and expired leases
+ferrus recover                                  # recover interrupted runs and stale leases
 ferrus tasks list                               # inspect SQLite task runtime rows
 ferrus runs list                                # inspect SQLite run attempts
 ferrus events list                              # inspect SQLite runtime events
@@ -404,7 +404,8 @@ snapshot. Executor task claims and heartbeat renewals are coordinated through `f
 columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task
 status, lifecycle events, reset events, and HQ-spawned headless runs as the durable substrate for
 multi-task and multi-executor coordination. On HQ startup, global project metadata is touched, stale
-running DB rows whose PIDs are gone are marked `interrupted`, and expired task leases are released.
+running DB rows whose PIDs are gone are marked `interrupted`, expired task leases are released, and
+stale `STATE.json` lease mirrors are cleared.
 
 ### `.ferrus/`
 

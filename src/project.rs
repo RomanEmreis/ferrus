@@ -76,6 +76,7 @@ pub struct ProjectListEntry {
 pub struct RuntimeRecovery {
     pub interrupted_runs: usize,
     pub expired_task_leases: usize,
+    pub state_lease_mirrors_cleared: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1060,10 +1061,44 @@ pub async fn recover_expired_task_leases() -> Result<usize> {
 pub async fn recover_runtime_state() -> Result<RuntimeRecovery> {
     let interrupted_runs = recover_interrupted_runs().await?;
     let expired_task_leases = recover_expired_task_leases().await?;
+    let state_lease_mirrors_cleared = recover_state_lease_mirror().await?;
     Ok(RuntimeRecovery {
         interrupted_runs,
         expired_task_leases,
+        state_lease_mirrors_cleared,
     })
+}
+
+async fn recover_state_lease_mirror() -> Result<usize> {
+    let Ok(mut state) = crate::state::store::read_state().await else {
+        return Ok(0);
+    };
+    if state.claimed_by.is_none() {
+        return Ok(0);
+    }
+    if state
+        .lease_until
+        .is_some_and(|lease_until| Utc::now() < lease_until)
+    {
+        return Ok(0);
+    }
+
+    let task_id = state.active_task_id.clone();
+    let claimed_by = state.claimed_by.clone();
+    let lease_until = state.lease_until;
+    state.clear_lease();
+    crate::state::store::write_state(&state).await?;
+    record_runtime_event(
+        None,
+        "state_lease_mirror_cleared",
+        serde_json::json!({
+            "task_id": task_id,
+            "claimed_by": claimed_by,
+            "lease_until": lease_until,
+        }),
+    )
+    .await?;
+    Ok(1)
 }
 
 pub fn task_status_for_state(state: &TaskState) -> &'static str {
@@ -1676,6 +1711,37 @@ mod tests {
             events
                 .iter()
                 .any(|event| event.event_type == "task_lease_expired")
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn recover_runtime_state_clears_expired_state_lease_mirror() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        claim_current_task("executor:codex:1", 0).await.unwrap();
+        let mut state = store::read_state().await.unwrap();
+        state.claimed_by = Some("executor:codex:1".to_string());
+        state.lease_until = Some(Utc::now() - chrono::Duration::seconds(1));
+        state.last_heartbeat = Some(Utc::now() - chrono::Duration::seconds(2));
+        store::write_state(&state).await.unwrap();
+
+        let recovery = recover_runtime_state().await.unwrap();
+        let state = store::read_state().await.unwrap();
+        let tasks = list_tasks().await.unwrap();
+        let events = list_events(20, None).await.unwrap();
+
+        assert_eq!(recovery.expired_task_leases, 1);
+        assert_eq!(recovery.state_lease_mirrors_cleared, 1);
+        assert_eq!(state.claimed_by, None);
+        assert_eq!(state.lease_until, None);
+        assert_eq!(state.last_heartbeat, None);
+        assert_eq!(tasks[0].claimed_by, None);
+        assert!(
+            events
+                .iter()
+                .any(|event| { event.event_type == "state_lease_mirror_cleared" })
         );
 
         teardown(previous);

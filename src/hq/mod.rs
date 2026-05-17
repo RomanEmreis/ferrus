@@ -29,11 +29,14 @@ pub async fn run(debug: bool) -> Result<()> {
         tracing::debug!(error = ?err, "skipped ferrus project touch");
     }
     if let Ok(recovery) = crate::project::recover_runtime_state().await
-        && (recovery.interrupted_runs > 0 || recovery.expired_task_leases > 0)
+        && (recovery.interrupted_runs > 0
+            || recovery.expired_task_leases > 0
+            || recovery.state_lease_mirrors_cleared > 0)
     {
         tracing::info!(
             interrupted_runs = recovery.interrupted_runs,
             expired_task_leases = recovery.expired_task_leases,
+            state_lease_mirrors_cleared = recovery.state_lease_mirrors_cleared,
             "recovered ferrus.db runtime state"
         );
     }
