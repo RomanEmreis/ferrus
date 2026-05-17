@@ -210,7 +210,7 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 
 ### `ferrus doctor`
 
-Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.toml`, `STATE.json`, task artifacts, and `ferrus.db` agree with the current workspace.
+Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.toml`, `STATE.json`, task artifacts, and `ferrus.db` agree with the current workspace. It also reports recoverable runtime drift that can be fixed with `ferrus recover`.
 
 ### `ferrus projects list`
 

@@ -374,6 +374,7 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
             .unwrap_or(false),
         message: "database has tasks, runs, events, and task lease columns".to_string(),
     });
+    add_recovery_doctor_checks(&mut checks, &database_path).await;
     add_runtime_doctor_checks(&mut checks, &database_path).await;
 
     Ok(DoctorReport {
@@ -385,6 +386,41 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
         },
         checks,
     })
+}
+
+async fn add_recovery_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path: &Path) {
+    let recovery = match preview_runtime_recovery_from(database_path).await {
+        Ok(recovery) => recovery,
+        Err(err) => {
+            checks.push(DoctorCheck {
+                ok: false,
+                message: format!("runtime recovery preview can read ferrus.db ({err})"),
+            });
+            return;
+        }
+    };
+
+    checks.push(DoctorCheck {
+        ok: recovery.interrupted_runs == 0,
+        message: format!(
+            "no interrupted run recovery pending ({} found; run `ferrus recover`)",
+            recovery.interrupted_runs
+        ),
+    });
+    checks.push(DoctorCheck {
+        ok: recovery.expired_task_leases == 0,
+        message: format!(
+            "no expired task lease recovery pending ({} found; run `ferrus recover`)",
+            recovery.expired_task_leases
+        ),
+    });
+    checks.push(DoctorCheck {
+        ok: recovery.state_lease_mirrors_cleared == 0,
+        message: format!(
+            "no stale STATE.json lease mirror recovery pending ({} found; run `ferrus recover`)",
+            recovery.state_lease_mirrors_cleared
+        ),
+    });
 }
 
 async fn add_runtime_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path: &Path) {
@@ -1069,6 +1105,77 @@ pub async fn recover_runtime_state() -> Result<RuntimeRecovery> {
     })
 }
 
+async fn preview_runtime_recovery_from(database_path: &Path) -> Result<RuntimeRecovery> {
+    Ok(RuntimeRecovery {
+        interrupted_runs: preview_interrupted_runs(database_path).await?,
+        expired_task_leases: preview_expired_task_leases(database_path).await?,
+        state_lease_mirrors_cleared: preview_state_lease_mirror().await?,
+    })
+}
+
+async fn preview_interrupted_runs(database_path: &Path) -> Result<usize> {
+    let database_path = database_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<usize> {
+        let connection =
+            Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| format!("Failed to open {}", database_path.display()))?;
+        let mut statement = connection
+            .prepare("SELECT pid FROM runs WHERE status IN ('running', 'checking', 'reviewing')")?;
+        let rows = statement.query_map([], |row| row.get::<_, Option<i64>>(0))?;
+
+        let mut interrupted = 0;
+        for row in rows {
+            if row?.is_none_or(|pid| !process_is_alive(pid as u32)) {
+                interrupted += 1;
+            }
+        }
+        Ok(interrupted)
+    })
+    .await?
+}
+
+async fn preview_expired_task_leases(database_path: &Path) -> Result<usize> {
+    let database_path = database_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<usize> {
+        let connection =
+            Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(|| format!("Failed to open {}", database_path.display()))?;
+        let now = Utc::now();
+        let mut statement =
+            connection.prepare("SELECT lease_until FROM tasks WHERE claimed_by IS NOT NULL")?;
+        let rows = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+
+        let mut expired = 0;
+        for row in rows {
+            let parsed_lease = row?
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            if parsed_lease.is_none_or(|lease_until| now >= lease_until) {
+                expired += 1;
+            }
+        }
+        Ok(expired)
+    })
+    .await?
+}
+
+async fn preview_state_lease_mirror() -> Result<usize> {
+    let Ok(state) = crate::state::store::read_state().await else {
+        return Ok(0);
+    };
+    if state.claimed_by.is_none() {
+        return Ok(0);
+    }
+    if state
+        .lease_until
+        .is_some_and(|lease_until| Utc::now() < lease_until)
+    {
+        return Ok(0);
+    }
+    Ok(1)
+}
+
 async fn recover_state_lease_mirror() -> Result<usize> {
     let Ok(mut state) = crate::state::store::read_state().await else {
         return Ok(0);
@@ -1743,6 +1850,45 @@ mod tests {
                 .iter()
                 .any(|event| { event.event_type == "state_lease_mirror_cleared" })
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn preview_runtime_recovery_reports_pending_work_without_mutating() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        claim_current_task("executor:codex:1", 0).await.unwrap();
+        let mut state = store::read_state().await.unwrap();
+        state.claimed_by = Some("executor:codex:1".to_string());
+        state.lease_until = Some(Utc::now() - chrono::Duration::seconds(1));
+        state.last_heartbeat = Some(Utc::now() - chrono::Duration::seconds(2));
+        store::write_state(&state).await.unwrap();
+        let database_path = current_database_path().await.unwrap();
+        let mut checks = Vec::new();
+
+        let preview = preview_runtime_recovery_from(&database_path).await.unwrap();
+        add_recovery_doctor_checks(&mut checks, &database_path).await;
+        let state_after = store::read_state().await.unwrap();
+        let tasks = list_tasks().await.unwrap();
+
+        assert_eq!(preview.interrupted_runs, 0);
+        assert_eq!(preview.expired_task_leases, 1);
+        assert_eq!(preview.state_lease_mirrors_cleared, 1);
+        assert_eq!(state_after.claimed_by.as_deref(), Some("executor:codex:1"));
+        assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
+        assert!(checks.iter().any(|check| {
+            !check.ok
+                && check
+                    .message
+                    .contains("expired task lease recovery pending (1")
+        }));
+        assert!(checks.iter().any(|check| {
+            !check.ok
+                && check
+                    .message
+                    .contains("stale STATE.json lease mirror recovery pending (1")
+        }));
 
         teardown(previous);
     }
