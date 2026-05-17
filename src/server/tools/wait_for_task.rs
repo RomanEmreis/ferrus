@@ -92,16 +92,25 @@ async fn run(agent_id: &str) -> Result<String> {
         };
 
         if claimed {
-            let task = store::read_task().await?;
-            let review = store::read_review().await?;
-
             // Re-read state to get the stamped lease_until.
             let state = store::read_state().await?;
+            let task = if let Some(task_path) = state.active_task_path.as_deref() {
+                store::read_task_at(task_path).await?
+            } else {
+                store::read_task().await?
+            };
+            let review = if let Some(run_dir) = state.active_run_dir.as_deref() {
+                store::read_review_for_run_dir(run_dir).await?
+            } else {
+                store::read_review().await?
+            };
 
             info!(agent_id, "Executor claimed task");
             let response = json!({
                 "status": "claimed",
                 "task_id": state.active_task_id,
+                "task_path": state.active_task_path,
+                "run_dir": state.active_run_dir,
                 "claimed_by": state.claimed_by,
                 "lease_until": state.lease_until,
                 "state": format!("{:?}", state.state),

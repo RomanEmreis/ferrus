@@ -71,6 +71,10 @@ pub async fn read_task() -> Result<String> {
     read_file("TASK.md").await
 }
 
+pub async fn read_task_at(task_path: &str) -> Result<String> {
+    read_path(Path::new(task_path)).await
+}
+
 pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()> {
     if let Some(path) = state.active_task_path.as_deref() {
         write_path(Path::new(path), content).await?;
@@ -94,6 +98,10 @@ pub async fn read_review() -> Result<String> {
         return Ok(contents);
     }
     read_file("REVIEW.md").await
+}
+
+pub async fn read_review_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path_or_empty(&Path::new(run_dir).join("REVIEW.md")).await
 }
 
 pub async fn write_review(content: &str) -> Result<()> {
@@ -246,6 +254,14 @@ async fn read_path(path: &Path) -> Result<String> {
         .with_context(|| format!("Failed to read {}", path.display()))
 }
 
+async fn read_path_or_empty(path: &Path) -> Result<String> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(contents) => Ok(contents),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(err).with_context(|| format!("Failed to read {}", path.display())),
+    }
+}
+
 async fn write_path(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -321,6 +337,43 @@ mod tests {
                 .await
                 .unwrap(),
             "submission body"
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn scoped_artifact_reads_do_not_depend_on_active_state() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = StateData::default();
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        write_state(&state).await.unwrap();
+
+        write_path(Path::new(".ferrus/tasks/t-002.md"), "second task")
+            .await
+            .unwrap();
+        write_path(Path::new(".ferrus/runs/t-002/REVIEW.md"), "second review")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_task_at(".ferrus/tasks/t-002.md").await.unwrap(),
+            "second task"
+        );
+        assert_eq!(
+            read_review_for_run_dir(".ferrus/runs/t-002").await.unwrap(),
+            "second review"
+        );
+        assert_eq!(
+            read_review_for_run_dir(".ferrus/runs/t-missing")
+                .await
+                .unwrap(),
+            ""
         );
 
         teardown(previous);
