@@ -216,6 +216,10 @@ Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.tom
 
 Lists projects registered under `~/.ferrus/projects`, including project id, name, database presence, last opened timestamp, workspace path, and data directory.
 
+### `ferrus recover`
+
+Runs the same runtime recovery that HQ performs on startup: dead running rows are marked `interrupted`, and expired task leases are released.
+
 ### `ferrus tasks list`
 
 Prints task runtime rows from `ferrus.db`, including task status, active claim owner, lease expiry, and artifact path.

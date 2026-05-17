@@ -60,6 +60,8 @@ enum Commands {
     /// Migrate an existing ferrus project to the global project registry
     #[command(visible_alias = "upgrade")]
     Migrate,
+    /// Recover ferrus.db runtime state after crashes or stale leases
+    Recover,
     /// Inspect globally registered ferrus projects
     Projects {
         #[command(subcommand)]
@@ -113,6 +115,7 @@ impl Cli {
             }
             Some(Commands::Doctor) => commands::doctor::run().await,
             Some(Commands::Migrate) => commands::migrate::run().await,
+            Some(Commands::Recover) => commands::recover::run().await,
             Some(Commands::Projects { command }) => commands::projects::run(command).await,
             Some(Commands::Tasks { command }) => commands::tasks::run(command).await,
             Some(Commands::Runs { command }) => commands::runs::run(command).await,

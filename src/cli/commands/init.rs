@@ -276,6 +276,7 @@ ferrus serve [--role supervisor|executor]       # start MCP server on stdio
 ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executor-model <m> # write MCP config for agents
 ferrus doctor                                   # verify local/global project metadata
 ferrus projects list                            # inspect ~/.ferrus project registry
+ferrus recover                                  # recover interrupted runs and expired leases
 ferrus tasks list                               # inspect SQLite task runtime rows
 ferrus runs list                                # inspect SQLite run attempts
 ferrus events list                              # inspect SQLite runtime events
