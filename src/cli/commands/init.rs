@@ -275,6 +275,9 @@ ferrus init [--agents-path <path>]              # scaffold project files and reg
 ferrus serve [--role supervisor|executor]       # start MCP server on stdio
 ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executor-model <m> # write MCP config for agents
 ferrus doctor                                   # verify local/global project metadata
+ferrus tasks list                               # inspect SQLite task runtime rows
+ferrus runs list                                # inspect SQLite run attempts
+ferrus events list                              # inspect SQLite runtime events
 ferrus migrate                                  # upgrade an existing project registration
 ```
 

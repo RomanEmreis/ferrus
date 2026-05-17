@@ -6,6 +6,7 @@ mod config;
 mod hq;
 mod platform;
 mod project;
+mod runtime_table;
 mod server;
 mod specs;
 mod state;

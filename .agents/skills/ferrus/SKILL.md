@@ -52,6 +52,9 @@ to block until the human responds). The human types their answer in the HQ termi
 ferrus init [--agents-path <path>]              # scaffold project files and skill files
 ferrus serve [--role supervisor|executor]       # start MCP server on stdio
 ferrus register --supervisor <a> --executor <a> # write MCP config for agents
+ferrus tasks list                               # inspect SQLite task runtime rows
+ferrus runs list                                # inspect SQLite run attempts
+ferrus events list                              # inspect SQLite runtime events
 ```
 
 Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.

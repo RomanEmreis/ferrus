@@ -65,6 +65,16 @@ enum Commands {
         #[command(subcommand)]
         command: commands::tasks::TasksCommand,
     },
+    /// Inspect run attempt records from ferrus.db
+    Runs {
+        #[command(subcommand)]
+        command: commands::runs::RunsCommand,
+    },
+    /// Inspect runtime event records from ferrus.db
+    Events {
+        #[command(subcommand)]
+        command: commands::events::EventsCommand,
+    },
 }
 
 impl Cli {
@@ -99,6 +109,8 @@ impl Cli {
             Some(Commands::Doctor) => commands::doctor::run().await,
             Some(Commands::Migrate) => commands::migrate::run().await,
             Some(Commands::Tasks { command }) => commands::tasks::run(command).await,
+            Some(Commands::Runs { command }) => commands::runs::run(command).await,
+            Some(Commands::Events { command }) => commands::events::run(command).await,
             None => crate::hq::run(debug).await,
         }
     }

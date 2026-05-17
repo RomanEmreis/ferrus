@@ -216,6 +216,14 @@ Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.tom
 
 Prints task runtime rows from `ferrus.db`, including task status, active claim owner, lease expiry, and artifact path.
 
+### `ferrus runs list [--limit N]`
+
+Prints recent run attempts from `ferrus.db`, including role, agent, status, PID, timestamps, and workspace path.
+
+### `ferrus events list [--limit N] [--run <id>]`
+
+Prints recent runtime events from `ferrus.db`. Use `--run <id>` or `--run-id <id>` to filter to one run attempt.
+
 ### `ferrus migrate` / `ferrus upgrade`
 
 Registers an existing pre-registry project in `~/.ferrus/projects/<project-id>/`, initializes the SQLite database, creates `.ferrus/tasks/` and `.ferrus/runs/`, and copies non-empty legacy task/review/submission artifacts into the new artifact layout.
