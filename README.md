@@ -212,6 +212,10 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 
 Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.toml`, and `ferrus.db` are present and agree with the current workspace.
 
+### `ferrus projects list`
+
+Lists projects registered under `~/.ferrus/projects`, including project id, name, database presence, last opened timestamp, workspace path, and data directory.
+
 ### `ferrus tasks list`
 
 Prints task runtime rows from `ferrus.db`, including task status, active claim owner, lease expiry, and artifact path.

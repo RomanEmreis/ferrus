@@ -1,4 +1,37 @@
-use crate::project::{EventRecord, RunRecord, TaskRecord};
+use crate::project::{EventRecord, ProjectListEntry, RunRecord, TaskRecord};
+
+pub fn project_lines(projects: &[ProjectListEntry]) -> Vec<String> {
+    if projects.is_empty() {
+        return vec!["No projects registered in ~/.ferrus/projects.".to_string()];
+    }
+
+    let mut lines = vec![format!(
+        "{:<29} {:<22} {:<8} {:<20} {:<36} Data dir",
+        "ID", "Name", "DB", "Last opened", "Workspace"
+    )];
+    lines.extend(projects.iter().map(|project| {
+        let db_status = if project.database_exists {
+            "ok"
+        } else {
+            "missing"
+        };
+        let workspace = project
+            .workspace_dir
+            .as_deref()
+            .or(project.error.as_deref())
+            .unwrap_or("-");
+        format!(
+            "{:<29} {:<22} {:<8} {:<20} {:<36} {}",
+            project.id,
+            compact(project.name.as_deref().unwrap_or("-"), 22),
+            db_status,
+            project.last_opened_at.as_deref().unwrap_or("-"),
+            compact(workspace, 36),
+            project.data_dir.display()
+        )
+    }));
+    lines
+}
 
 pub fn task_lines(tasks: &[TaskRecord]) -> Vec<String> {
     if tasks.is_empty() {
@@ -95,6 +128,27 @@ mod tests {
             task_lines(&[]),
             vec!["No tasks recorded in ferrus.db.".to_string()]
         );
+    }
+
+    #[test]
+    fn project_lines_include_registry_fields() {
+        let projects = vec![ProjectListEntry {
+            id: "P123".to_string(),
+            name: Some("ferrus".to_string()),
+            workspace_dir: Some("/tmp/ferrus".to_string()),
+            data_dir: "/tmp/.ferrus/projects/P123".into(),
+            database_exists: true,
+            last_opened_at: Some("2026-05-17T10:00:00Z".to_string()),
+            error: None,
+        }];
+
+        let lines = project_lines(&projects);
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("P123"));
+        assert!(lines[1].contains("ferrus"));
+        assert!(lines[1].contains("ok"));
+        assert!(lines[1].contains("/tmp/ferrus"));
     }
 
     #[test]

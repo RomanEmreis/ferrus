@@ -62,6 +62,17 @@ pub struct DoctorCheck {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProjectListEntry {
+    pub id: String,
+    pub name: Option<String>,
+    pub workspace_dir: Option<String>,
+    pub data_dir: PathBuf,
+    pub database_exists: bool,
+    pub last_opened_at: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct RunRecord {
     pub id: String,
     pub task_id: String,
@@ -310,6 +321,69 @@ pub async fn doctor_current_project() -> Result<DoctorReport> {
         },
         checks,
     })
+}
+
+pub async fn list_registered_projects() -> Result<Vec<ProjectListEntry>> {
+    let projects_dir = global_dir()?.join("projects");
+    list_registered_projects_from(&projects_dir).await
+}
+
+async fn list_registered_projects_from(projects_dir: &Path) -> Result<Vec<ProjectListEntry>> {
+    if tokio::fs::metadata(projects_dir).await.is_err() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    let mut read_dir = tokio::fs::read_dir(projects_dir)
+        .await
+        .with_context(|| format!("Failed to read {}", projects_dir.display()))?;
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .with_context(|| format!("Failed to iterate {}", projects_dir.display()))?
+    {
+        let file_type = entry
+            .file_type()
+            .await
+            .with_context(|| format!("Failed to inspect {}", entry.path().display()))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let data_dir = entry.path();
+        let fallback_id = entry.file_name().to_string_lossy().into_owned();
+        let database_exists = tokio::fs::metadata(data_dir.join("ferrus.db"))
+            .await
+            .is_ok();
+        match read_project_metadata_from(&data_dir.join("project.toml")).await {
+            Ok(metadata) => entries.push(ProjectListEntry {
+                id: metadata.id,
+                name: Some(metadata.name),
+                workspace_dir: Some(metadata.workspace_dir),
+                data_dir,
+                database_exists,
+                last_opened_at: Some(metadata.last_opened_at),
+                error: None,
+            }),
+            Err(err) => entries.push(ProjectListEntry {
+                id: fallback_id,
+                name: None,
+                workspace_dir: None,
+                data_dir,
+                database_exists,
+                last_opened_at: None,
+                error: Some(err.to_string()),
+            }),
+        }
+    }
+
+    entries.sort_by(|left, right| {
+        right
+            .last_opened_at
+            .cmp(&left.last_opened_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(entries)
 }
 
 pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
@@ -1322,5 +1396,55 @@ mod tests {
         );
 
         teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn list_registered_projects_reads_valid_and_invalid_entries() {
+        let dir = TempDir::new().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let valid_dir = projects_dir.join("PVALID");
+        let invalid_dir = projects_dir.join("PBROKEN");
+        std::fs::create_dir_all(&valid_dir).unwrap();
+        std::fs::create_dir_all(&invalid_dir).unwrap();
+        std::fs::write(valid_dir.join("ferrus.db"), "").unwrap();
+        write_toml(
+            &valid_dir.join("project.toml"),
+            &ProjectMetadata {
+                id: "PVALID".to_string(),
+                name: "ferrus".to_string(),
+                workspace_dir: "/tmp/ferrus".to_string(),
+                ferrus_dir: "/tmp/ferrus/.ferrus".to_string(),
+                vcs: Some("git".to_string()),
+                origin_repo: None,
+                default_branch: Some("main".to_string()),
+                current_head: None,
+                created_at: "2026-05-16T10:00:00Z".to_string(),
+                last_opened_at: "2026-05-17T10:00:00Z".to_string(),
+                version: PROJECT_VERSION,
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::write(invalid_dir.join("project.toml"), "not = [toml").unwrap();
+
+        let projects = list_registered_projects_from(&projects_dir).await.unwrap();
+
+        assert_eq!(projects.len(), 2);
+        let valid = projects
+            .iter()
+            .find(|project| project.id == "PVALID")
+            .unwrap();
+        assert_eq!(valid.name.as_deref(), Some("ferrus"));
+        assert_eq!(valid.workspace_dir.as_deref(), Some("/tmp/ferrus"));
+        assert!(valid.database_exists);
+        assert!(valid.error.is_none());
+
+        let invalid = projects
+            .iter()
+            .find(|project| project.id == "PBROKEN")
+            .unwrap();
+        assert!(invalid.name.is_none());
+        assert!(!invalid.database_exists);
+        assert!(invalid.error.is_some());
     }
 }
