@@ -721,7 +721,7 @@ pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) ->
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
         upsert_task(&connection, &task_id, &task_path, &status)?;
-        if matches!(status.as_str(), "idle" | "reset" | "complete" | "failed") {
+        if clears_task_lease_for_status(&status) {
             clear_task_lease(&connection, &task_id)?;
         }
         insert_event(
@@ -736,6 +736,13 @@ pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) ->
         Ok(())
     })
     .await?
+}
+
+fn clears_task_lease_for_status(status: &str) -> bool {
+    matches!(
+        status,
+        "idle" | "reset" | "reviewing" | "addressing" | "complete" | "failed"
+    )
 }
 
 pub async fn claim_current_task(agent_id: &str, ttl_secs: u64) -> Result<TaskClaim> {
@@ -1675,13 +1682,15 @@ mod tests {
         let data_dir = workspace.join(".ferrus/projects/test-project");
         std::fs::create_dir_all(workspace.join(".ferrus")).unwrap();
         std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(
-            workspace.join(".ferrus/project.toml"),
-            format!(
-                "project_id = \"test-project\"\nname = \"test\"\ndata_dir = \"{}\"\n",
-                data_dir.display()
-            ),
+        write_toml(
+            &workspace.join(".ferrus/project.toml"),
+            &LocalProjectRef {
+                project_id: "test-project".to_string(),
+                name: "test".to_string(),
+                data_dir: path_string(&data_dir),
+            },
         )
+        .await
         .unwrap();
         std::env::set_current_dir(workspace).unwrap();
         initialize_database(&data_dir.join("ferrus.db"))
@@ -1748,6 +1757,34 @@ mod tests {
         assert_eq!(tasks[0].status, "executing");
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(tasks[0].lease_until.is_some());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn handoff_task_statuses_clear_database_lease() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        claim_current_task("executor:codex:1", 60).await.unwrap();
+
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
+            .await
+            .unwrap();
+        let tasks = list_tasks().await.unwrap();
+        assert_eq!(tasks[0].status, "reviewing");
+        assert_eq!(tasks[0].claimed_by, None);
+        assert_eq!(tasks[0].lease_until, None);
+        assert_eq!(tasks[0].last_heartbeat, None);
+
+        claim_current_task("executor:codex:2", 60).await.unwrap();
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "addressing")
+            .await
+            .unwrap();
+        let tasks = list_tasks().await.unwrap();
+        assert_eq!(tasks[0].status, "addressing");
+        assert_eq!(tasks[0].claimed_by, None);
+        assert_eq!(tasks[0].lease_until, None);
+        assert_eq!(tasks[0].last_heartbeat, None);
 
         teardown(previous);
     }
