@@ -277,6 +277,7 @@ ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executo
 ferrus doctor                                   # verify project metadata, artifacts, and runtime DB
 ferrus projects list                            # inspect ~/.ferrus project registry
 ferrus recover                                  # recover interrupted runs and stale leases
+ferrus recover --dry-run                        # preview recovery without mutating runtime state
 ferrus tasks list                               # inspect SQLite task runtime rows
 ferrus runs list                                # inspect SQLite run attempts
 ferrus events list                              # inspect SQLite runtime events

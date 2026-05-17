@@ -220,6 +220,8 @@ Lists projects registered under `~/.ferrus/projects`, including project id, name
 
 Runs the same runtime recovery that HQ performs on startup: dead running rows are marked `interrupted`, expired task leases are released, and stale `STATE.json` lease mirrors are cleared.
 
+Use `ferrus recover --dry-run` to print the pending recovery counters without changing runtime state.
+
 ### `ferrus tasks list`
 
 Prints task runtime rows from `ferrus.db`, including task status, active claim owner, lease expiry, and artifact path.

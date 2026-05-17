@@ -1112,6 +1112,11 @@ pub async fn recover_runtime_state() -> Result<RuntimeRecovery> {
     })
 }
 
+pub async fn preview_runtime_recovery() -> Result<RuntimeRecovery> {
+    let database_path = current_database_path().await?;
+    preview_runtime_recovery_from(&database_path).await
+}
+
 async fn preview_runtime_recovery_from(database_path: &Path) -> Result<RuntimeRecovery> {
     Ok(RuntimeRecovery {
         interrupted_runs: preview_interrupted_runs(database_path).await?,
