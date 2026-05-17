@@ -319,11 +319,12 @@ pub async fn allocate_task_artifact() -> Result<TaskArtifact> {
         let id = format!("t-{number:03}");
         let task_path = tasks_dir.join(format!("{id}.md"));
         if !task_path.exists() {
-            let run_dir = runs_dir.join(&id);
+            // Store project-local artifact paths with `/` separators. Rust accepts these paths on
+            // Windows too, and keeping the serialized STATE/DB value stable avoids platform drift.
             return Ok(TaskArtifact {
+                path: format!(".ferrus/tasks/{id}.md"),
+                run_dir: format!(".ferrus/runs/{id}"),
                 id,
-                path: path_string(&task_path),
-                run_dir: path_string(&run_dir),
             });
         }
         number += 1;
