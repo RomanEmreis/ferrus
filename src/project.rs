@@ -133,6 +133,24 @@ pub enum TaskClaim {
     },
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct TaskLease {
+    pub task_id: String,
+    pub task_path: String,
+    pub status: String,
+    pub claimed_by: String,
+    pub lease_until: DateTime<Utc>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum ReadyTaskClaim {
+    Claimed(TaskLease),
+    AlreadyClaimed(TaskLease),
+    NoAvailable,
+}
+
 #[derive(Debug, Clone)]
 pub enum LeaseRenewal {
     Renewed {
@@ -768,6 +786,61 @@ pub async fn claim_task(
     .await
 }
 
+#[allow(dead_code)]
+pub async fn claim_next_ready_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
+    let database_path = current_database_path().await?;
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let now = Utc::now();
+        let candidates = ready_task_candidates(&transaction)?;
+
+        for candidate in &candidates {
+            let lease_until = parse_lease_until(candidate.lease_until.as_deref());
+            let lease_active = lease_until
+                .as_ref()
+                .is_some_and(|lease_until| now < *lease_until);
+            if lease_active && candidate.claimed_by.as_deref() == Some(agent_id.as_str()) {
+                transaction.commit()?;
+                return Ok(ReadyTaskClaim::AlreadyClaimed(TaskLease {
+                    task_id: candidate.id.clone(),
+                    task_path: candidate.path.clone(),
+                    status: candidate.status.clone(),
+                    claimed_by: agent_id,
+                    lease_until: lease_until.expect("active lease exists"),
+                }));
+            }
+        }
+
+        for candidate in candidates {
+            let lease_until = parse_lease_until(candidate.lease_until.as_deref());
+            let lease_active = lease_until
+                .as_ref()
+                .is_some_and(|lease_until| now < *lease_until);
+            if lease_active {
+                continue;
+            }
+
+            let lease_until = now
+                + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
+            claim_task_in_transaction(&transaction, &candidate.id, &agent_id, lease_until, now)?;
+            transaction.commit()?;
+            return Ok(ReadyTaskClaim::Claimed(TaskLease {
+                task_id: candidate.id,
+                task_path: candidate.path,
+                status: candidate.status,
+                claimed_by: agent_id,
+                lease_until,
+            }));
+        }
+
+        transaction.commit()?;
+        Ok(ReadyTaskClaim::NoAvailable)
+    })
+    .await?
+}
+
 async fn claim_task_in_database(
     database_path: PathBuf,
     task_id: String,
@@ -811,22 +884,7 @@ async fn claim_task_in_database(
 
         let lease_until =
             now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
-        let lease_until_text = lease_until.to_rfc3339_opts(SecondsFormat::Secs, true);
-        let now_text = now.to_rfc3339_opts(SecondsFormat::Secs, true);
-        transaction.execute(
-            "UPDATE tasks SET claimed_by = ?1, lease_until = ?2, last_heartbeat = ?3 WHERE id = ?4",
-            params![agent_id, lease_until_text, now_text, task_id],
-        )?;
-        insert_event_in_transaction(
-            &transaction,
-            None,
-            "task_claimed",
-            &serde_json::json!({
-                "task_id": task_id,
-                "claimed_by": agent_id,
-                "lease_until": lease_until,
-            }),
-        )?;
+        claim_task_in_transaction(&transaction, &task_id, &agent_id, lease_until, now)?;
         transaction.commit()?;
         Ok(TaskClaim::Claimed {
             claimed_by: agent_id,
@@ -1454,6 +1512,72 @@ fn ensure_task_exists(connection: &Connection, id: &str, path: &str) -> Result<(
     Ok(())
 }
 
+struct ReadyTaskCandidate {
+    id: String,
+    path: String,
+    status: String,
+    claimed_by: Option<String>,
+    lease_until: Option<String>,
+}
+
+fn ready_task_candidates(transaction: &Transaction<'_>) -> Result<Vec<ReadyTaskCandidate>> {
+    let mut statement = transaction.prepare(
+        r#"
+        SELECT id, path, status, claimed_by, lease_until
+        FROM tasks
+        WHERE status IN ('executing', 'addressing')
+        ORDER BY id
+        "#,
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ReadyTaskCandidate {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            status: row.get(2)?,
+            claimed_by: row.get(3)?,
+            lease_until: row.get(4)?,
+        })
+    })?;
+
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row?);
+    }
+    Ok(tasks)
+}
+
+fn claim_task_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: &str,
+    agent_id: &str,
+    lease_until: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let lease_until_text = lease_until.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let now_text = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+    transaction.execute(
+        "UPDATE tasks SET claimed_by = ?1, lease_until = ?2, last_heartbeat = ?3 WHERE id = ?4",
+        params![agent_id, lease_until_text, now_text, task_id],
+    )?;
+    insert_event_in_transaction(
+        transaction,
+        None,
+        "task_claimed",
+        &serde_json::json!({
+            "task_id": task_id,
+            "claimed_by": agent_id,
+            "lease_until": lease_until,
+        }),
+    )?;
+    Ok(())
+}
+
+fn parse_lease_until(value: Option<&str>) -> Option<DateTime<Utc>> {
+    value
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
 fn clear_task_lease(connection: &Connection, task_id: &str) -> Result<()> {
     connection.execute(
         "UPDATE tasks SET claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL WHERE id = ?1",
@@ -1802,6 +1926,58 @@ mod tests {
         assert_eq!(targeted.path, ".ferrus/tasks/t-002.md");
         assert_eq!(targeted.status, "unknown");
         assert_eq!(targeted.claimed_by.as_deref(), Some("executor:codex:2"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_claim_next_ready_task_skips_active_claims_and_preserves_agent_lease() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
+            .await
+            .unwrap();
+
+        let first = claim_next_ready_task("executor:codex:1", 60).await.unwrap();
+        match first {
+            ReadyTaskClaim::Claimed(task) => {
+                assert_eq!(task.task_id, "t-001");
+                assert_eq!(task.task_path, ".ferrus/tasks/t-001.md");
+                assert_eq!(task.status, "executing");
+                assert_eq!(task.claimed_by, "executor:codex:1");
+            }
+            _ => panic!("expected first ready task to be claimed"),
+        }
+
+        let same_agent = claim_next_ready_task("executor:codex:1", 60).await.unwrap();
+        match same_agent {
+            ReadyTaskClaim::AlreadyClaimed(task) => {
+                assert_eq!(task.task_id, "t-001");
+                assert_eq!(task.claimed_by, "executor:codex:1");
+            }
+            _ => panic!("expected existing agent lease"),
+        }
+
+        let other_agent = claim_next_ready_task("executor:codex:2", 60).await.unwrap();
+        match other_agent {
+            ReadyTaskClaim::Claimed(task) => {
+                assert_eq!(task.task_id, "t-002");
+                assert_eq!(task.task_path, ".ferrus/tasks/t-002.md");
+                assert_eq!(task.status, "executing");
+                assert_eq!(task.claimed_by, "executor:codex:2");
+            }
+            _ => panic!("expected second ready task to be claimed"),
+        }
+
+        let no_available = claim_next_ready_task("executor:codex:3", 60).await.unwrap();
+        assert!(matches!(no_available, ReadyTaskClaim::NoAvailable));
+
+        let tasks = list_tasks().await.unwrap();
+        let reviewing = tasks.iter().find(|task| task.id == "t-003").unwrap();
+        assert_eq!(reviewing.claimed_by, None);
 
         teardown(previous);
     }
