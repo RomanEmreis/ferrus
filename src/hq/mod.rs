@@ -25,10 +25,14 @@ use display::Display;
 use state_watcher::WatchedState;
 
 pub async fn run(debug: bool) -> Result<()> {
-    if let Ok(interrupted) = crate::project::recover_interrupted_runs().await
-        && interrupted > 0
+    if let Ok(recovery) = crate::project::recover_runtime_state().await
+        && (recovery.interrupted_runs > 0 || recovery.expired_task_leases > 0)
     {
-        tracing::info!(interrupted, "recovered interrupted ferrus.db runs");
+        tracing::info!(
+            interrupted_runs = recovery.interrupted_runs,
+            expired_task_leases = recovery.expired_task_leases,
+            "recovered ferrus.db runtime state"
+        );
     }
     reconcile_agent_pids().await;
 

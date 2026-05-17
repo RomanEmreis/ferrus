@@ -72,6 +72,12 @@ pub struct ProjectListEntry {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeRecovery {
+    pub interrupted_runs: usize,
+    pub expired_task_leases: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct RunRecord {
     pub id: String,
@@ -841,6 +847,62 @@ pub async fn recover_interrupted_runs() -> Result<usize> {
     .await?
 }
 
+pub async fn recover_expired_task_leases() -> Result<usize> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<usize> {
+        let connection = open_runtime_database(&database_path)?;
+        let now = Utc::now();
+        let mut statement = connection.prepare(
+            "SELECT id, claimed_by, lease_until FROM tasks WHERE claimed_by IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut expired = Vec::new();
+        for row in rows {
+            let (task_id, claimed_by, lease_until) = row?;
+            let parsed_lease = lease_until
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            if parsed_lease.is_none_or(|lease_until| now >= lease_until) {
+                expired.push((task_id, claimed_by, lease_until));
+            }
+        }
+
+        for (task_id, claimed_by, lease_until) in &expired {
+            clear_task_lease(&connection, task_id)?;
+            insert_event(
+                &connection,
+                None,
+                "task_lease_expired",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "claimed_by": claimed_by,
+                    "lease_until": lease_until,
+                }),
+            )?;
+        }
+
+        Ok(expired.len())
+    })
+    .await?
+}
+
+pub async fn recover_runtime_state() -> Result<RuntimeRecovery> {
+    let interrupted_runs = recover_interrupted_runs().await?;
+    let expired_task_leases = recover_expired_task_leases().await?;
+    Ok(RuntimeRecovery {
+        interrupted_runs,
+        expired_task_leases,
+    })
+}
+
 pub fn task_status_for_state(state: &TaskState) -> &'static str {
     match state {
         TaskState::Idle => "idle",
@@ -1349,6 +1411,29 @@ mod tests {
         assert_eq!(tasks[0].status, "executing");
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(tasks[0].lease_until.is_some());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn recover_expired_task_leases_releases_stale_claims() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        claim_current_task("executor:codex:1", 0).await.unwrap();
+
+        let recovered = recover_expired_task_leases().await.unwrap();
+        let tasks = list_tasks().await.unwrap();
+        let events = list_events(10, None).await.unwrap();
+
+        assert_eq!(recovered, 1);
+        assert_eq!(tasks[0].claimed_by, None);
+        assert_eq!(tasks[0].lease_until, None);
+        assert_eq!(tasks[0].last_heartbeat, None);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "task_lease_expired")
+        );
 
         teardown(previous);
     }

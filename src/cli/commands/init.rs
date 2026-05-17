@@ -403,7 +403,7 @@ snapshot. Executor task claims and heartbeat renewals are coordinated through `f
 columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task
 status, lifecycle events, reset events, and HQ-spawned headless runs as the durable substrate for
 multi-task and multi-executor coordination. On HQ startup, stale running DB rows whose PIDs are gone
-are marked `interrupted`.
+are marked `interrupted`, and expired task leases are released.
 
 ### `.ferrus/`
 

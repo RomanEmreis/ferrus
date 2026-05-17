@@ -279,7 +279,7 @@ Ferrus now separates human-readable project artifacts from machine-local runtime
 | `.ferrus/` | Project-local Markdown artifacts, templates, and current compatibility state files |
 | `~/.ferrus/projects/<project-id>/` | Machine-local project metadata, SQLite runtime database, and global logs |
 
-The current release still uses `.ferrus/STATE.json` as the compatibility state-machine snapshot for the single-task Supervisor/Executor loop. Executor task claims and heartbeat renewals are coordinated through `ferrus.db` task lease columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, stale running DB rows whose PIDs are gone are marked `interrupted`.
+The current release still uses `.ferrus/STATE.json` as the compatibility state-machine snapshot for the single-task Supervisor/Executor loop. Executor task claims and heartbeat renewals are coordinated through `ferrus.db` task lease columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, stale running DB rows whose PIDs are gone are marked `interrupted`, and expired task leases are released.
 
 ### `.ferrus/`
 
