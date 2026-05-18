@@ -154,6 +154,10 @@ pub async fn write_submission_for_state(state: &StateData, content: &str) -> Res
     write_file("SUBMISSION.md", content).await
 }
 
+pub async fn write_submission_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "SUBMISSION.md"), content).await
+}
+
 /// Write a full check log to `.ferrus/logs/check_{attempt}_{ts}.txt`.
 /// Creates the logs directory if it doesn't exist. Returns the file path.
 pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<PathBuf> {
@@ -204,6 +208,10 @@ pub async fn write_question(content: &str) -> Result<()> {
     write_file("QUESTION.md", content).await
 }
 
+pub async fn write_question_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "QUESTION.md"), content).await
+}
+
 pub async fn read_answer() -> Result<String> {
     if let Ok(state) = read_state().await
         && let Some(path) = active_run_file(&state, "ANSWER.md")
@@ -242,6 +250,10 @@ pub async fn write_consult_request(content: &str) -> Result<()> {
     write_file("CONSULT_REQUEST.md", content).await
 }
 
+pub async fn write_consult_request_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "CONSULT_REQUEST.md"), content).await
+}
+
 pub async fn clear_consult_request() -> Result<()> {
     write_consult_request("").await
 }
@@ -272,6 +284,10 @@ pub async fn write_consult_response(content: &str) -> Result<()> {
 
 pub async fn clear_consult_response() -> Result<()> {
     write_consult_response("").await
+}
+
+pub async fn clear_consult_response_for_run_dir(run_dir: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "CONSULT_RESPONSE.md"), "").await
 }
 
 pub async fn clear_consult_response_mirror() -> Result<()> {
@@ -346,6 +362,10 @@ fn active_run_file(state: &StateData, filename: &str) -> Option<PathBuf> {
         .active_run_dir
         .as_deref()
         .map(|dir| Path::new(dir).join(filename))
+}
+
+fn run_file(run_dir: &str, filename: &str) -> PathBuf {
+    Path::new(run_dir).join(filename)
 }
 
 #[cfg(test)]

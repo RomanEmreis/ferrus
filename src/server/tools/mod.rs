@@ -22,7 +22,7 @@ use neva::prelude::*;
 
 use crate::{
     agent_id::ROLE_SUPERVISOR,
-    project::{self, TaskClaim},
+    project::{self, RuntimeTaskContext, TaskClaim},
     state::machine::{StateData, TaskState},
     state::store,
 };
@@ -51,11 +51,58 @@ pub(super) async fn ensure_lease_owner_or_reclaim(
     agent_id: &str,
     ttl_secs: u64,
 ) -> anyhow::Result<()> {
-    ensure_lease_identity(state, agent_id)?;
-    if !state.lease_expired() {
-        return Ok(());
+    if state.claimed_by.as_deref() == Some(agent_id) {
+        if !state.lease_expired() {
+            return Ok(());
+        }
+
+        return reclaim_state_active_task_lease(state, agent_id, ttl_secs).await;
     }
 
+    if let Some(context) = project::runtime_task_context_for_agent(agent_id).await? {
+        match project::claim_task(&context.task_id, &context.task_path, agent_id, ttl_secs).await {
+            Ok(TaskClaim::Claimed { .. }) | Ok(TaskClaim::AlreadyClaimed { .. }) => {
+                return Ok(());
+            }
+            Ok(TaskClaim::ClaimedByOther { claimed_by }) => {
+                anyhow::bail!("Cannot modify task: lease is held by {claimed_by}, not {agent_id}");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = ?err,
+                    agent_id,
+                    task_id = context.task_id,
+                    "failed to validate lease in ferrus.db"
+                );
+            }
+        }
+    }
+
+    ensure_lease_identity(state, agent_id)?;
+    Ok(())
+}
+
+pub(super) async fn runtime_task_context_for_agent_best_effort(
+    agent_id: &str,
+) -> Option<RuntimeTaskContext> {
+    match project::runtime_task_context_for_agent(agent_id).await {
+        Ok(context) => context,
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                agent_id,
+                "failed to resolve runtime task context from ferrus.db"
+            );
+            None
+        }
+    }
+}
+
+async fn reclaim_state_active_task_lease(
+    state: &mut StateData,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> anyhow::Result<()> {
     match state.state {
         TaskState::Executing | TaskState::Addressing | TaskState::Consultation => {
             match project::claim_current_task(agent_id, ttl_secs).await {
@@ -151,6 +198,32 @@ fn agent_role(agent_id: &str) -> Option<&str> {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use tempfile::TempDir;
+
+    async fn setup_runtime_project() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
 
     #[test]
     fn lease_owner_check_accepts_current_unexpired_owner() {
@@ -178,6 +251,30 @@ mod tests {
             .to_string();
         assert!(err.contains("has expired"));
         ensure_lease_identity(&state, "executor:codex:1").unwrap();
+    }
+
+    #[tokio::test]
+    async fn lease_owner_check_accepts_agent_database_task_context() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_runtime_project().await;
+        crate::project::record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
+            .await
+            .unwrap();
+        let mut state = StateData {
+            state: TaskState::Executing,
+            claimed_by: Some("executor:codex:1".to_string()),
+            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
+            ..StateData::default()
+        };
+
+        ensure_lease_owner_or_reclaim(&mut state, "executor:codex:2", 60)
+            .await
+            .unwrap();
+
+        teardown(previous);
     }
 
     #[test]

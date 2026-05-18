@@ -3,10 +3,11 @@ use tracing::info;
 
 use crate::{
     config::Config,
+    project::RuntimeTaskContext,
     state::{machine::TaskState, store},
 };
 
-use super::{ensure_lease_owner_or_reclaim, tool_err};
+use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the configured Supervisor for a consultation. \
      Writes CONSULT_REQUEST.md, transitions state to Consultation, clears any stale \
@@ -40,11 +41,12 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
         );
     }
     ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
 
     validate_consult_request(&question)?;
 
-    store::write_consult_request(&question).await?;
-    store::clear_consult_response().await?;
+    write_consult_request(&state, runtime_context.as_ref(), &question).await?;
+    clear_consult_response(&state, runtime_context.as_ref()).await?;
     let paused = state.consult()?;
     store::write_state(&state).await?;
 
@@ -55,6 +57,35 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
          HQ should spawn the configured Supervisor in consultation mode.\n\
          Call /wait_for_consult to block until the response is ready.",
     ))
+}
+
+async fn write_consult_request(
+    state: &crate::state::machine::StateData,
+    context: Option<&RuntimeTaskContext>,
+    question: &str,
+) -> Result<()> {
+    if let Some(context) = context {
+        store::write_consult_request_for_run_dir(&context.run_dir, question).await?;
+        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+            store::write_consult_request(question).await?;
+        }
+        return Ok(());
+    }
+    store::write_consult_request(question).await
+}
+
+async fn clear_consult_response(
+    state: &crate::state::machine::StateData,
+    context: Option<&RuntimeTaskContext>,
+) -> Result<()> {
+    if let Some(context) = context {
+        store::clear_consult_response_for_run_dir(&context.run_dir).await?;
+        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+            store::clear_consult_response().await?;
+        }
+        return Ok(());
+    }
+    store::clear_consult_response().await
 }
 
 fn validate_consult_request(question: &str) -> Result<()> {
