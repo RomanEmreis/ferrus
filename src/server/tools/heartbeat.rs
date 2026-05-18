@@ -44,17 +44,6 @@ async fn run(agent_id: &str) -> Result<String> {
 
     let mut state = store::read_state().await?;
 
-    // State must still be leasable in the compatibility state machine.
-    if !LEASABLE_STATES.contains(&state.state) {
-        drop(lock_file);
-        return Ok(json!({
-            "status": "error",
-            "code": "invalid_state",
-            "message": format!("State {:?} cannot hold a lease", state.state)
-        })
-        .to_string());
-    }
-
     let db_renewal = match project::renew_claimed_task_lease(agent_id, ttl_secs).await {
         Ok(LeaseRenewal::NotClaimed) => project::renew_current_task_lease(agent_id, ttl_secs).await,
         result => result,
@@ -118,6 +107,17 @@ async fn run(agent_id: &str) -> Result<String> {
                 "failed to renew lease in ferrus.db; falling back to STATE.json lease"
             );
         }
+    }
+
+    // State fallback is only for the compatibility state-machine mirror.
+    if !LEASABLE_STATES.contains(&state.state) {
+        drop(lock_file);
+        return Ok(json!({
+            "status": "error",
+            "code": "invalid_state",
+            "message": format!("State {:?} cannot hold a lease", state.state)
+        })
+        .to_string());
     }
 
     // Step 1: identity check (ignoring expiry) — determines not_claimed vs claimed_by_other.

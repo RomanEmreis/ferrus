@@ -2071,6 +2071,8 @@ mod tests {
             .unwrap();
         assert!(matches!(first, TaskClaim::Claimed { .. }));
 
+        store::write_state(&StateData::default()).await.unwrap();
+
         let renewed = renew_claimed_task_lease("executor:codex:2", 60)
             .await
             .unwrap();
