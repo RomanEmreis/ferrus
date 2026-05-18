@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-use super::tool_err;
+use super::{ensure_lease_owner, tool_err};
 
 pub const DESCRIPTION: &str = "Reject the current submission with review notes. Writes notes to REVIEW.md and \
      transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
@@ -27,11 +27,11 @@ pub const INPUT_SCHEMA: &str = r#"{
     "required": ["notes"]
 }"#;
 
-pub async fn handler(notes: String) -> Result<String, Error> {
-    run(notes).await.map_err(tool_err)
+pub async fn handler_for_agent(agent_id: &str, notes: String) -> Result<String, Error> {
+    run(agent_id, notes).await.map_err(tool_err)
 }
 
-async fn run(notes: String) -> Result<String> {
+async fn run(agent_id: &str, notes: String) -> Result<String> {
     let config = Config::load().await?;
     let mut state = store::read_state().await?;
 
@@ -41,6 +41,7 @@ async fn run(notes: String) -> Result<String> {
             state.state
         );
     }
+    ensure_lease_owner(&state, agent_id)?;
 
     store::write_review(&notes).await?;
 

@@ -53,13 +53,31 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
             })
             .with_description(tools::wait_for_review::DESCRIPTION);
         }
-        app.map_tool("review_pending", tools::review_pending::handler)
+        {
+            let id = agent_id.clone();
+            app.map_tool("review_pending", move || {
+                let id = id.clone();
+                async move { tools::review_pending::handler_for_agent(&id).await }
+            })
             .with_description(tools::review_pending::DESCRIPTION);
-        app.map_tool("approve", tools::approve::handler)
+        }
+        {
+            let id = agent_id.clone();
+            app.map_tool("approve", move || {
+                let id = id.clone();
+                async move { tools::approve::handler_for_agent(&id).await }
+            })
             .with_description(tools::approve::DESCRIPTION);
-        app.map_tool("reject", tools::reject::handler)
+        }
+        {
+            let id = agent_id.clone();
+            app.map_tool("reject", move |notes| {
+                let id = id.clone();
+                async move { tools::reject::handler_for_agent(&id, notes).await }
+            })
             .with_description(tools::reject::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::reject::INPUT_SCHEMA));
+        }
         app.map_tool("respond_consult", tools::respond_consult::handler)
             .with_description(tools::respond_consult::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::respond_consult::INPUT_SCHEMA));

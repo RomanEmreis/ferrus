@@ -7,16 +7,16 @@ use crate::{
     state::{machine::TaskState, store},
 };
 
-use super::tool_err;
+use super::{ensure_lease_owner, tool_err};
 
 pub const DESCRIPTION: &str = "Approve the current submission. Transitions state Reviewing → Complete. \
      Must be called after /review_pending.";
 
-pub async fn handler() -> Result<String, Error> {
-    run().await.map_err(tool_err)
+pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
+    run(agent_id).await.map_err(tool_err)
 }
 
-async fn run() -> Result<String> {
+async fn run(agent_id: &str) -> Result<String> {
     let mut state = store::read_state().await?;
 
     if state.state != TaskState::Reviewing {
@@ -25,6 +25,7 @@ async fn run() -> Result<String> {
             state.state
         );
     }
+    ensure_lease_owner(&state, agent_id)?;
 
     specs::complete_task_milestone_and_advance(&mut state).await?;
     state.approve()?;
