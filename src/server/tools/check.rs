@@ -13,7 +13,7 @@ use crate::{
 
 use super::{
     check_gate::{self, CheckGateResult},
-    tool_err,
+    ensure_lease_owner, tool_err,
 };
 
 pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, etc.) against the current \
@@ -23,10 +23,14 @@ pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, et
      limit is exhausted).";
 
 pub async fn handler() -> Result<String, Error> {
-    run().await.map_err(tool_err)
+    run(None).await.map_err(tool_err)
 }
 
-async fn run() -> Result<String> {
+pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
+    run(Some(agent_id)).await.map_err(tool_err)
+}
+
+async fn run(agent_id: Option<&str>) -> Result<String> {
     let config = Config::load().await?;
     let mut state = store::read_state().await?;
 
@@ -36,6 +40,9 @@ async fn run() -> Result<String> {
             "Cannot run checks from state {other:?}. \
              Checks are only valid in Executing or Addressing state."
         ),
+    }
+    if let Some(agent_id) = agent_id {
+        ensure_lease_owner(&state, agent_id)?;
     }
 
     if config.checks.commands.is_empty() {

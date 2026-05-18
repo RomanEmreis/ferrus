@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     check_gate::{self, CheckGateResult},
-    tool_err,
+    ensure_lease_owner, tool_err,
 };
 
 pub const DESCRIPTION: &str = "\
@@ -41,11 +41,11 @@ pub const INPUT_SCHEMA: &str = r#"{
     "required": ["content"]
 }"#;
 
-pub async fn handler(content: String) -> Result<String, Error> {
-    run(content).await.map_err(tool_err)
+pub async fn handler_for_agent(agent_id: &str, content: String) -> Result<String, Error> {
+    run(Some(agent_id), content).await.map_err(tool_err)
 }
 
-async fn run(content: String) -> Result<String> {
+async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     let config = Config::load().await?;
     let mut state = store::read_state().await?;
 
@@ -54,6 +54,9 @@ async fn run(content: String) -> Result<String> {
             "Cannot submit from state {:?}. Submit is only valid from Executing or Addressing after the implementation is ready.",
             state.state
         );
+    }
+    if let Some(agent_id) = agent_id {
+        ensure_lease_owner(&state, agent_id)?;
     }
 
     if config.checks.commands.is_empty() {

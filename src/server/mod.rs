@@ -74,14 +74,26 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
             })
             .with_description(tools::wait_for_task::DESCRIPTION);
         }
-        app.map_tool("check", tools::check::handler)
+        {
+            let id = agent_id.clone();
+            app.map_tool("check", move || {
+                let id = id.clone();
+                async move { tools::check::handler_for_agent(&id).await }
+            })
             .with_description(tools::check::DESCRIPTION);
+        }
         app.map_tool("consult", tools::consult::handler)
             .with_description(tools::consult::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::consult::INPUT_SCHEMA));
-        app.map_tool("submit", tools::submit::handler)
+        {
+            let id = agent_id.clone();
+            app.map_tool("submit", move |content| {
+                let id = id.clone();
+                async move { tools::submit::handler_for_agent(&id, content).await }
+            })
             .with_description(tools::submit::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::submit::INPUT_SCHEMA));
+        }
         app.map_tool("wait_for_consult", tools::wait_for_consult::handler)
             .with_description(tools::wait_for_consult::DESCRIPTION);
         app.map_tool("wait_for_answer", tools::wait_for_answer::handler)

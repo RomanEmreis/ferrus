@@ -20,10 +20,58 @@ pub mod wait_for_task;
 
 use neva::prelude::*;
 
+use crate::state::machine::StateData;
+
 /// Convert an [`anyhow::Error`] into a neva tool error.
 pub(super) fn tool_err(e: anyhow::Error) -> Error {
     Error::new(
         ErrorCode::InternalError,
         std::io::Error::other(e.to_string()),
     )
+}
+
+pub(super) fn ensure_lease_owner(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
+    if state.claimed_by.as_deref() != Some(agent_id) {
+        let owner = state.claimed_by.as_deref().unwrap_or("none");
+        anyhow::bail!("Cannot modify task: lease is held by {owner}, not {agent_id}");
+    }
+    if state.lease_expired() {
+        anyhow::bail!(
+            "Cannot modify task: lease for {agent_id} has expired. Call wait_for_task again to reclaim work."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn lease_owner_check_accepts_current_unexpired_owner() {
+        let mut state = StateData::default();
+        state.claimed_by = Some("executor:codex:1".to_string());
+        state.lease_until = Some(Utc::now() + chrono::Duration::seconds(60));
+
+        ensure_lease_owner(&state, "executor:codex:1").unwrap();
+    }
+
+    #[test]
+    fn lease_owner_check_rejects_other_agent_and_expired_lease() {
+        let mut state = StateData::default();
+        state.claimed_by = Some("executor:codex:1".to_string());
+        state.lease_until = Some(Utc::now() + chrono::Duration::seconds(60));
+
+        let err = ensure_lease_owner(&state, "executor:codex:2")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("lease is held by executor:codex:1"));
+
+        state.lease_until = Some(Utc::now() - chrono::Duration::seconds(1));
+        let err = ensure_lease_owner(&state, "executor:codex:1")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("has expired"));
+    }
 }
