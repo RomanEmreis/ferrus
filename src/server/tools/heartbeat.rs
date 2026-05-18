@@ -12,22 +12,12 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str = "Renew the lease for the calling agent. Validates that the agent holds the current lease, \
+pub const DESCRIPTION: &str = "Renew the lease for the calling agent. Validates that the server-scoped agent identity holds the current lease, \
      then extends lease_until by ttl_secs and updates last_heartbeat. \
      Returns a JSON object: {\"status\":\"renewed\", \"claimed_by\":\"...\", \"lease_until\":\"...\"} \
      on success, or {\"status\":\"error\", \"code\":\"...\", \"message\":\"...\"} on failure. \
      Error codes: not_claimed (no active lease), claimed_by_other (different agent holds lease), \
      expired (your lease timed out before renewal), invalid_state (state cannot be leased).";
-
-pub const INPUT_SCHEMA: &str = r#"{
-    "properties": {
-        "agent_id": {
-            "type": "string",
-            "description": "The caller's agent identifier, e.g. \"executor:codex:1\""
-        }
-    },
-    "required": ["agent_id"]
-}"#;
 
 const LEASABLE_STATES: &[TaskState] = &[
     TaskState::Executing,
@@ -36,8 +26,8 @@ const LEASABLE_STATES: &[TaskState] = &[
     TaskState::Reviewing,
 ];
 
-pub async fn handler(agent_id: String) -> Result<String, Error> {
-    run(&agent_id).await.map_err(tool_err)
+pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
+    run(agent_id).await.map_err(tool_err)
 }
 
 async fn run(agent_id: &str) -> Result<String> {

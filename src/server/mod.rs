@@ -130,9 +130,14 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         .with_description(tools::status::DESCRIPTION);
     app.map_tool("reset", tools::reset::handler)
         .with_description(tools::reset::DESCRIPTION);
-    app.map_tool("heartbeat", tools::heartbeat::handler)
-        .with_description(tools::heartbeat::DESCRIPTION)
-        .with_input_schema(|_| ToolSchema::from_json_str(tools::heartbeat::INPUT_SCHEMA));
+    {
+        let id = agent_id.clone();
+        app.map_tool("heartbeat", move || {
+            let id = id.clone();
+            async move { tools::heartbeat::handler_for_agent(&id).await }
+        })
+        .with_description(tools::heartbeat::DESCRIPTION);
+    }
 
     app.run().await;
     Ok(())
