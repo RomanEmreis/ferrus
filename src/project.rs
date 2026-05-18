@@ -255,7 +255,10 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
         .await
         .context("Failed to create .ferrus/runs")?;
     copy_legacy_artifacts().await?;
-    if let Ok(state) = crate::state::store::read_state().await {
+    if let Ok(mut state) = crate::state::store::read_state().await {
+        if populate_legacy_active_artifacts(&mut state) {
+            crate::state::store::write_state(&state).await?;
+        }
         record_current_task_status_best_effort(task_status_for_state(&state.state)).await;
     }
     Ok(registration)
@@ -1668,6 +1671,18 @@ async fn copy_legacy_artifacts() -> Result<()> {
     Ok(())
 }
 
+fn populate_legacy_active_artifacts(state: &mut crate::state::machine::StateData) -> bool {
+    if state.state == TaskState::Idle || state.active_task_id.is_some() {
+        return false;
+    }
+    state.set_active_task_artifacts(
+        "t-001".to_string(),
+        ".ferrus/tasks/t-001.md".to_string(),
+        ".ferrus/runs/t-001".to_string(),
+    );
+    true
+}
+
 async fn copy_if_nonempty(from: &str, to: &str) -> Result<()> {
     if Path::new(to).exists() {
         return Ok(());
@@ -1870,6 +1885,50 @@ mod tests {
 
     fn teardown(previous: PathBuf) {
         std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn legacy_non_idle_state_gets_default_active_artifacts_for_migration() {
+        let mut state = StateData {
+            state: TaskState::Executing,
+            ..StateData::default()
+        };
+
+        assert!(populate_legacy_active_artifacts(&mut state));
+        assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
+        assert_eq!(
+            state.active_task_path.as_deref(),
+            Some(".ferrus/tasks/t-001.md")
+        );
+        assert_eq!(state.active_run_dir.as_deref(), Some(".ferrus/runs/t-001"));
+    }
+
+    #[test]
+    fn legacy_artifact_population_leaves_idle_and_existing_artifacts_unchanged() {
+        let mut idle = StateData::default();
+        assert!(!populate_legacy_active_artifacts(&mut idle));
+        assert!(idle.active_task_id.is_none());
+
+        let mut migrated = StateData {
+            state: TaskState::Addressing,
+            ..StateData::default()
+        };
+        migrated.set_active_task_artifacts(
+            "t-009".to_string(),
+            ".ferrus/tasks/t-009.md".to_string(),
+            ".ferrus/runs/t-009".to_string(),
+        );
+
+        assert!(!populate_legacy_active_artifacts(&mut migrated));
+        assert_eq!(migrated.active_task_id.as_deref(), Some("t-009"));
+        assert_eq!(
+            migrated.active_task_path.as_deref(),
+            Some(".ferrus/tasks/t-009.md")
+        );
+        assert_eq!(
+            migrated.active_run_dir.as_deref(),
+            Some(".ferrus/runs/t-009")
+        );
     }
 
     #[tokio::test]
