@@ -461,7 +461,7 @@ async fn spawn_headless(
     }
 
     let pid = child.id();
-    let db_run_id = crate::project::record_run_started_best_effort(role, agent_type, pid).await;
+    let db_run_id = crate::project::record_run_started_best_effort(role, name, pid).await;
     let platform_guard = match platform::attach_headless_process(pid) {
         Ok(guard) => Some(guard),
         Err(err) => {

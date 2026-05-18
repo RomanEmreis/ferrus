@@ -1143,6 +1143,68 @@ pub async fn record_run_started_best_effort(role: &str, agent: &str, pid: u32) -
     }
 }
 
+pub async fn attach_running_run_to_task(
+    agent_id: &str,
+    task_id: &str,
+    task_path: &str,
+) -> Result<Option<String>> {
+    let database_path = current_database_path().await?;
+    let agent_id = agent_id.to_string();
+    let task_id = task_id.to_string();
+    let task_path = task_path.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+        let connection = open_runtime_database(&database_path)?;
+        ensure_task_exists(&connection, &task_id, &task_path)?;
+        let run_id: Option<String> = connection
+            .query_row(
+                r#"
+                SELECT id
+                FROM runs
+                WHERE agent = ?1 AND status IN ('running', 'checking', 'reviewing')
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                "#,
+                [&agent_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(run_id) = run_id else {
+            return Ok(None);
+        };
+
+        connection.execute(
+            "UPDATE runs SET task_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![task_id, timestamp(), run_id],
+        )?;
+        insert_event(
+            &connection,
+            Some(&run_id),
+            "run_task_attached",
+            &serde_json::json!({
+                "agent": agent_id,
+                "task_id": task_id,
+            }),
+        )?;
+        Ok(Some(run_id))
+    })
+    .await?
+}
+
+pub async fn attach_running_run_to_task_best_effort(
+    agent_id: &str,
+    task_id: &str,
+    task_path: &str,
+) {
+    if let Err(err) = attach_running_run_to_task(agent_id, task_id, task_path).await {
+        warn!(
+            error = ?err,
+            agent_id,
+            task_id,
+            "failed to attach running run to task in ferrus.db"
+        );
+    }
+}
+
 pub async fn record_run_finished(run_id: &str, exit_code: i32) -> Result<()> {
     let database_path = current_database_path().await?;
     let run_id = run_id.to_string();
@@ -2342,9 +2404,17 @@ mod tests {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
 
-        let run = record_run_started("executor", "codex", std::process::id())
+        let run = record_run_started("executor", "executor:codex:1", std::process::id())
             .await
             .unwrap();
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        let attached =
+            attach_running_run_to_task("executor:codex:1", "t-002", ".ferrus/tasks/t-002.md")
+                .await
+                .unwrap();
+        assert_eq!(attached.as_deref(), Some(run.id.as_str()));
         record_runtime_event(
             Some(run.id.clone()),
             "test_event",
@@ -2357,9 +2427,9 @@ mod tests {
         let runs = list_runs(10).await.unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].id, run.id);
-        assert_eq!(runs[0].task_id, "t-001");
+        assert_eq!(runs[0].task_id, "t-002");
         assert_eq!(runs[0].role, "executor");
-        assert_eq!(runs[0].agent, "codex");
+        assert_eq!(runs[0].agent, "executor:codex:1");
         assert_eq!(runs[0].status, "completed");
         assert!(runs[0].pid.is_none());
         assert!(!runs[0].started_at.is_empty());
@@ -2367,6 +2437,11 @@ mod tests {
 
         let events = list_events(10, Some(run.id.clone())).await.unwrap();
         assert!(events.iter().any(|event| event.event_type == "run_started"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "run_task_attached")
+        );
         assert!(events.iter().any(|event| event.event_type == "test_event"));
         assert!(
             events

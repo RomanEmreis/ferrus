@@ -94,6 +94,12 @@ async fn run(agent_id: &str) -> Result<String> {
         if claimed {
             // Re-read state to get the stamped lease_until.
             let state = store::read_state().await?;
+            if let (Some(task_id), Some(task_path)) = (
+                state.active_task_id.as_deref(),
+                state.active_task_path.as_deref(),
+            ) {
+                project::attach_running_run_to_task_best_effort(agent_id, task_id, task_path).await;
+            }
             let task = if let Some(task_path) = state.active_task_path.as_deref() {
                 store::read_task_at(task_path).await?
             } else {
