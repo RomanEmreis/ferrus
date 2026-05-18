@@ -981,10 +981,10 @@ impl HqContext {
 
         store::clear_task_mirror().await?;
         store::clear_submission_mirror().await?;
-        store::clear_answer().await?;
-        store::clear_consult_request().await?;
-        store::clear_consult_response().await?;
-        store::clear_question().await?;
+        store::clear_answer_mirror().await?;
+        store::clear_consult_request_mirror().await?;
+        store::clear_consult_response_mirror().await?;
+        store::clear_question_mirror().await?;
         store::clear_review_mirror().await?;
 
         state.force_reset();
@@ -1717,6 +1717,14 @@ mod tests {
         store::write_submission_for_state(&state, "submission body")
             .await
             .unwrap();
+        store::write_question("question body").await.unwrap();
+        store::write_answer("answer body").await.unwrap();
+        store::write_consult_request("consult request body")
+            .await
+            .unwrap();
+        store::write_consult_response("consult response body")
+            .await
+            .unwrap();
         crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "complete")
             .await
             .unwrap();
@@ -1748,6 +1756,30 @@ mod tests {
                 .await
                 .unwrap(),
             "submission body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/QUESTION.md")
+                .await
+                .unwrap(),
+            "question body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/ANSWER.md")
+                .await
+                .unwrap(),
+            "answer body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/CONSULT_REQUEST.md")
+                .await
+                .unwrap(),
+            "consult request body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/CONSULT_RESPONSE.md")
+                .await
+                .unwrap(),
+            "consult response body"
         );
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),

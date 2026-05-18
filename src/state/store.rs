@@ -178,43 +178,95 @@ pub async fn clear_submission_mirror() -> Result<()> {
 }
 
 pub async fn read_question() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "QUESTION.md")
+        && let Ok(contents) = read_path(&path).await
+    {
+        return Ok(contents);
+    }
     read_file("QUESTION.md").await
 }
 
 pub async fn write_question(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "QUESTION.md")
+    {
+        write_path(&path, content).await?;
+    }
     write_file("QUESTION.md", content).await
 }
 
 pub async fn read_answer() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "ANSWER.md")
+        && let Ok(contents) = read_path(&path).await
+    {
+        return Ok(contents);
+    }
     read_file("ANSWER.md").await
 }
 
 pub async fn write_answer(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "ANSWER.md")
+    {
+        write_path(&path, content).await?;
+    }
     write_file("ANSWER.md", content).await
 }
 
 pub async fn read_consult_request() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "CONSULT_REQUEST.md")
+        && let Ok(contents) = read_path(&path).await
+    {
+        return Ok(contents);
+    }
     read_file("CONSULT_REQUEST.md").await
 }
 
 pub async fn write_consult_request(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "CONSULT_REQUEST.md")
+    {
+        write_path(&path, content).await?;
+    }
     write_file("CONSULT_REQUEST.md", content).await
 }
 
 pub async fn clear_consult_request() -> Result<()> {
+    write_consult_request("").await
+}
+
+pub async fn clear_consult_request_mirror() -> Result<()> {
     write_file("CONSULT_REQUEST.md", "").await
 }
 
 pub async fn read_consult_response() -> Result<String> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "CONSULT_RESPONSE.md")
+        && let Ok(contents) = read_path(&path).await
+    {
+        return Ok(contents);
+    }
     read_file("CONSULT_RESPONSE.md").await
 }
 
 #[allow(dead_code)]
 pub async fn write_consult_response(content: &str) -> Result<()> {
+    if let Ok(state) = read_state().await
+        && let Some(path) = active_run_file(&state, "CONSULT_RESPONSE.md")
+    {
+        write_path(&path, content).await?;
+    }
     write_file("CONSULT_RESPONSE.md", content).await
 }
 
 pub async fn clear_consult_response() -> Result<()> {
+    write_consult_response("").await
+}
+
+pub async fn clear_consult_response_mirror() -> Result<()> {
     write_file("CONSULT_RESPONSE.md", "").await
 }
 
@@ -231,10 +283,18 @@ pub async fn clear_last_spec_path() -> Result<()> {
 }
 
 pub async fn clear_question() -> Result<()> {
+    write_question("").await
+}
+
+pub async fn clear_question_mirror() -> Result<()> {
     write_file("QUESTION.md", "").await
 }
 
 pub async fn clear_answer() -> Result<()> {
+    write_answer("").await
+}
+
+pub async fn clear_answer_mirror() -> Result<()> {
     write_file("ANSWER.md", "").await
 }
 
@@ -312,10 +372,26 @@ mod tests {
         write_task_for_state(&state, "task body").await.unwrap();
         write_review("review body").await.unwrap();
         write_submission("submission body").await.unwrap();
+        write_question("question body").await.unwrap();
+        write_answer("answer body").await.unwrap();
+        write_consult_request("consult request body").await.unwrap();
+        write_consult_response("consult response body")
+            .await
+            .unwrap();
 
         assert_eq!(read_task().await.unwrap(), "task body");
         assert_eq!(read_review().await.unwrap(), "review body");
         assert_eq!(read_submission().await.unwrap(), "submission body");
+        assert_eq!(read_question().await.unwrap(), "question body");
+        assert_eq!(read_answer().await.unwrap(), "answer body");
+        assert_eq!(
+            read_consult_request().await.unwrap(),
+            "consult request body"
+        );
+        assert_eq!(
+            read_consult_response().await.unwrap(),
+            "consult response body"
+        );
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),
             "task body"
@@ -337,6 +413,30 @@ mod tests {
                 .await
                 .unwrap(),
             "submission body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/QUESTION.md")
+                .await
+                .unwrap(),
+            "question body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/ANSWER.md")
+                .await
+                .unwrap(),
+            "answer body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/CONSULT_REQUEST.md")
+                .await
+                .unwrap(),
+            "consult request body"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/CONSULT_RESPONSE.md")
+                .await
+                .unwrap(),
+            "consult response body"
         );
 
         teardown(previous);

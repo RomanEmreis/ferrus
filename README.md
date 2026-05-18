@@ -194,7 +194,7 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `create_spec`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `supervisor` | `create_task`, `create_spec`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `wait_for_answer`, `answer`, `status`, `reset`, `heartbeat` |
 | `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
@@ -298,15 +298,15 @@ The current release still uses `.ferrus/STATE.json` as the compatibility state-m
 | `TASK.md` | Compatibility mirror of the active task description |
 | `REVIEW.md` | Compatibility mirror of active review notes |
 | `SUBMISSION.md` | Compatibility mirror of active submission notes |
-| `QUESTION.md` | Pending human question (written by `/ask_human`) |
-| `ANSWER.md` | Human answer |
+| `QUESTION.md` | Compatibility mirror of the pending human question |
+| `ANSWER.md` | Compatibility mirror of the human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
-| `CONSULT_REQUEST.md` | Pending supervisor consultation request |
-| `CONSULT_RESPONSE.md` | Supervisor consultation response |
+| `CONSULT_REQUEST.md` | Compatibility mirror of the pending supervisor consultation request |
+| `CONSULT_RESPONSE.md` | Compatibility mirror of the supervisor consultation response |
 | `tasks/` | Task descriptions such as `tasks/t-001.md`; active task files are cleared on reset |
-| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md` and `SUBMISSION.md`; active review/submission files are cleared on reset |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and consultation files; active run files are cleared on reset |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.

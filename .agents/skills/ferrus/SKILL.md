@@ -165,11 +165,12 @@ directory = "docs/specs" # where /create_spec writes approved specs
 | `TASK.md` | Task description |
 | `REVIEW.md` | Rejection notes |
 | `SUBMISSION.md` | Submission notes |
-| `QUESTION.md` | Pending human question |
-| `ANSWER.md` | Human answer |
+| `QUESTION.md` | Compatibility mirror of the pending human question |
+| `ANSWER.md` | Compatibility mirror of the human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
-| `CONSULT_REQUEST.md` | Pending supervisor consultation request |
-| `CONSULT_RESPONSE.md` | Supervisor consultation response |
+| `CONSULT_REQUEST.md` | Compatibility mirror of the pending supervisor consultation request |
+| `CONSULT_RESPONSE.md` | Compatibility mirror of the supervisor consultation response |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and consultation files |
 | `logs/check_<n>_<ts>.txt` | Full check output |
