@@ -803,13 +803,29 @@ pub async fn claim_task(
 
 #[allow(dead_code)]
 pub async fn claim_next_ready_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
+    claim_next_task_with_statuses(agent_id, ttl_secs, &["executing", "addressing"]).await
+}
+
+pub async fn claim_next_review_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
+    claim_next_task_with_statuses(agent_id, ttl_secs, &["reviewing"]).await
+}
+
+async fn claim_next_task_with_statuses(
+    agent_id: &str,
+    ttl_secs: u64,
+    statuses: &[&str],
+) -> Result<ReadyTaskClaim> {
     let database_path = current_database_path().await?;
     let agent_id = agent_id.to_string();
+    let statuses = statuses
+        .iter()
+        .map(|status| status.to_string())
+        .collect::<Vec<_>>();
     tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
         let mut connection = open_runtime_database(&database_path)?;
         let transaction = connection.transaction()?;
         let now = Utc::now();
-        let candidates = ready_task_candidates(&transaction)?;
+        let candidates = task_candidates_by_status(&transaction, &statuses)?;
 
         for candidate in &candidates {
             let lease_until = parse_lease_until(candidate.lease_until.as_deref());
@@ -1758,16 +1774,26 @@ struct ReadyTaskCandidate {
     lease_until: Option<String>,
 }
 
-fn ready_task_candidates(transaction: &Transaction<'_>) -> Result<Vec<ReadyTaskCandidate>> {
-    let mut statement = transaction.prepare(
+fn task_candidates_by_status(
+    transaction: &Transaction<'_>,
+    statuses: &[String],
+) -> Result<Vec<ReadyTaskCandidate>> {
+    if statuses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", statuses.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         r#"
         SELECT id, path, status, claimed_by, lease_until
         FROM tasks
-        WHERE status IN ('executing', 'addressing')
+        WHERE status IN ({placeholders})
         ORDER BY id
-        "#,
-    )?;
-    let rows = statement.query_map([], |row| {
+        "#
+    );
+    let mut statement = transaction.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(statuses.iter()), |row| {
         Ok(ReadyTaskCandidate {
             id: row.get(0)?,
             path: row.get(1)?,
@@ -2335,6 +2361,40 @@ mod tests {
         let tasks = list_tasks().await.unwrap();
         let reviewing = tasks.iter().find(|task| task.id == "t-003").unwrap();
         assert_eq!(reviewing.claimed_by, None);
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_claim_next_review_task_claims_reviewing_rows_only() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
+            .await
+            .unwrap();
+
+        let claim = claim_next_review_task("supervisor:codex:1", 60)
+            .await
+            .unwrap();
+
+        match claim {
+            ReadyTaskClaim::Claimed(task) => {
+                assert_eq!(task.task_id, "t-003");
+                assert_eq!(task.task_path, ".ferrus/tasks/t-003.md");
+                assert_eq!(task.status, "reviewing");
+                assert_eq!(task.claimed_by, "supervisor:codex:1");
+            }
+            _ => panic!("expected reviewing task to be claimed"),
+        }
+
+        let tasks = list_tasks().await.unwrap();
+        let executing = tasks.iter().find(|task| task.id == "t-002").unwrap();
+        let reviewing = tasks.iter().find(|task| task.id == "t-003").unwrap();
+        assert_eq!(executing.claimed_by, None);
+        assert_eq!(reviewing.claimed_by.as_deref(), Some("supervisor:codex:1"));
 
         teardown(previous);
     }

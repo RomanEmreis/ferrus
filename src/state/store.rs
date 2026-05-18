@@ -112,6 +112,10 @@ pub async fn read_review_for_run_dir(run_dir: &str) -> Result<String> {
     read_path_or_empty(&Path::new(run_dir).join("REVIEW.md")).await
 }
 
+pub async fn write_review_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "REVIEW.md"), content).await
+}
+
 pub async fn write_review(content: &str) -> Result<()> {
     if let Ok(state) = read_state().await
         && let Some(path) = active_run_file(&state, "REVIEW.md")
@@ -152,6 +156,10 @@ pub async fn write_submission_for_state(state: &StateData, content: &str) -> Res
         write_path(&path, content).await?;
     }
     write_file("SUBMISSION.md", content).await
+}
+
+pub async fn read_submission_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path_or_empty(&run_file(run_dir, "SUBMISSION.md")).await
 }
 
 pub async fn write_submission_for_run_dir(run_dir: &str, content: &str) -> Result<()> {

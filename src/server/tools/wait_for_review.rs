@@ -8,6 +8,7 @@ use tracing::info;
 
 use crate::{
     config::Config,
+    project::{self, ReadyTaskClaim, TaskLease},
     state::{machine::TaskState, store},
 };
 
@@ -33,7 +34,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let start = Instant::now();
 
     loop {
-        let (claimed, _) = {
+        let claim = {
             let lock_file = store::open_lock_file()?;
             let lock_file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
                 lock_file.lock_exclusive().map_err(anyhow::Error::from)?;
@@ -42,31 +43,38 @@ async fn run(agent_id: &str) -> Result<String> {
             .await??;
 
             let mut state = store::read_state().await?;
-
-            let claimable = state.state == TaskState::Reviewing;
-            let claimed = if claimable && !state.is_claimed() {
-                store::claim_state(agent_id, ttl_secs, &mut state).await?;
-                true
-            } else {
-                claimable && state.is_claimed_by(agent_id)
-            };
+            let claim = claim_review_task(agent_id, ttl_secs, &mut state).await?;
 
             drop(lock_file);
-            (claimed, state)
+            claim
         };
 
-        if claimed {
-            let task = store::read_task().await?;
-            let submission = store::read_submission().await?;
-            let review = store::read_review().await?;
+        if let Some(claim) = claim {
+            project::attach_running_run_to_task_best_effort(
+                agent_id,
+                &claim.task_id,
+                &claim.task_path,
+            )
+            .await;
+            let run_dir = run_dir_for_task(&claim.task_id);
+            let task = store::read_task_at(&claim.task_path).await?;
+            let submission = store::read_submission_for_run_dir(&run_dir).await?;
+            let review = store::read_review_for_run_dir(&run_dir).await?;
             let state = store::read_state().await?;
 
-            info!(agent_id, "Supervisor claimed review");
+            info!(
+                agent_id,
+                task_id = claim.task_id,
+                "Supervisor claimed review"
+            );
             let response = json!({
                 "status": "claimed",
-                "claimed_by": state.claimed_by,
-                "lease_until": state.lease_until,
-                "state": format!("{:?}", state.state),
+                "task_id": claim.task_id,
+                "task_path": claim.task_path,
+                "run_dir": run_dir,
+                "claimed_by": claim.claimed_by,
+                "lease_until": claim.lease_until,
+                "state": "Reviewing",
                 "task": task,
                 "submission": submission,
                 "review": review,
@@ -87,5 +95,146 @@ async fn run(agent_id: &str) -> Result<String> {
         }
 
         sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn claim_review_task(
+    agent_id: &str,
+    ttl_secs: u64,
+    state: &mut crate::state::machine::StateData,
+) -> Result<Option<TaskLease>> {
+    match project::claim_next_review_task(agent_id, ttl_secs).await {
+        Ok(ReadyTaskClaim::Claimed(task)) | Ok(ReadyTaskClaim::AlreadyClaimed(task)) => {
+            mirror_state_lease_if_current_task(state, &task).await?;
+            Ok(Some(task))
+        }
+        Ok(ReadyTaskClaim::NoAvailable) => Ok(None),
+        Err(err) => {
+            tracing::warn!(
+                error = ?err,
+                "failed to claim next review task in ferrus.db; falling back to STATE.json lease"
+            );
+            claim_state_fallback(agent_id, ttl_secs, state).await
+        }
+    }
+}
+
+async fn mirror_state_lease_if_current_task(
+    state: &mut crate::state::machine::StateData,
+    task: &TaskLease,
+) -> Result<()> {
+    if state.active_task_id.as_deref() == Some(task.task_id.as_str()) {
+        state.claimed_by = Some(task.claimed_by.clone());
+        state.lease_until = Some(task.lease_until);
+        state.last_heartbeat = Some(chrono::Utc::now());
+        store::write_state(state).await?;
+    }
+    Ok(())
+}
+
+async fn claim_state_fallback(
+    agent_id: &str,
+    ttl_secs: u64,
+    state: &mut crate::state::machine::StateData,
+) -> Result<Option<TaskLease>> {
+    if state.state != TaskState::Reviewing {
+        return Ok(None);
+    }
+
+    if !state.is_claimed() {
+        store::claim_state(agent_id, ttl_secs, state).await?;
+    } else if !state.is_claimed_by(agent_id) {
+        return Ok(None);
+    }
+
+    let task_id = state
+        .active_task_id
+        .clone()
+        .unwrap_or_else(|| "current".to_string());
+    let task_path = state
+        .active_task_path
+        .clone()
+        .unwrap_or_else(|| ".ferrus/TASK.md".to_string());
+    Ok(Some(TaskLease {
+        task_id,
+        task_path,
+        status: "reviewing".to_string(),
+        claimed_by: agent_id.to_string(),
+        lease_until: state
+            .lease_until
+            .ok_or_else(|| anyhow::anyhow!("claimed STATE.json review is missing lease_until"))?,
+    }))
+}
+
+fn run_dir_for_task(task_id: &str) -> String {
+    format!(".ferrus/runs/{task_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::machine::StateData;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/runs/t-003")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 1\n\n[lease]\nttl_secs = 60\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
+        store::write_state(&StateData::default()).await.unwrap();
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_review_claims_next_reviewing_database_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        tokio::fs::write(".ferrus/tasks/t-003.md", "review task")
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/runs/t-003/SUBMISSION.md", "submission")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
+            .await
+            .unwrap();
+
+        let response: serde_json::Value =
+            serde_json::from_str(&run("supervisor:codex:1").await.unwrap()).unwrap();
+
+        assert_eq!(response["status"], "claimed");
+        assert_eq!(response["task_id"], "t-003");
+        assert_eq!(response["task"], "review task");
+        assert_eq!(response["submission"], "submission");
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-003").unwrap();
+        assert_eq!(task.claimed_by.as_deref(), Some("supervisor:codex:1"));
+
+        teardown(previous);
     }
 }
