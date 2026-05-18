@@ -1693,6 +1693,9 @@ mod tests {
         let previous = std::env::current_dir().unwrap();
         std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
+        tokio::fs::write(".ferrus/TASK.md", "task template")
+            .await
+            .unwrap();
 
         let data_dir = dir.path().join("runtime");
         tokio::fs::create_dir_all(&data_dir).await.unwrap();
@@ -1791,7 +1794,7 @@ mod tests {
         );
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),
-            ""
+            "task template"
         );
 
         let tasks = crate::project::list_tasks().await.unwrap();

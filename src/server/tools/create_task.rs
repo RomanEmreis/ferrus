@@ -10,7 +10,7 @@ use crate::{
 use super::tool_err;
 
 pub const DESCRIPTION: &str = "Create a new task for the Executor. Transitions state Idle → Executing and writes \
-     the task description to TASK.md. Must be called from state Idle.";
+     the task description to .ferrus/tasks/<task-id>.md. Must be called from state Idle.";
 
 pub const INPUT_SCHEMA: &str = r#"{
     "properties": {
@@ -86,9 +86,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_task_writes_numbered_task_artifact_and_legacy_mirror() {
+    async fn create_task_writes_numbered_task_artifact_without_rewriting_template() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
+        tokio::fs::write(".ferrus/TASK.md", "task template")
+            .await
+            .unwrap();
 
         run("Build the thing".to_string()).await.unwrap();
 
@@ -108,7 +111,7 @@ mod tests {
         );
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),
-            "Build the thing"
+            "task template"
         );
 
         teardown(previous);

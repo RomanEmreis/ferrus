@@ -130,6 +130,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
 
     // Resources
     app.add_resource("ferrus://task", "Task");
+    app.add_resource("ferrus://task_template", "Task Template");
     app.add_resource("ferrus://review", "Review Notes");
     app.add_resource("ferrus://submission", "Submission");
     app.add_resource("ferrus://question", "Question");
@@ -139,7 +140,18 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
     app.add_resource("ferrus://consult_request", "Consult Request");
     app.add_resource("ferrus://consult_response", "Consult Response");
     app.add_resource("ferrus://state", "State");
-    app.map_resource("ferrus://{file}", "ferrus-file", resources::read);
+    app.map_resource(
+        "ferrus://task/{task_id}",
+        "ferrus-task",
+        resources::read_task_by_id,
+    );
+    {
+        let id = agent_id.clone();
+        app.map_resource("ferrus://{file}", "ferrus-file", move |file| {
+            let id = id.clone();
+            async move { resources::read_for_agent(Some(id.as_str()), file).await }
+        });
+    }
 
     // Prompts
     app.map_prompt("executor-context", prompts::executor_context)

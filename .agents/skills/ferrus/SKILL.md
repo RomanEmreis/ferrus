@@ -119,7 +119,9 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
 | URI | Contents |
 |---|---|
-| `ferrus://task` | Current task description (`TASK.md`) |
+| `ferrus://task` | Current task description (compatibility/current context) |
+| `ferrus://task/<task-id>` | Numbered task artifact, for example `.ferrus/tasks/t-001.md` |
+| `ferrus://task_template` | Task drafting template (`TASK.md`) |
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
@@ -162,7 +164,7 @@ directory = "docs/specs" # where /create_spec writes approved specs
 |---|---|
 | `STATE.json` | State, counters, schema version, timestamp, PID |
 | `STATE.lock` | Advisory lock file for atomic claiming |
-| `TASK.md` | Task description |
+| `TASK.md` | Task drafting template |
 | `REVIEW.md` | Rejection notes |
 | `SUBMISSION.md` | Submission notes |
 | `QUESTION.md` | Compatibility mirror of the pending human question |

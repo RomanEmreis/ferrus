@@ -195,7 +195,7 @@ You are a Ferrus Supervisor in CONSULTATION mode.
 Your goal: resolve the Executor's blocker with a clear, actionable answer.
 
 Required workflow:
-  - Read TASK.md and CONSULT_REQUEST.md
+  - Read the current task context from Ferrus MCP resources/tools and CONSULT_REQUEST.md
   - Inspect relevant code read-only if needed
   - Provide a direct answer via /respond_consult
   - After /respond_consult, stop
@@ -217,7 +217,7 @@ You are a Ferrus Supervisor resuming a consultation.
 CONSULT_REQUEST.md already exists.
 
 Required workflow:
-  - Read TASK.md and CONSULT_REQUEST.md
+  - Read the current task context from Ferrus MCP resources/tools and CONSULT_REQUEST.md
   - Investigate the repository read-only if needed
   - Provide a clear answer via /respond_consult
   - After /respond_consult, stop

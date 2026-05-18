@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::{
     state::{machine::StateData, store},
-    templates::SPEC_TEMPLATE,
+    templates::{SPEC_TEMPLATE, TASK_TEMPLATE},
 };
 
 const DEFAULT_FERRUS_TOML: &str = r#"[checks]
@@ -347,7 +347,9 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
 | URI | Contents |
 |---|---|
-| `ferrus://task` | Current task description (`TASK.md`) |
+| `ferrus://task` | Current task description (compatibility/current context) |
+| `ferrus://task/<task-id>` | Numbered task artifact, for example `.ferrus/tasks/t-001.md` |
+| `ferrus://task_template` | Task drafting template (`TASK.md`) |
 | `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
 | `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
 | `ferrus://question` | Pending human question (`QUESTION.md`) |
@@ -415,7 +417,7 @@ stale `STATE.json` lease mirrors are cleared.
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
 | `STATE.json` | Compatibility state snapshot, mirrored lease fields, counters, schema version, timestamp, PID, selected spec/milestone IDs |
 | `STATE.lock` | Advisory lock file for atomic claiming |
-| `TASK.md` | Compatibility mirror of the active task description |
+| `TASK.md` | Task drafting template |
 | `REVIEW.md` | Compatibility mirror of active review notes |
 | `SUBMISSION.md` | Compatibility mirror of active submission notes |
 | `QUESTION.md` | Compatibility mirror of the pending human question |
@@ -499,6 +501,14 @@ async fn create_ferrus_dir() -> Result<()> {
         println!("Created .ferrus/SPEC_TEMPLATE.md");
     }
 
+    let task_template_path = dir.join("TASK.md");
+    if !task_template_path.exists() {
+        tokio::fs::write(&task_template_path, TASK_TEMPLATE)
+            .await
+            .context("Failed to write .ferrus/TASK.md")?;
+        println!("Created .ferrus/TASK.md");
+    }
+
     let state_path = dir.join("STATE.json");
     if !state_path.exists() {
         store::write_state(&StateData::default())
@@ -508,7 +518,6 @@ async fn create_ferrus_dir() -> Result<()> {
     }
 
     for filename in [
-        "TASK.md",
         "REVIEW.md",
         "SUBMISSION.md",
         "QUESTION.md",

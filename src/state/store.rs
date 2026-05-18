@@ -68,6 +68,11 @@ pub async fn read_task() -> Result<String> {
     {
         return Ok(contents);
     }
+    // Legacy fallback for projects migrated before numbered task artifacts existed.
+    read_file("TASK.md").await
+}
+
+pub async fn read_task_template() -> Result<String> {
     read_file("TASK.md").await
 }
 
@@ -79,15 +84,18 @@ pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()
     if let Some(path) = state.active_task_path.as_deref() {
         write_path(Path::new(path), content).await?;
     }
-    write_file("TASK.md", content).await
+    Ok(())
 }
 
 pub async fn clear_task_for_state(state: &StateData) -> Result<()> {
-    write_task_for_state(state, "").await
+    if let Some(path) = state.active_task_path.as_deref() {
+        write_path(Path::new(path), "").await?;
+    }
+    Ok(())
 }
 
 pub async fn clear_task_mirror() -> Result<()> {
-    write_file("TASK.md", "").await
+    Ok(())
 }
 
 pub async fn read_review() -> Result<String> {
@@ -358,9 +366,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_task_artifacts_are_written_with_legacy_mirror() {
+    async fn active_task_artifacts_are_written_without_rewriting_task_template() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
+        write_file("TASK.md", "task template").await.unwrap();
         let mut state = StateData::default();
         state.set_active_task_artifacts(
             "t-001".to_string(),
@@ -394,7 +403,7 @@ mod tests {
         );
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/TASK.md").await.unwrap(),
-            "task body"
+            "task template"
         );
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/tasks/t-001.md")

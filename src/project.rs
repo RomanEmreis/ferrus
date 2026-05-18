@@ -118,6 +118,16 @@ pub struct TaskRecord {
     pub last_heartbeat: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct RuntimeTaskContext {
+    pub task_id: String,
+    pub task_path: String,
+    pub run_dir: String,
+    pub status: String,
+    pub run_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TaskClaim {
     Claimed {
@@ -996,6 +1006,73 @@ pub async fn renew_claimed_task_lease(agent_id: &str, ttl_secs: u64) -> Result<L
     .await?
 }
 
+pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<RuntimeTaskContext>> {
+    let database_path = current_database_path().await?;
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<RuntimeTaskContext>> {
+        let connection = open_runtime_database(&database_path)?;
+        if let Some((task_id, task_path, status)) = connection
+            .query_row(
+                r#"
+                SELECT id, path, status
+                FROM tasks
+                WHERE claimed_by = ?1
+                ORDER BY
+                    CASE WHEN lease_until IS NULL THEN 1 ELSE 0 END,
+                    lease_until DESC,
+                    id
+                LIMIT 1
+                "#,
+                [&agent_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        {
+            let run_id = latest_run_id_for_agent_task(&connection, &agent_id, &task_id)?;
+            return Ok(Some(RuntimeTaskContext {
+                run_dir: run_dir_for_task(&task_id),
+                task_id,
+                task_path,
+                status,
+                run_id,
+            }));
+        }
+
+        let context = connection
+            .query_row(
+                r#"
+                SELECT runs.id, tasks.id, tasks.path, tasks.status
+                FROM runs
+                JOIN tasks ON tasks.id = runs.task_id
+                WHERE runs.agent = ?1 AND runs.status IN ('running', 'checking', 'reviewing')
+                ORDER BY runs.updated_at DESC, runs.started_at DESC, runs.id DESC
+                LIMIT 1
+                "#,
+                [&agent_id],
+                |row| {
+                    let run_id = row.get::<_, String>(0)?;
+                    let task_id = row.get::<_, String>(1)?;
+                    Ok(RuntimeTaskContext {
+                        run_dir: run_dir_for_task(&task_id),
+                        task_id,
+                        task_path: row.get(2)?,
+                        status: row.get(3)?,
+                        run_id: Some(run_id),
+                    })
+                },
+            )
+            .optional()?;
+        Ok(context)
+    })
+    .await?
+}
+
 fn renew_task_lease_in_transaction(
     transaction: &Transaction<'_>,
     task_id: &str,
@@ -1030,6 +1107,30 @@ fn renew_task_lease_in_transaction(
         }),
     )?;
     Ok(Some(lease_until))
+}
+
+fn latest_run_id_for_agent_task(
+    connection: &Connection,
+    agent_id: &str,
+    task_id: &str,
+) -> Result<Option<String>> {
+    Ok(connection
+        .query_row(
+            r#"
+            SELECT id
+            FROM runs
+            WHERE agent = ?1 AND task_id = ?2
+            ORDER BY updated_at DESC, started_at DESC, id DESC
+            LIMIT 1
+            "#,
+            params![agent_id, task_id],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn run_dir_for_task(task_id: &str) -> String {
+    format!(".ferrus/runs/{task_id}")
 }
 
 pub async fn record_current_task_status_best_effort(status: &str) {
@@ -2156,6 +2257,32 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(missing, LeaseRenewal::NotClaimed));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn runtime_task_context_resolves_claimed_task_by_agent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
+            .await
+            .unwrap();
+
+        let context = runtime_task_context_for_agent("executor:codex:2")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(context.task_id, "t-002");
+        assert_eq!(context.task_path, ".ferrus/tasks/t-002.md");
+        assert_eq!(context.run_dir, ".ferrus/runs/t-002");
+        assert_eq!(context.status, "executing");
+        assert!(context.run_id.is_none());
 
         teardown(previous);
     }
