@@ -36,6 +36,9 @@ pub struct StateData {
     /// State to restore when `/answer` is called after an `/ask_human` fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_state: Option<TaskState>,
+    /// Agent that asked the pending human question and is allowed to consume the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_human_by: Option<String>,
     /// Agent that currently holds the task lease, e.g. "executor:codex:1".
     /// None when the task is unclaimed or in a terminal state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +98,7 @@ impl Default for StateData {
             updated_at: Utc::now(),
             owner_pid: std::process::id(),
             paused_state: None,
+            awaiting_human_by: None,
             claimed_by: None,
             lease_until: None,
             last_heartbeat: None,
@@ -381,6 +385,7 @@ impl StateData {
             });
         }
         let resumed = self.paused_state.take().unwrap_or(TaskState::Idle);
+        self.awaiting_human_by = None;
         self.state = resumed.clone();
         Ok(resumed)
     }
@@ -761,12 +766,14 @@ mod tests {
         ] {
             let mut s = state_in(TaskState::AwaitingHuman);
             s.paused_state = Some(paused.clone());
+            s.awaiting_human_by = Some("executor:codex:1".to_string());
 
             let resumed = s.answer().unwrap();
 
             assert_eq!(resumed, paused);
             assert_eq!(s.state, paused);
             assert!(s.paused_state.is_none());
+            assert!(s.awaiting_human_by.is_none());
         }
     }
 

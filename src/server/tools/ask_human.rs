@@ -32,6 +32,7 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
     let mut state = store::read_state().await?;
     ensure_can_ask_human(&state, agent_id)?;
     let paused = state.ask_human()?;
+    state.awaiting_human_by = Some(agent_id.to_string());
     store::write_question(&question).await?;
     store::write_state(&state).await?;
 

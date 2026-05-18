@@ -42,7 +42,7 @@ Idle
 
 Any active Executor work state can pause to `Consultation` via `/consult` (executor then calls `/wait_for_consult`
 to block until the Supervisor responds via `/respond_consult`, which records `CONSULT_RESPONSE.md`).
-Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human` (executor then calls `/wait_for_answer`
+Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human` (the asking agent then calls `/wait_for_answer`
 to block until the human responds). The human types their answer in the HQ terminal.
 `/reset` moves `Failed → Idle`.
 
@@ -105,12 +105,12 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `consult` | Executing, Addressing | Ask the Supervisor for guidance; moves to Consultation |
 | `wait_for_consult` | Consultation | Block until the Supervisor responds; restores previous state |
 | `submit` | Executing, Addressing | Run the final review gate and, on success, write submission notes; moves to Reviewing |
-| `ask_human` | Executing, Addressing, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
-| `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 
 ### Shared
 | Tool | From state | Description |
 |---|---|---|
+| `ask_human` | Executing, Addressing, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
+| `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
 | `status` | any | Print current state and counters |
 | `reset` | Failed | Return to Idle |
 | `heartbeat` | any claimed | Renew lease; returns `{"status":"renewed"}` or `{"status":"error","code":"..."}` |

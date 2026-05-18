@@ -58,6 +58,23 @@ pub(super) fn ensure_can_ask_human(state: &StateData, agent_id: &str) -> anyhow:
     ensure_lease_owner(state, agent_id)
 }
 
+pub(super) fn ensure_answer_waiter(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
+    if let Some(waiter) = state.awaiting_human_by.as_deref() {
+        if waiter == agent_id {
+            return Ok(());
+        }
+        anyhow::bail!("Cannot wait for answer: question was asked by {waiter}, not {agent_id}");
+    }
+
+    if state.paused_state == Some(TaskState::Consultation)
+        && agent_role(agent_id) == Some(ROLE_SUPERVISOR)
+    {
+        return Ok(());
+    }
+
+    ensure_lease_identity(state, agent_id)
+}
+
 fn agent_role(agent_id: &str) -> Option<&str> {
     agent_id.split_once(':').map(|(role, _)| role)
 }
@@ -111,5 +128,37 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("lease is held by executor:codex:1"));
+    }
+
+    #[test]
+    fn answer_waiter_check_uses_recorded_question_owner() {
+        let state = StateData {
+            state: TaskState::AwaitingHuman,
+            awaiting_human_by: Some("supervisor:claude-code:1".to_string()),
+            claimed_by: Some("executor:codex:1".to_string()),
+            ..StateData::default()
+        };
+
+        ensure_answer_waiter(&state, "supervisor:claude-code:1").unwrap();
+
+        let err = ensure_answer_waiter(&state, "executor:codex:1")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("question was asked by supervisor:claude-code:1"));
+    }
+
+    #[test]
+    fn answer_waiter_check_has_legacy_fallbacks() {
+        let mut state = StateData {
+            state: TaskState::AwaitingHuman,
+            paused_state: Some(TaskState::Consultation),
+            claimed_by: Some("executor:codex:1".to_string()),
+            ..StateData::default()
+        };
+
+        ensure_answer_waiter(&state, "supervisor:claude-code:1").unwrap();
+
+        state.paused_state = Some(TaskState::Executing);
+        ensure_answer_waiter(&state, "executor:codex:1").unwrap();
     }
 }

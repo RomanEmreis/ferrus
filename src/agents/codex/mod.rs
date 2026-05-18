@@ -294,6 +294,7 @@ fn auto_approved_tools(role: &str) -> &'static [&'static str] {
             "reject",
             "respond_consult",
             "ask_human",
+            "wait_for_answer",
             "answer",
             "status",
             "reset",

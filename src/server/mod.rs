@@ -126,8 +126,6 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
             })
             .with_description(tools::wait_for_consult::DESCRIPTION);
         }
-        app.map_tool("wait_for_answer", tools::wait_for_answer::handler)
-            .with_description(tools::wait_for_answer::DESCRIPTION);
     }
 
     // Resources
@@ -158,6 +156,14 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         })
         .with_description(tools::ask_human::DESCRIPTION)
         .with_input_schema(|_| ToolSchema::from_json_str(tools::ask_human::INPUT_SCHEMA));
+    }
+    {
+        let id = agent_id.clone();
+        app.map_tool("wait_for_answer", move || {
+            let id = id.clone();
+            async move { tools::wait_for_answer::handler_for_agent(&id).await }
+        })
+        .with_description(tools::wait_for_answer::DESCRIPTION);
     }
     app.map_tool("answer", tools::answer::handler)
         .with_description(tools::answer::DESCRIPTION)
