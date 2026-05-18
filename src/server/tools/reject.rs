@@ -11,7 +11,7 @@ use crate::{
     },
 };
 
-use super::{ensure_lease_owner, tool_err};
+use super::{ensure_lease_owner_or_reclaim, tool_err};
 
 pub const DESCRIPTION: &str = "Reject the current submission with review notes. Writes notes to REVIEW.md and \
      transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
@@ -41,7 +41,7 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
             state.state
         );
     }
-    ensure_lease_owner(&state, agent_id)?;
+    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
 
     store::write_review(&notes).await?;
 

@@ -1,9 +1,12 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::state::{machine::TaskState, store};
+use crate::{
+    config::Config,
+    state::{machine::TaskState, store},
+};
 
-use super::{ensure_lease_owner, tool_err};
+use super::{ensure_lease_owner_or_reclaim, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the configured Supervisor for a consultation. \
      Writes CONSULT_REQUEST.md, transitions state to Consultation, clears any stale \
@@ -28,6 +31,7 @@ pub async fn handler_for_agent(
 }
 
 async fn run(agent_id: &str, question: String) -> Result<String> {
+    let config = Config::load().await?;
     let mut state = store::read_state().await?;
     if !matches!(state.state, TaskState::Executing | TaskState::Addressing) {
         anyhow::bail!(
@@ -35,7 +39,7 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
             state.state
         );
     }
-    ensure_lease_owner(&state, agent_id)?;
+    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
 
     validate_consult_request(&question)?;
 

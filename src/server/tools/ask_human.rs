@@ -1,9 +1,9 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::state::store;
+use crate::{config::Config, state::store};
 
-use super::{ensure_can_ask_human, tool_err};
+use super::{ensure_can_ask_human_or_reclaim, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the human a question. \
      Writes the question to QUESTION.md, transitions state to AwaitingHuman, \
@@ -29,8 +29,9 @@ pub async fn handler_for_agent(
 }
 
 async fn run(agent_id: &str, question: String) -> Result<String> {
+    let config = Config::load().await?;
     let mut state = store::read_state().await?;
-    ensure_can_ask_human(&state, agent_id)?;
+    ensure_can_ask_human_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
     let paused = state.ask_human()?;
     state.awaiting_human_by = Some(agent_id.to_string());
     store::write_question(&question).await?;

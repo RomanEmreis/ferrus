@@ -3,11 +3,12 @@ use neva::prelude::*;
 use tracing::info;
 
 use crate::{
+    config::Config,
     project, specs,
     state::{machine::TaskState, store},
 };
 
-use super::{ensure_lease_owner, tool_err};
+use super::{ensure_lease_owner_or_reclaim, tool_err};
 
 pub const DESCRIPTION: &str = "Approve the current submission. Transitions state Reviewing → Complete. \
      Must be called after /review_pending.";
@@ -17,6 +18,7 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 }
 
 async fn run(agent_id: &str) -> Result<String> {
+    let config = Config::load().await?;
     let mut state = store::read_state().await?;
 
     if state.state != TaskState::Reviewing {
@@ -25,7 +27,7 @@ async fn run(agent_id: &str) -> Result<String> {
             state.state
         );
     }
-    ensure_lease_owner(&state, agent_id)?;
+    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
 
     specs::complete_task_milestone_and_advance(&mut state).await?;
     state.approve()?;

@@ -1500,18 +1500,24 @@ impl HqContext {
         self.display
             .info("Answer recorded. Waiting for agent to resume…");
 
-        // Fallback: if the agent has exited, /wait_for_answer will never poll again.
-        // Restore state directly so the user can relaunch the agent manually.
-        let agent_alive = self
-            .executor_agent_id()
-            .ok()
-            .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
-            .unwrap_or(false)
-            || self
-                .supervisor_agent_id()
+        // Fallback: if the asking agent has exited, /wait_for_answer will never poll again.
+        // Restore state directly so the user can relaunch the right workflow manually.
+        let agent_alive = if let Some(waiter) = state.awaiting_human_by.as_deref() {
+            self.headless
+                .get(waiter)
+                .map(agent_manager::HeadlessHandle::is_alive)
+                .unwrap_or(false)
+        } else {
+            self.executor_agent_id()
                 .ok()
                 .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || self
+                    .supervisor_agent_id()
+                    .ok()
+                    .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
+                    .unwrap_or(false)
+        };
 
         if !agent_alive {
             let mut st = store::read_state().await?;
@@ -1519,10 +1525,10 @@ impl HqContext {
                 let resumed = st.answer()?;
                 store::write_state(&st).await?;
                 store::clear_question().await?;
-                let relaunch_hint = if resumed == TaskState::Reviewing {
-                    "Use /review to relaunch the reviewer."
-                } else {
-                    "Use /resume to relaunch — it will read ANSWER.md and continue."
+                let relaunch_hint = match resumed {
+                    TaskState::Reviewing => "Use /review to relaunch the reviewer.",
+                    TaskState::Consultation => "Use /resume to relaunch the consultation workflow.",
+                    _ => "Use /resume to relaunch — it will read ANSWER.md and continue.",
                 };
                 self.display.info(format!(
                     "Agent is not running. State restored to {resumed:?}. {relaunch_hint}"
@@ -1631,8 +1637,10 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
         (Reviewing, Complete) => TransitionAction::TaskComplete,
         (_, Failed) => TransitionAction::TaskFailed,
         (Consultation, Executing | Addressing) => TransitionAction::NoOp,
-        // Executor paused to ask the human a question.
-        (Executing | Addressing | Reviewing, AwaitingHuman) => TransitionAction::PauseForHuman,
+        // Active agent paused to ask the human a question.
+        (Executing | Addressing | Consultation | Reviewing, AwaitingHuman) => {
+            TransitionAction::PauseForHuman
+        }
         // State restored after human answered:
         //   - alive path: /wait_for_answer unblocked the still-running executor
         //   - dead path: answer() in HqContext restored state; user will /execute
@@ -1862,6 +1870,47 @@ mod tests {
             transition_action(&Reviewing, &AwaitingHuman),
             TransitionAction::PauseForHuman
         );
+    }
+
+    #[test]
+    fn consultation_to_awaiting_human_pauses() {
+        assert_eq!(
+            transition_action(&Consultation, &AwaitingHuman),
+            TransitionAction::PauseForHuman
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_restores_when_recorded_asker_is_not_alive() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let state = StateData {
+            state: AwaitingHuman,
+            paused_state: Some(Consultation),
+            awaiting_human_by: Some("supervisor:claude-code:1".to_string()),
+            ..StateData::default()
+        };
+        store::write_state(&state).await.unwrap();
+        store::write_question("Need human input").await.unwrap();
+
+        let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
+        let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
+
+        ctx.answer("Use the simpler path".to_string())
+            .await
+            .unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, Consultation);
+        assert!(state.awaiting_human_by.is_none());
+        assert_eq!(store::read_answer().await.unwrap(), "Use the simpler path");
+
+        std::env::set_current_dir(previous).unwrap();
     }
 
     #[test]

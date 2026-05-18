@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     check_gate::{self, CheckGateResult},
-    ensure_lease_owner, tool_err,
+    ensure_lease_owner_or_reclaim, tool_err,
 };
 
 pub const DESCRIPTION: &str = "\
@@ -56,7 +56,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
         );
     }
     if let Some(agent_id) = agent_id {
-        ensure_lease_owner(&state, agent_id)?;
+        ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
     }
 
     if config.checks.commands.is_empty() {
@@ -142,5 +142,70 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
                 Err(e) => anyhow::bail!(e),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::machine::StateData;
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 60\n",
+        )
+        .await
+        .unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn submit_reclaims_expired_same_agent_lease_before_guarding() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = StateData {
+            state: TaskState::Executing,
+            claimed_by: Some("executor:codex:1".to_string()),
+            lease_until: Some(Utc::now() - chrono::Duration::seconds(1)),
+            last_heartbeat: Some(Utc::now() - chrono::Duration::seconds(2)),
+            ..StateData::default()
+        };
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+
+        run(
+            Some("executor:codex:1"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Reviewing);
+        assert!(state.claimed_by.is_none());
+        assert!(state.lease_until.is_none());
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/SUBMISSION.md")
+                .await
+                .unwrap(),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n"
+        );
+
+        teardown(previous);
     }
 }

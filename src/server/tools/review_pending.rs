@@ -7,7 +7,7 @@ use crate::{
     state::{machine::TaskState, store},
 };
 
-use super::{ensure_lease_owner, tool_err};
+use super::{ensure_lease_owner_or_reclaim, tool_err};
 
 pub const DESCRIPTION: &str = "Retrieve the pending submission for review. Returns the task description, \
      the Executor's submission notes (summary, verification steps, known limitations), \
@@ -19,7 +19,7 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 
 async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
-    let state = store::read_state().await?;
+    let mut state = store::read_state().await?;
 
     if state.state != TaskState::Reviewing {
         anyhow::bail!(
@@ -28,7 +28,7 @@ async fn run(agent_id: &str) -> Result<String> {
             state.state
         );
     }
-    ensure_lease_owner(&state, agent_id)?;
+    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
 
     let task = store::read_task().await?;
     let submission = store::read_submission().await?;

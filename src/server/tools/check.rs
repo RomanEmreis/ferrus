@@ -13,7 +13,7 @@ use crate::{
 
 use super::{
     check_gate::{self, CheckGateResult},
-    ensure_lease_owner, tool_err,
+    ensure_lease_owner_or_reclaim, tool_err,
 };
 
 pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, etc.) against the current \
@@ -42,7 +42,7 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
         ),
     }
     if let Some(agent_id) = agent_id {
-        ensure_lease_owner(&state, agent_id)?;
+        ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
     }
 
     if config.checks.commands.is_empty() {
