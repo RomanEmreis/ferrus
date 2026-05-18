@@ -154,6 +154,8 @@ pub enum ReadyTaskClaim {
 #[derive(Debug, Clone)]
 pub enum LeaseRenewal {
     Renewed {
+        task_id: String,
+        task_path: String,
         claimed_by: String,
         lease_until: DateTime<Utc>,
     },
@@ -899,7 +901,7 @@ async fn claim_task_in_database(
 
 pub async fn renew_current_task_lease(agent_id: &str, ttl_secs: u64) -> Result<LeaseRenewal> {
     let database_path = current_database_path().await?;
-    let (task_id, _) = current_task_identity().await;
+    let (task_id, task_path) = current_task_identity().await;
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || -> Result<LeaseRenewal> {
         let mut connection = open_runtime_database(&database_path)?;
@@ -923,41 +925,111 @@ pub async fn renew_current_task_lease(agent_id: &str, ttl_secs: u64) -> Result<L
             transaction.commit()?;
             return Ok(LeaseRenewal::ClaimedByOther { claimed_by });
         }
-        let now = Utc::now();
-        let existing_lease = lease_until
-            .as_deref()
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc));
-        if existing_lease.is_none_or(|lease_until| now >= lease_until) {
+        let Some(lease_until) = renew_task_lease_in_transaction(
+            &transaction,
+            &task_id,
+            &agent_id,
+            ttl_secs,
+            lease_until.as_deref(),
+        )?
+        else {
             transaction.commit()?;
             return Ok(LeaseRenewal::Expired);
-        }
-
-        let lease_until =
-            now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
-        let lease_until_text = lease_until.to_rfc3339_opts(SecondsFormat::Secs, true);
-        let now_text = now.to_rfc3339_opts(SecondsFormat::Secs, true);
-        transaction.execute(
-            "UPDATE tasks SET lease_until = ?1, last_heartbeat = ?2 WHERE id = ?3",
-            params![lease_until_text, now_text, task_id],
-        )?;
-        insert_event_in_transaction(
-            &transaction,
-            None,
-            "task_lease_renewed",
-            &serde_json::json!({
-                "task_id": task_id,
-                "claimed_by": agent_id,
-                "lease_until": lease_until,
-            }),
-        )?;
+        };
         transaction.commit()?;
         Ok(LeaseRenewal::Renewed {
+            task_id,
+            task_path,
             claimed_by: agent_id,
             lease_until,
         })
     })
     .await?
+}
+
+pub async fn renew_claimed_task_lease(agent_id: &str, ttl_secs: u64) -> Result<LeaseRenewal> {
+    let database_path = current_database_path().await?;
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<LeaseRenewal> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let existing: Option<(String, String, Option<String>)> = transaction
+            .query_row(
+                r#"
+                SELECT id, path, lease_until
+                FROM tasks
+                WHERE claimed_by = ?1
+                ORDER BY
+                    CASE WHEN lease_until IS NULL THEN 1 ELSE 0 END,
+                    lease_until DESC,
+                    id
+                LIMIT 1
+                "#,
+                [&agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((task_id, task_path, lease_until)) = existing else {
+            transaction.commit()?;
+            return Ok(LeaseRenewal::NotClaimed);
+        };
+
+        let Some(lease_until) = renew_task_lease_in_transaction(
+            &transaction,
+            &task_id,
+            &agent_id,
+            ttl_secs,
+            lease_until.as_deref(),
+        )?
+        else {
+            transaction.commit()?;
+            return Ok(LeaseRenewal::Expired);
+        };
+        transaction.commit()?;
+        Ok(LeaseRenewal::Renewed {
+            task_id,
+            task_path,
+            claimed_by: agent_id,
+            lease_until,
+        })
+    })
+    .await?
+}
+
+fn renew_task_lease_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+    existing_lease: Option<&str>,
+) -> Result<Option<DateTime<Utc>>> {
+    let now = Utc::now();
+    let existing_lease = existing_lease
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    if existing_lease.is_none_or(|lease_until| now >= lease_until) {
+        return Ok(None);
+    }
+
+    let lease_until =
+        now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
+    let lease_until_text = lease_until.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let now_text = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+    transaction.execute(
+        "UPDATE tasks SET lease_until = ?1, last_heartbeat = ?2 WHERE id = ?3",
+        params![lease_until_text, now_text, task_id],
+    )?;
+    insert_event_in_transaction(
+        transaction,
+        None,
+        "task_lease_renewed",
+        &serde_json::json!({
+            "task_id": task_id,
+            "claimed_by": agent_id,
+            "lease_until": lease_until,
+        }),
+    )?;
+    Ok(Some(lease_until))
 }
 
 pub async fn record_current_task_status_best_effort(status: &str) {
@@ -1985,6 +2057,41 @@ mod tests {
         assert_eq!(targeted.path, ".ferrus/tasks/t-002.md");
         assert_eq!(targeted.status, "unknown");
         assert_eq!(targeted.claimed_by.as_deref(), Some("executor:codex:2"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_task_lease_can_be_renewed_by_claiming_agent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        let first = claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
+            .await
+            .unwrap();
+        assert!(matches!(first, TaskClaim::Claimed { .. }));
+
+        let renewed = renew_claimed_task_lease("executor:codex:2", 60)
+            .await
+            .unwrap();
+        match renewed {
+            LeaseRenewal::Renewed {
+                task_id,
+                task_path,
+                claimed_by,
+                ..
+            } => {
+                assert_eq!(task_id, "t-002");
+                assert_eq!(task_path, ".ferrus/tasks/t-002.md");
+                assert_eq!(claimed_by, "executor:codex:2");
+            }
+            _ => panic!("expected claimed task lease to renew"),
+        }
+
+        let missing = renew_claimed_task_lease("executor:codex:3", 60)
+            .await
+            .unwrap();
+        assert!(matches!(missing, LeaseRenewal::NotClaimed));
 
         teardown(previous);
     }

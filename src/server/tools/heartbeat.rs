@@ -12,9 +12,9 @@ use crate::{
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str = "Renew the lease for the calling agent. Validates that the server-scoped agent identity holds the current lease, \
+pub const DESCRIPTION: &str = "Renew the task lease for the calling agent. Validates that the server-scoped agent identity holds a runtime lease, \
      then extends lease_until by ttl_secs and updates last_heartbeat. \
-     Returns a JSON object: {\"status\":\"renewed\", \"claimed_by\":\"...\", \"lease_until\":\"...\"} \
+     Returns a JSON object: {\"status\":\"renewed\", \"task_id\":\"...\", \"task_path\":\"...\", \"claimed_by\":\"...\", \"lease_until\":\"...\"} \
      on success, or {\"status\":\"error\", \"code\":\"...\", \"message\":\"...\"} on failure. \
      Error codes: not_claimed (no active lease), claimed_by_other (different agent holds lease), \
      expired (your lease timed out before renewal), invalid_state (state cannot be leased).";
@@ -55,20 +55,31 @@ async fn run(agent_id: &str) -> Result<String> {
         .to_string());
     }
 
-    match project::renew_current_task_lease(agent_id, ttl_secs).await {
+    let db_renewal = match project::renew_claimed_task_lease(agent_id, ttl_secs).await {
+        Ok(LeaseRenewal::NotClaimed) => project::renew_current_task_lease(agent_id, ttl_secs).await,
+        result => result,
+    };
+
+    match db_renewal {
         Ok(LeaseRenewal::Renewed {
+            task_id,
+            task_path,
             claimed_by,
             lease_until,
         }) => {
-            state.claimed_by = Some(claimed_by.clone());
-            state.lease_until = Some(lease_until);
-            state.last_heartbeat = Some(chrono::Utc::now());
-            store::write_state(&state).await?;
+            if state.active_task_id.as_deref() == Some(task_id.as_str()) {
+                state.claimed_by = Some(claimed_by.clone());
+                state.lease_until = Some(lease_until);
+                state.last_heartbeat = Some(chrono::Utc::now());
+                store::write_state(&state).await?;
+            }
             drop(lock_file);
 
-            info!(agent_id, "Lease renewed");
+            info!(agent_id, task_id, "Lease renewed");
             return Ok(json!({
                 "status": "renewed",
+                "task_id": task_id,
+                "task_path": task_path,
                 "claimed_by": claimed_by,
                 "lease_until": lease_until,
             })
