@@ -1,10 +1,9 @@
 use anyhow::Result;
-use neva::prelude::*;
 use tracing::info;
 
 use crate::state::store;
 
-use super::tool_err;
+use super::{ensure_can_ask_human, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the human a question. \
      Writes the question to QUESTION.md, transitions state to AwaitingHuman, \
@@ -22,12 +21,16 @@ pub const INPUT_SCHEMA: &str = r#"{
     "required": ["question"]
 }"#;
 
-pub async fn handler(mut ctx: Context, question: String) -> Result<String, Error> {
-    run(&mut ctx, question).await.map_err(tool_err)
+pub async fn handler_for_agent(
+    agent_id: &str,
+    question: String,
+) -> Result<String, neva::prelude::Error> {
+    run(agent_id, question).await.map_err(tool_err)
 }
 
-async fn run(_ctx: &mut Context, question: String) -> Result<String> {
+async fn run(agent_id: &str, question: String) -> Result<String> {
     let mut state = store::read_state().await?;
+    ensure_can_ask_human(&state, agent_id)?;
     let paused = state.ask_human()?;
     store::write_question(&question).await?;
     store::write_state(&state).await?;

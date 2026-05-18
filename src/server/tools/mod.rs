@@ -20,7 +20,10 @@ pub mod wait_for_task;
 
 use neva::prelude::*;
 
-use crate::state::machine::StateData;
+use crate::{
+    agent_id::ROLE_SUPERVISOR,
+    state::machine::{StateData, TaskState},
+};
 
 /// Convert an [`anyhow::Error`] into a neva tool error.
 pub(super) fn tool_err(e: anyhow::Error) -> Error {
@@ -41,6 +44,17 @@ pub(super) fn ensure_lease_owner(state: &StateData, agent_id: &str) -> anyhow::R
         );
     }
     Ok(())
+}
+
+pub(super) fn ensure_can_ask_human(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
+    if state.state == TaskState::Consultation && agent_role(agent_id) == Some(ROLE_SUPERVISOR) {
+        return Ok(());
+    }
+    ensure_lease_owner(state, agent_id)
+}
+
+fn agent_role(agent_id: &str) -> Option<&str> {
+    agent_id.split_once(':').map(|(role, _)| role)
 }
 
 #[cfg(test)]
@@ -73,5 +87,23 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("has expired"));
+    }
+
+    #[test]
+    fn ask_human_allows_supervisor_during_consultation_only() {
+        let mut state = StateData {
+            state: TaskState::Consultation,
+            claimed_by: Some("executor:codex:1".to_string()),
+            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
+            ..StateData::default()
+        };
+
+        ensure_can_ask_human(&state, "supervisor:claude-code:1").unwrap();
+
+        state.state = TaskState::Executing;
+        let err = ensure_can_ask_human(&state, "supervisor:claude-code:1")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("lease is held by executor:codex:1"));
     }
 }

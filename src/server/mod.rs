@@ -126,9 +126,15 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         .with_description("Supervisor review context: state, task, and submission notes");
 
     // Shared tools (always registered regardless of role)
-    app.map_tool("ask_human", tools::ask_human::handler)
+    {
+        let id = agent_id.clone();
+        app.map_tool("ask_human", move |question| {
+            let id = id.clone();
+            async move { tools::ask_human::handler_for_agent(&id, question).await }
+        })
         .with_description(tools::ask_human::DESCRIPTION)
         .with_input_schema(|_| ToolSchema::from_json_str(tools::ask_human::INPUT_SCHEMA));
+    }
     app.map_tool("answer", tools::answer::handler)
         .with_description(tools::answer::DESCRIPTION)
         .with_input_schema(|_| ToolSchema::from_json_str(tools::answer::INPUT_SCHEMA));
