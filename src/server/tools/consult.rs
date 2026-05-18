@@ -1,10 +1,9 @@
 use anyhow::Result;
-use neva::prelude::*;
 use tracing::info;
 
 use crate::state::{machine::TaskState, store};
 
-use super::tool_err;
+use super::{ensure_lease_owner, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the configured Supervisor for a consultation. \
      Writes CONSULT_REQUEST.md, transitions state to Consultation, clears any stale \
@@ -21,11 +20,14 @@ pub const INPUT_SCHEMA: &str = r#"{
     "required": ["question"]
 }"#;
 
-pub async fn handler(mut ctx: Context, question: String) -> Result<String, Error> {
-    run(&mut ctx, question).await.map_err(tool_err)
+pub async fn handler_for_agent(
+    agent_id: &str,
+    question: String,
+) -> Result<String, neva::prelude::Error> {
+    run(agent_id, question).await.map_err(tool_err)
 }
 
-async fn run(_ctx: &mut Context, question: String) -> Result<String> {
+async fn run(agent_id: &str, question: String) -> Result<String> {
     let mut state = store::read_state().await?;
     if !matches!(state.state, TaskState::Executing | TaskState::Addressing) {
         anyhow::bail!(
@@ -33,6 +35,7 @@ async fn run(_ctx: &mut Context, question: String) -> Result<String> {
             state.state
         );
     }
+    ensure_lease_owner(&state, agent_id)?;
 
     validate_consult_request(&question)?;
 
