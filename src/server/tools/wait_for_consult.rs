@@ -9,17 +9,17 @@ use crate::{
     state::{machine::TaskState, store},
 };
 
-use super::tool_err;
+use super::{ensure_lease_identity, tool_err};
 
 pub const DESCRIPTION: &str = "Block until CONSULT_RESPONSE.md exists, then restore the pre-consult state and \
      return the consultant's response text. Each call waits up to `wait_timeout_secs` and then \
      returns an error telling the agent to call /wait_for_consult again. Must only be called while state is Consultation.";
 
-pub async fn handler() -> Result<String, Error> {
-    run().await.map_err(tool_err)
+pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
+    run(agent_id).await.map_err(tool_err)
 }
 
-async fn run() -> Result<String> {
+async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let timeout = Duration::from_secs(config.limits.wait_timeout_secs);
     let start = Instant::now();
@@ -31,11 +31,13 @@ async fn run() -> Result<String> {
             state.state
         );
     }
+    ensure_lease_identity(&state, agent_id)?;
 
     loop {
         match store::read_consult_response().await {
             Ok(response) if !response.trim().is_empty() => {
                 let mut state = store::read_state().await?;
+                ensure_lease_identity(&state, agent_id)?;
                 let resumed = state.finish_consult()?;
                 if let Some(agent_id) = state.claimed_by.clone() {
                     store::claim_state(&agent_id, config.lease.ttl_secs, &mut state).await?;

@@ -34,14 +34,19 @@ pub(super) fn tool_err(e: anyhow::Error) -> Error {
 }
 
 pub(super) fn ensure_lease_owner(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
-    if state.claimed_by.as_deref() != Some(agent_id) {
-        let owner = state.claimed_by.as_deref().unwrap_or("none");
-        anyhow::bail!("Cannot modify task: lease is held by {owner}, not {agent_id}");
-    }
+    ensure_lease_identity(state, agent_id)?;
     if state.lease_expired() {
         anyhow::bail!(
             "Cannot modify task: lease for {agent_id} has expired. Call wait_for_task again to reclaim work."
         );
+    }
+    Ok(())
+}
+
+pub(super) fn ensure_lease_identity(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
+    if state.claimed_by.as_deref() != Some(agent_id) {
+        let owner = state.claimed_by.as_deref().unwrap_or("none");
+        anyhow::bail!("Cannot modify task: lease is held by {owner}, not {agent_id}");
     }
     Ok(())
 }
@@ -87,6 +92,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("has expired"));
+        ensure_lease_identity(&state, "executor:codex:1").unwrap();
     }
 
     #[test]
