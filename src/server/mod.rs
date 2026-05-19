@@ -78,9 +78,15 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
             .with_description(tools::reject::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::reject::INPUT_SCHEMA));
         }
-        app.map_tool("respond_consult", tools::respond_consult::handler)
+        {
+            let id = agent_id.clone();
+            app.map_tool("respond_consult", move |response| {
+                let id = id.clone();
+                async move { tools::respond_consult::handler_for_agent(&id, response).await }
+            })
             .with_description(tools::respond_consult::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::respond_consult::INPUT_SCHEMA));
+        }
     }
 
     if exe {

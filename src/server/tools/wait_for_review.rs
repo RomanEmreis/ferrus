@@ -158,6 +158,11 @@ async fn claim_state_fallback(
         task_id,
         task_path,
         status: "reviewing".to_string(),
+        paused_status: state
+            .paused_state
+            .as_ref()
+            .map(project::task_status_for_state)
+            .map(str::to_string),
         check_retries: state.check_retries,
         review_cycles: state.review_cycles,
         failure_reason: state.failure_reason.clone(),

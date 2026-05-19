@@ -39,14 +39,23 @@ pub fn task_lines(tasks: &[TaskRecord]) -> Vec<String> {
     }
 
     let mut lines = vec![format!(
-        "{:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} Path",
-        "ID", "Status", "Claimed by", "Lease until", "Heartbeat", "Checks", "Reviews", "Failure"
+        "{:<14} {:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} Path",
+        "ID",
+        "Status",
+        "Paused",
+        "Claimed by",
+        "Lease until",
+        "Heartbeat",
+        "Checks",
+        "Reviews",
+        "Failure"
     )];
     lines.extend(tasks.iter().map(|task| {
         format!(
-            "{:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} {}",
+            "{:<14} {:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} {}",
             task.id,
             task.status,
+            task.paused_status.as_deref().unwrap_or("-"),
             task.claimed_by.as_deref().unwrap_or("-"),
             task.lease_until.as_deref().unwrap_or("-"),
             task.last_heartbeat.as_deref().unwrap_or("-"),

@@ -113,6 +113,7 @@ pub struct TaskRecord {
     pub id: String,
     pub path: String,
     pub status: String,
+    pub paused_status: Option<String>,
     pub claimed_by: Option<String>,
     pub lease_until: Option<String>,
     pub last_heartbeat: Option<String>,
@@ -128,6 +129,7 @@ pub struct RuntimeTaskContext {
     pub task_path: String,
     pub run_dir: String,
     pub status: String,
+    pub paused_status: Option<String>,
     pub check_retries: u32,
     pub review_cycles: u32,
     pub failure_reason: Option<String>,
@@ -155,6 +157,7 @@ pub struct TaskLease {
     pub task_id: String,
     pub task_path: String,
     pub status: String,
+    pub paused_status: Option<String>,
     pub check_retries: u32,
     pub review_cycles: u32,
     pub failure_reason: Option<String>,
@@ -195,6 +198,12 @@ pub enum TaskCheckFailure {
 pub enum TaskReviewRejection {
     Addressing { cycles: u32 },
     LimitExceeded { cycles: u32 },
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskConsultRestore {
+    Restored { status: String },
+    NotInConsultation,
 }
 
 impl DoctorReport {
@@ -653,7 +662,7 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
         let connection = open_runtime_database(&database_path)?;
         let mut statement = connection.prepare(
             r#"
-            SELECT id, path, status, claimed_by, lease_until, last_heartbeat,
+            SELECT id, path, status, paused_status, claimed_by, lease_until, last_heartbeat,
                    check_retries, review_cycles, failure_reason
             FROM tasks
             ORDER BY
@@ -666,12 +675,13 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
                 id: row.get(0)?,
                 path: row.get(1)?,
                 status: row.get(2)?,
-                claimed_by: row.get(3)?,
-                lease_until: row.get(4)?,
-                last_heartbeat: row.get(5)?,
-                check_retries: row.get::<_, i64>(6)? as u32,
-                review_cycles: row.get::<_, i64>(7)? as u32,
-                failure_reason: row.get(8)?,
+                paused_status: row.get(3)?,
+                claimed_by: row.get(4)?,
+                lease_until: row.get(5)?,
+                last_heartbeat: row.get(6)?,
+                check_retries: row.get::<_, i64>(7)? as u32,
+                review_cycles: row.get::<_, i64>(8)? as u32,
+                failure_reason: row.get(9)?,
             })
         })?;
 
@@ -941,6 +951,73 @@ pub async fn record_task_review_rejected(
     .await?
 }
 
+pub async fn record_task_consultation_requested(task_id: &str, paused_status: &str) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let paused_status = paused_status.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        connection.execute(
+            "UPDATE tasks SET status = 'consultation', paused_status = ?1 WHERE id = ?2",
+            params![paused_status, task_id],
+        )?;
+        insert_event(
+            &connection,
+            None,
+            "task_consultation_requested",
+            &serde_json::json!({
+                "task_id": task_id,
+                "paused_status": paused_status,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn restore_task_from_consultation(task_id: &str) -> Result<TaskConsultRestore> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<TaskConsultRestore> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let row = transaction
+            .query_row(
+                "SELECT status, paused_status FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let Some((status, paused_status)) = row else {
+            transaction.commit()?;
+            return Ok(TaskConsultRestore::NotInConsultation);
+        };
+        if status != "consultation" {
+            transaction.commit()?;
+            return Ok(TaskConsultRestore::NotInConsultation);
+        }
+        let resumed_status = paused_status.unwrap_or_else(|| "executing".to_string());
+        transaction.execute(
+            "UPDATE tasks SET status = ?1, paused_status = NULL WHERE id = ?2",
+            params![resumed_status, task_id],
+        )?;
+        insert_event_in_transaction(
+            &transaction,
+            None,
+            "task_consultation_resolved",
+            &serde_json::json!({
+                "task_id": task_id,
+                "resumed_status": resumed_status,
+            }),
+        )?;
+        transaction.commit()?;
+        Ok(TaskConsultRestore::Restored {
+            status: resumed_status,
+        })
+    })
+    .await?
+}
+
 fn clears_task_lease_for_status(status: &str) -> bool {
     matches!(
         status,
@@ -1007,6 +1084,7 @@ async fn claim_next_task_with_statuses(
                     task_id: candidate.id.clone(),
                     task_path: candidate.path.clone(),
                     status: candidate.status.clone(),
+                    paused_status: candidate.paused_status.clone(),
                     check_retries: candidate.check_retries,
                     review_cycles: candidate.review_cycles,
                     failure_reason: candidate.failure_reason.clone(),
@@ -1033,6 +1111,7 @@ async fn claim_next_task_with_statuses(
                 task_id: candidate.id,
                 task_path: candidate.path,
                 status: candidate.status,
+                paused_status: candidate.paused_status,
                 check_retries: candidate.check_retries,
                 review_cycles: candidate.review_cycles,
                 failure_reason: candidate.failure_reason,
@@ -1202,11 +1281,19 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || -> Result<Option<RuntimeTaskContext>> {
         let connection = open_runtime_database(&database_path)?;
-        if let Some((task_id, task_path, status, check_retries, review_cycles, failure_reason)) =
-            connection
-                .query_row(
-                    r#"
-                SELECT id, path, status, check_retries, review_cycles, failure_reason
+        if let Some((
+            task_id,
+            task_path,
+            status,
+            paused_status,
+            check_retries,
+            review_cycles,
+            failure_reason,
+        )) = connection
+            .query_row(
+                r#"
+                SELECT id, path, status, paused_status,
+                       check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE claimed_by = ?1
                 ORDER BY
@@ -1215,19 +1302,20 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                     id
                 LIMIT 1
                 "#,
-                    [&agent_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, i64>(3)? as u32,
-                            row.get::<_, i64>(4)? as u32,
-                            row.get::<_, Option<String>>(5)?,
-                        ))
-                    },
-                )
-                .optional()?
+                [&agent_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)? as u32,
+                        row.get::<_, i64>(5)? as u32,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )
+            .optional()?
         {
             let run_id = latest_run_id_for_agent_task(&connection, &agent_id, &task_id)?;
             return Ok(Some(RuntimeTaskContext {
@@ -1235,6 +1323,7 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                 task_id,
                 task_path,
                 status,
+                paused_status,
                 check_retries,
                 review_cycles,
                 failure_reason,
@@ -1245,7 +1334,7 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
         let context = connection
             .query_row(
                 r#"
-                SELECT runs.id, tasks.id, tasks.path, tasks.status,
+                SELECT runs.id, tasks.id, tasks.path, tasks.status, tasks.paused_status,
                        tasks.check_retries, tasks.review_cycles, tasks.failure_reason
                 FROM runs
                 JOIN tasks ON tasks.id = runs.task_id
@@ -1262,9 +1351,10 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                         task_id,
                         task_path: row.get(2)?,
                         status: row.get(3)?,
-                        check_retries: row.get::<_, i64>(4)? as u32,
-                        review_cycles: row.get::<_, i64>(5)? as u32,
-                        failure_reason: row.get(6)?,
+                        paused_status: row.get(4)?,
+                        check_retries: row.get::<_, i64>(5)? as u32,
+                        review_cycles: row.get::<_, i64>(6)? as u32,
+                        failure_reason: row.get(7)?,
                         run_id: Some(run_id),
                     })
                 },
@@ -1785,6 +1875,7 @@ async fn validate_database_schema(path: &Path) -> Result<bool> {
             }
         }
         for column in [
+            "paused_status",
             "claimed_by",
             "lease_until",
             "last_heartbeat",
@@ -1844,7 +1935,7 @@ async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Op
         let task = connection
             .query_row(
                 r#"
-                SELECT id, path, status, claimed_by, lease_until, last_heartbeat,
+                SELECT id, path, status, paused_status, claimed_by, lease_until, last_heartbeat,
                        check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE id = ?1
@@ -1855,12 +1946,13 @@ async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Op
                         id: row.get(0)?,
                         path: row.get(1)?,
                         status: row.get(2)?,
-                        claimed_by: row.get(3)?,
-                        lease_until: row.get(4)?,
-                        last_heartbeat: row.get(5)?,
-                        check_retries: row.get::<_, i64>(6)? as u32,
-                        review_cycles: row.get::<_, i64>(7)? as u32,
-                        failure_reason: row.get(8)?,
+                        paused_status: row.get(3)?,
+                        claimed_by: row.get(4)?,
+                        lease_until: row.get(5)?,
+                        last_heartbeat: row.get(6)?,
+                        check_retries: row.get::<_, i64>(7)? as u32,
+                        review_cycles: row.get::<_, i64>(8)? as u32,
+                        failure_reason: row.get(9)?,
                     })
                 },
             )
@@ -1907,6 +1999,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             id TEXT PRIMARY KEY,
             path TEXT NOT NULL,
             status TEXT NOT NULL,
+            paused_status TEXT,
             claimed_by TEXT,
             lease_until TEXT,
             last_heartbeat TEXT,
@@ -1938,6 +2031,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         );
         "#,
     )?;
+    ensure_column(connection, "tasks", "paused_status", "TEXT")?;
     ensure_column(connection, "tasks", "claimed_by", "TEXT")?;
     ensure_column(connection, "tasks", "lease_until", "TEXT")?;
     ensure_column(connection, "tasks", "last_heartbeat", "TEXT")?;
@@ -2007,6 +2101,7 @@ struct ReadyTaskCandidate {
     id: String,
     path: String,
     status: String,
+    paused_status: Option<String>,
     check_retries: u32,
     review_cycles: u32,
     failure_reason: Option<String>,
@@ -2026,7 +2121,7 @@ fn task_candidates_by_status(
         .join(", ");
     let sql = format!(
         r#"
-        SELECT id, path, status, check_retries, review_cycles, failure_reason,
+        SELECT id, path, status, paused_status, check_retries, review_cycles, failure_reason,
                claimed_by, lease_until
         FROM tasks
         WHERE status IN ({placeholders})
@@ -2039,11 +2134,12 @@ fn task_candidates_by_status(
             id: row.get(0)?,
             path: row.get(1)?,
             status: row.get(2)?,
-            check_retries: row.get::<_, i64>(3)? as u32,
-            review_cycles: row.get::<_, i64>(4)? as u32,
-            failure_reason: row.get(5)?,
-            claimed_by: row.get(6)?,
-            lease_until: row.get(7)?,
+            paused_status: row.get(3)?,
+            check_retries: row.get::<_, i64>(4)? as u32,
+            review_cycles: row.get::<_, i64>(5)? as u32,
+            failure_reason: row.get(6)?,
+            claimed_by: row.get(7)?,
+            lease_until: row.get(8)?,
         })
     })?;
 

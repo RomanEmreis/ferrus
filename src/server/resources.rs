@@ -55,11 +55,15 @@ pub async fn read_for_agent(
         ),
         "consult_request" => (
             "text/markdown",
-            store::read_consult_request().await.map_err(to_err)?,
+            read_consult_request_for_agent(agent_id)
+                .await
+                .map_err(to_err)?,
         ),
         "consult_response" => (
             "text/markdown",
-            store::read_consult_response().await.map_err(to_err)?,
+            read_consult_response_for_agent(agent_id)
+                .await
+                .map_err(to_err)?,
         ),
         "state" => {
             let state = store::read_state().await.map_err(to_err)?;
@@ -78,6 +82,26 @@ pub async fn read_for_agent(
     Ok(ReadResourceResult::from(
         TextResourceContents::new(uri, content).with_mime(mime),
     ))
+}
+
+async fn read_consult_request_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+        && let Ok(contents) = store::read_consult_request_for_run_dir(&context.run_dir).await
+    {
+        return Ok(contents);
+    }
+    store::read_consult_request().await
+}
+
+async fn read_consult_response_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+        && let Ok(contents) = store::read_consult_response_for_run_dir(&context.run_dir).await
+    {
+        return Ok(contents);
+    }
+    store::read_consult_response().await
 }
 
 async fn read_current_task_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {

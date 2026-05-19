@@ -262,6 +262,14 @@ pub async fn write_consult_request_for_run_dir(run_dir: &str, content: &str) -> 
     write_path(&run_file(run_dir, "CONSULT_REQUEST.md"), content).await
 }
 
+pub async fn read_consult_request_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path(&run_file(run_dir, "CONSULT_REQUEST.md")).await
+}
+
+pub async fn clear_consult_request_for_run_dir(run_dir: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "CONSULT_REQUEST.md"), "").await
+}
+
 pub async fn clear_consult_request() -> Result<()> {
     write_consult_request("").await
 }
@@ -292,6 +300,14 @@ pub async fn write_consult_response(content: &str) -> Result<()> {
 
 pub async fn clear_consult_response() -> Result<()> {
     write_consult_response("").await
+}
+
+pub async fn read_consult_response_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path(&run_file(run_dir, "CONSULT_RESPONSE.md")).await
+}
+
+pub async fn write_consult_response_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "CONSULT_RESPONSE.md"), content).await
 }
 
 pub async fn clear_consult_response_for_run_dir(run_dir: &str) -> Result<()> {
