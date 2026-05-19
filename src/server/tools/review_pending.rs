@@ -53,11 +53,20 @@ async fn run(agent_id: &str) -> Result<String> {
         response.push_str(&review);
     }
 
+    let review_cycles = runtime_context
+        .as_ref()
+        .map(|context| context.review_cycles)
+        .unwrap_or(state.review_cycles);
+    let check_retries = runtime_context
+        .as_ref()
+        .map(|context| context.check_retries)
+        .unwrap_or(state.check_retries);
+
     response.push_str(&format!(
         "\n---\nReview cycles used: {}/{}  \nCheck retries used: {}/{}",
-        state.review_cycles,
+        review_cycles,
         config.limits.max_review_cycles,
-        state.check_retries,
+        check_retries,
         config.limits.max_check_retries,
     ));
 

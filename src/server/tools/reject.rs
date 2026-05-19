@@ -4,7 +4,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::Config,
-    project::{self, RuntimeTaskContext},
+    project::{self, RuntimeTaskContext, TaskReviewRejection},
     state::{
         machine::{TaskState, TransitionError},
         store,
@@ -53,29 +53,63 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
 
     write_review(&state, runtime_context.as_ref(), &notes).await?;
 
-    if !should_use_legacy_state(&state, runtime_context.as_ref()) {
-        if let Some(context) = runtime_context.as_ref() {
-            project::record_task_status_best_effort(
-                &context.task_id,
-                &context.task_path,
-                "addressing",
-            )
-            .await;
-            project::record_runtime_event_best_effort(
-                context.run_id.clone(),
-                "rejected",
-                serde_json::json!({
-                    "task_id": context.task_id.as_str(),
-                    "notes_bytes": notes.len(),
-                }),
-            )
-            .await;
-        }
-        info!("Submission rejected, DB task → addressing");
-        return Ok(
-            "Submission rejected.\n\n**Review notes written.** State: Addressing. The Executor should call /wait_for_task to see the notes and /check after addressing them."
-                .to_string(),
-        );
+    if !should_use_legacy_state(&state, runtime_context.as_ref())
+        && let Some(context) = runtime_context.as_ref()
+    {
+        return match project::record_task_review_rejected(
+            &context.task_id,
+            config.limits.max_review_cycles,
+        )
+        .await?
+        {
+            TaskReviewRejection::Addressing { cycles } => {
+                project::record_runtime_event_best_effort(
+                    context.run_id.clone(),
+                    "rejected",
+                    serde_json::json!({
+                        "task_id": context.task_id.as_str(),
+                        "review_cycles": cycles,
+                        "max_review_cycles": config.limits.max_review_cycles,
+                        "notes_bytes": notes.len(),
+                    }),
+                )
+                .await;
+                info!(
+                    review_cycles = cycles,
+                    task_id = context.task_id,
+                    "Submission rejected, DB task → addressing"
+                );
+                Ok(format!(
+                    "Submission rejected (cycle {}/{}).\n\n**Review notes written.** \
+                     State: Addressing. The Executor should call /wait_for_task to see the notes \
+                     and /check after addressing them.",
+                    cycles, config.limits.max_review_cycles,
+                ))
+            }
+            TaskReviewRejection::LimitExceeded { cycles } => {
+                project::record_runtime_event_best_effort(
+                    context.run_id.clone(),
+                    "review_limit_exceeded",
+                    serde_json::json!({
+                        "task_id": context.task_id.as_str(),
+                        "review_cycles": cycles,
+                        "max_review_cycles": config.limits.max_review_cycles,
+                        "notes_bytes": notes.len(),
+                    }),
+                )
+                .await;
+                warn!(
+                    review_cycles = cycles,
+                    task_id = context.task_id,
+                    "Review cycle limit reached, DB task → failed"
+                );
+                Ok(format!(
+                    "Review cycle limit reached ({cycles}/{}).\n\nState is now Failed. \
+                     A human must call /reset to recover.",
+                    config.limits.max_review_cycles,
+                ))
+            }
+        };
     }
 
     match state.reject(config.limits.max_review_cycles) {
@@ -231,6 +265,8 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "addressing");
+        assert_eq!(task.review_cycles, 1);
+        assert_eq!(task.check_retries, 0);
         assert_eq!(task.claimed_by, None);
 
         teardown(previous);

@@ -116,6 +116,9 @@ pub struct TaskRecord {
     pub claimed_by: Option<String>,
     pub lease_until: Option<String>,
     pub last_heartbeat: Option<String>,
+    pub check_retries: u32,
+    pub review_cycles: u32,
+    pub failure_reason: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -125,6 +128,9 @@ pub struct RuntimeTaskContext {
     pub task_path: String,
     pub run_dir: String,
     pub status: String,
+    pub check_retries: u32,
+    pub review_cycles: u32,
+    pub failure_reason: Option<String>,
     pub run_id: Option<String>,
 }
 
@@ -149,6 +155,9 @@ pub struct TaskLease {
     pub task_id: String,
     pub task_path: String,
     pub status: String,
+    pub check_retries: u32,
+    pub review_cycles: u32,
+    pub failure_reason: Option<String>,
     pub claimed_by: String,
     pub lease_until: DateTime<Utc>,
 }
@@ -174,6 +183,18 @@ pub enum LeaseRenewal {
         claimed_by: String,
     },
     Expired,
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskCheckFailure {
+    Failed { retries: u32 },
+    LimitExceeded { retries: u32 },
+}
+
+#[derive(Debug, Clone)]
+pub enum TaskReviewRejection {
+    Addressing { cycles: u32 },
+    LimitExceeded { cycles: u32 },
 }
 
 impl DoctorReport {
@@ -632,7 +653,8 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
         let connection = open_runtime_database(&database_path)?;
         let mut statement = connection.prepare(
             r#"
-            SELECT id, path, status, claimed_by, lease_until, last_heartbeat
+            SELECT id, path, status, claimed_by, lease_until, last_heartbeat,
+                   check_retries, review_cycles, failure_reason
             FROM tasks
             ORDER BY
                 CASE WHEN id = 'current' THEN 0 ELSE 1 END,
@@ -647,6 +669,9 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
                 claimed_by: row.get(3)?,
                 lease_until: row.get(4)?,
                 last_heartbeat: row.get(5)?,
+                check_retries: row.get::<_, i64>(6)? as u32,
+                review_cycles: row.get::<_, i64>(7)? as u32,
+                failure_reason: row.get(8)?,
             })
         })?;
 
@@ -772,6 +797,150 @@ pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) ->
     .await?
 }
 
+pub async fn record_task_check_passed(task_id: &str) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        connection.execute(
+            "UPDATE tasks SET check_retries = 0, failure_reason = NULL WHERE id = ?1",
+            [&task_id],
+        )?;
+        insert_event(
+            &connection,
+            None,
+            "task_check_passed",
+            &serde_json::json!({ "task_id": task_id }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn record_task_check_failed(
+    task_id: &str,
+    failure_reason: &str,
+    max_retries: u32,
+) -> Result<TaskCheckFailure> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let failure_reason = failure_reason.to_string();
+    tokio::task::spawn_blocking(move || -> Result<TaskCheckFailure> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let retries = task_check_retries(&transaction, &task_id)? + 1;
+        if retries >= max_retries {
+            let limit_failure_reason = format!(
+                "Check failed {max_retries} consecutive times. Last failure:\n{failure_reason}"
+            );
+            transaction.execute(
+                r#"
+                UPDATE tasks
+                SET status = 'failed', check_retries = ?1, failure_reason = ?2,
+                    claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
+                WHERE id = ?3
+                "#,
+                params![retries, limit_failure_reason, task_id],
+            )?;
+            insert_event_in_transaction(
+                &transaction,
+                None,
+                "task_check_limit_exceeded",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "retries": retries,
+                    "max_retries": max_retries,
+                }),
+            )?;
+            transaction.commit()?;
+            Ok(TaskCheckFailure::LimitExceeded { retries })
+        } else {
+            transaction.execute(
+                "UPDATE tasks SET check_retries = ?1, failure_reason = ?2 WHERE id = ?3",
+                params![retries, failure_reason, task_id],
+            )?;
+            insert_event_in_transaction(
+                &transaction,
+                None,
+                "task_check_failed",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "retries": retries,
+                    "max_retries": max_retries,
+                }),
+            )?;
+            transaction.commit()?;
+            Ok(TaskCheckFailure::Failed { retries })
+        }
+    })
+    .await?
+}
+
+pub async fn record_task_review_rejected(
+    task_id: &str,
+    max_cycles: u32,
+) -> Result<TaskReviewRejection> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<TaskReviewRejection> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let cycles = task_review_cycles(&transaction, &task_id)? + 1;
+        if cycles >= max_cycles {
+            transaction.execute(
+                r#"
+                UPDATE tasks
+                SET status = 'failed', review_cycles = ?1,
+                    failure_reason = ?2,
+                    claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
+                WHERE id = ?3
+                "#,
+                params![
+                    cycles,
+                    format!("Task rejected {max_cycles} times without resolution."),
+                    task_id
+                ],
+            )?;
+            insert_event_in_transaction(
+                &transaction,
+                None,
+                "task_review_limit_exceeded",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "review_cycles": cycles,
+                    "max_review_cycles": max_cycles,
+                }),
+            )?;
+            transaction.commit()?;
+            Ok(TaskReviewRejection::LimitExceeded { cycles })
+        } else {
+            transaction.execute(
+                r#"
+                UPDATE tasks
+                SET status = 'addressing', review_cycles = ?1, check_retries = 0,
+                    failure_reason = NULL,
+                    claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
+                WHERE id = ?2
+                "#,
+                params![cycles, task_id],
+            )?;
+            insert_event_in_transaction(
+                &transaction,
+                None,
+                "task_rejected",
+                &serde_json::json!({
+                    "task_id": task_id,
+                    "review_cycles": cycles,
+                    "max_review_cycles": max_cycles,
+                }),
+            )?;
+            transaction.commit()?;
+            Ok(TaskReviewRejection::Addressing { cycles })
+        }
+    })
+    .await?
+}
+
 fn clears_task_lease_for_status(status: &str) -> bool {
     matches!(
         status,
@@ -838,6 +1007,9 @@ async fn claim_next_task_with_statuses(
                     task_id: candidate.id.clone(),
                     task_path: candidate.path.clone(),
                     status: candidate.status.clone(),
+                    check_retries: candidate.check_retries,
+                    review_cycles: candidate.review_cycles,
+                    failure_reason: candidate.failure_reason.clone(),
                     claimed_by: agent_id,
                     lease_until: lease_until.expect("active lease exists"),
                 }));
@@ -861,6 +1033,9 @@ async fn claim_next_task_with_statuses(
                 task_id: candidate.id,
                 task_path: candidate.path,
                 status: candidate.status,
+                check_retries: candidate.check_retries,
+                review_cycles: candidate.review_cycles,
+                failure_reason: candidate.failure_reason,
                 claimed_by: agent_id,
                 lease_until,
             }));
@@ -1027,10 +1202,11 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || -> Result<Option<RuntimeTaskContext>> {
         let connection = open_runtime_database(&database_path)?;
-        if let Some((task_id, task_path, status)) = connection
-            .query_row(
-                r#"
-                SELECT id, path, status
+        if let Some((task_id, task_path, status, check_retries, review_cycles, failure_reason)) =
+            connection
+                .query_row(
+                    r#"
+                SELECT id, path, status, check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE claimed_by = ?1
                 ORDER BY
@@ -1039,16 +1215,19 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                     id
                 LIMIT 1
                 "#,
-                [&agent_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?
+                    [&agent_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)? as u32,
+                            row.get::<_, i64>(4)? as u32,
+                            row.get::<_, Option<String>>(5)?,
+                        ))
+                    },
+                )
+                .optional()?
         {
             let run_id = latest_run_id_for_agent_task(&connection, &agent_id, &task_id)?;
             return Ok(Some(RuntimeTaskContext {
@@ -1056,6 +1235,9 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                 task_id,
                 task_path,
                 status,
+                check_retries,
+                review_cycles,
+                failure_reason,
                 run_id,
             }));
         }
@@ -1063,7 +1245,8 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
         let context = connection
             .query_row(
                 r#"
-                SELECT runs.id, tasks.id, tasks.path, tasks.status
+                SELECT runs.id, tasks.id, tasks.path, tasks.status,
+                       tasks.check_retries, tasks.review_cycles, tasks.failure_reason
                 FROM runs
                 JOIN tasks ON tasks.id = runs.task_id
                 WHERE runs.agent = ?1 AND runs.status IN ('running', 'checking', 'reviewing')
@@ -1079,6 +1262,9 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                         task_id,
                         task_path: row.get(2)?,
                         status: row.get(3)?,
+                        check_retries: row.get::<_, i64>(4)? as u32,
+                        review_cycles: row.get::<_, i64>(5)? as u32,
+                        failure_reason: row.get(6)?,
                         run_id: Some(run_id),
                     })
                 },
@@ -1598,7 +1784,14 @@ async fn validate_database_schema(path: &Path) -> Result<bool> {
                 return Ok(false);
             }
         }
-        for column in ["claimed_by", "lease_until", "last_heartbeat"] {
+        for column in [
+            "claimed_by",
+            "lease_until",
+            "last_heartbeat",
+            "check_retries",
+            "review_cycles",
+            "failure_reason",
+        ] {
             if !column_exists(&connection, "tasks", column)? {
                 return Ok(false);
             }
@@ -1651,7 +1844,8 @@ async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Op
         let task = connection
             .query_row(
                 r#"
-                SELECT id, path, status, claimed_by, lease_until, last_heartbeat
+                SELECT id, path, status, claimed_by, lease_until, last_heartbeat,
+                       check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE id = ?1
                 "#,
@@ -1664,6 +1858,9 @@ async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Op
                         claimed_by: row.get(3)?,
                         lease_until: row.get(4)?,
                         last_heartbeat: row.get(5)?,
+                        check_retries: row.get::<_, i64>(6)? as u32,
+                        review_cycles: row.get::<_, i64>(7)? as u32,
+                        failure_reason: row.get(8)?,
                     })
                 },
             )
@@ -1712,7 +1909,10 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             claimed_by TEXT,
             lease_until TEXT,
-            last_heartbeat TEXT
+            last_heartbeat TEXT,
+            check_retries INTEGER NOT NULL DEFAULT 0,
+            review_cycles INTEGER NOT NULL DEFAULT 0,
+            failure_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS runs (
@@ -1741,6 +1941,19 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     ensure_column(connection, "tasks", "claimed_by", "TEXT")?;
     ensure_column(connection, "tasks", "lease_until", "TEXT")?;
     ensure_column(connection, "tasks", "last_heartbeat", "TEXT")?;
+    ensure_column(
+        connection,
+        "tasks",
+        "check_retries",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        connection,
+        "tasks",
+        "review_cycles",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(connection, "tasks", "failure_reason", "TEXT")?;
     Ok(())
 }
 
@@ -1766,10 +1979,37 @@ fn ensure_task_exists(connection: &Connection, id: &str, path: &str) -> Result<(
     Ok(())
 }
 
+fn task_check_retries(connection: &Connection, task_id: &str) -> Result<u32> {
+    let retries = connection
+        .query_row(
+            "SELECT check_retries FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    Ok(retries as u32)
+}
+
+fn task_review_cycles(connection: &Connection, task_id: &str) -> Result<u32> {
+    let cycles = connection
+        .query_row(
+            "SELECT review_cycles FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    Ok(cycles as u32)
+}
+
 struct ReadyTaskCandidate {
     id: String,
     path: String,
     status: String,
+    check_retries: u32,
+    review_cycles: u32,
+    failure_reason: Option<String>,
     claimed_by: Option<String>,
     lease_until: Option<String>,
 }
@@ -1786,7 +2026,8 @@ fn task_candidates_by_status(
         .join(", ");
     let sql = format!(
         r#"
-        SELECT id, path, status, claimed_by, lease_until
+        SELECT id, path, status, check_retries, review_cycles, failure_reason,
+               claimed_by, lease_until
         FROM tasks
         WHERE status IN ({placeholders})
         ORDER BY id
@@ -1798,8 +2039,11 @@ fn task_candidates_by_status(
             id: row.get(0)?,
             path: row.get(1)?,
             status: row.get(2)?,
-            claimed_by: row.get(3)?,
-            lease_until: row.get(4)?,
+            check_retries: row.get::<_, i64>(3)? as u32,
+            review_cycles: row.get::<_, i64>(4)? as u32,
+            failure_reason: row.get(5)?,
+            claimed_by: row.get(6)?,
+            lease_until: row.get(7)?,
         })
     })?;
 
@@ -2413,6 +2657,94 @@ mod tests {
         assert_eq!(tasks[0].status, "executing");
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(tasks[0].lease_until.is_some());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_task_check_failures_use_per_task_retry_budget() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        claim_current_task("executor:codex:1", 60).await.unwrap();
+
+        let first = record_task_check_failed("t-001", "fmt failed", 2)
+            .await
+            .unwrap();
+        assert!(matches!(first, TaskCheckFailure::Failed { retries: 1 }));
+
+        let tasks = list_tasks().await.unwrap();
+        assert_eq!(tasks[0].status, "executing");
+        assert_eq!(tasks[0].check_retries, 1);
+        assert_eq!(tasks[0].failure_reason.as_deref(), Some("fmt failed"));
+        assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
+
+        let second = record_task_check_failed("t-001", "tests failed", 2)
+            .await
+            .unwrap();
+        assert!(matches!(
+            second,
+            TaskCheckFailure::LimitExceeded { retries: 2 }
+        ));
+
+        let tasks = list_tasks().await.unwrap();
+        assert_eq!(tasks[0].status, "failed");
+        assert_eq!(tasks[0].check_retries, 2);
+        assert_eq!(tasks[0].claimed_by, None);
+        assert_eq!(tasks[0].lease_until, None);
+        assert!(
+            tasks[0]
+                .failure_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Last failure:\ntests failed")
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_task_review_rejections_use_per_task_cycle_budget() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
+            .await
+            .unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "supervisor:codex:1", 60)
+            .await
+            .unwrap();
+
+        let first = record_task_review_rejected("t-001", 2).await.unwrap();
+        assert!(matches!(
+            first,
+            TaskReviewRejection::Addressing { cycles: 1 }
+        ));
+
+        let tasks = list_tasks().await.unwrap();
+        assert_eq!(tasks[0].status, "addressing");
+        assert_eq!(tasks[0].review_cycles, 1);
+        assert_eq!(tasks[0].check_retries, 0);
+        assert_eq!(tasks[0].claimed_by, None);
+
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
+            .await
+            .unwrap();
+        let second = record_task_review_rejected("t-001", 2).await.unwrap();
+        assert!(matches!(
+            second,
+            TaskReviewRejection::LimitExceeded { cycles: 2 }
+        ));
+
+        let tasks = list_tasks().await.unwrap();
+        assert_eq!(tasks[0].status, "failed");
+        assert_eq!(tasks[0].review_cycles, 2);
+        assert_eq!(tasks[0].claimed_by, None);
+        assert!(
+            tasks[0]
+                .failure_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Task rejected 2 times")
+        );
 
         teardown(previous);
     }

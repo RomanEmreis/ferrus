@@ -4,7 +4,7 @@ use tracing::info;
 
 use crate::{
     config::Config,
-    project::{self, RuntimeTaskContext},
+    project::{self, RuntimeTaskContext, TaskCheckFailure},
     state::{machine::TaskState, machine::TransitionError, store},
 };
 
@@ -48,8 +48,16 @@ pub async fn handler_for_agent(agent_id: &str, content: String) -> Result<String
 async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     let config = Config::load().await?;
     let mut state = store::read_state().await?;
+    let runtime_context = runtime_context(agent_id).await;
 
-    if !matches!(state.state, TaskState::Executing | TaskState::Addressing) {
+    if !matches!(state.state, TaskState::Executing | TaskState::Addressing)
+        && !matches!(
+            runtime_context
+                .as_ref()
+                .map(|context| context.status.as_str()),
+            Some("executing" | "addressing")
+        )
+    {
         anyhow::bail!(
             "Cannot submit from state {:?}. Submit is only valid from Executing or Addressing after the implementation is ready.",
             state.state
@@ -58,14 +66,20 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     if let Some(agent_id) = agent_id {
         ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
     }
-    let runtime_context = runtime_context(agent_id).await;
+    let use_legacy_state = should_use_legacy_state(&state, runtime_context.as_ref());
 
     if config.checks.commands.is_empty() {
         info!("No check commands configured; treating final check gate as pass");
-        state.check_passed()?;
-        state.submit()?;
+        if use_legacy_state {
+            state.check_passed()?;
+            state.submit()?;
+        } else if let Some(context) = runtime_context.as_ref() {
+            project::record_task_check_passed(&context.task_id).await?;
+        }
         write_submission(&state, runtime_context.as_ref(), &content).await?;
-        store::write_state(&state).await?;
+        if use_legacy_state {
+            store::write_state(&state).await?;
+        }
         record_task_status(runtime_context.as_ref(), "reviewing").await;
         project::record_runtime_event_best_effort(
             runtime_context
@@ -83,12 +97,26 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     }
 
     info!("Running final check gate before review submission");
-    match check_gate::run(&config, state.check_retries + 1).await? {
+    let attempt = if use_legacy_state {
+        state.check_retries + 1
+    } else {
+        runtime_context
+            .as_ref()
+            .map(|context| context.check_retries + 1)
+            .unwrap_or(1)
+    };
+    match check_gate::run(&config, attempt).await? {
         CheckGateResult::Passed => {
-            state.check_passed()?;
-            state.submit()?;
+            if use_legacy_state {
+                state.check_passed()?;
+                state.submit()?;
+            } else if let Some(context) = runtime_context.as_ref() {
+                project::record_task_check_passed(&context.task_id).await?;
+            }
             write_submission(&state, runtime_context.as_ref(), &content).await?;
-            store::write_state(&state).await?;
+            if use_legacy_state {
+                store::write_state(&state).await?;
+            }
             record_task_status(runtime_context.as_ref(), "reviewing").await;
             project::record_runtime_event_best_effort(
                 runtime_context
@@ -106,6 +134,55 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
             )
         }
         CheckGateResult::Failed(failure) => {
+            if !use_legacy_state {
+                let Some(context) = runtime_context.as_ref() else {
+                    anyhow::bail!("Cannot update task check failure without runtime task context");
+                };
+                return match project::record_task_check_failed(
+                    &context.task_id,
+                    &failure.failure_reason,
+                    config.limits.max_check_retries,
+                )
+                .await?
+                {
+                    TaskCheckFailure::Failed { retries } => {
+                        project::record_runtime_event_best_effort(
+                            context.run_id.clone(),
+                            "submit_check_failed",
+                            serde_json::json!({
+                                "task_id": context.task_id,
+                                "retries": retries,
+                                "max_retries": config.limits.max_check_retries,
+                                "state": context.status,
+                            }),
+                        )
+                        .await;
+                        Ok(format!(
+                            "Final review gate failed during /submit (retry {}/{}).\n\n{}\n\nState remains {}. Fix the issues and run /check or /submit again.",
+                            retries,
+                            config.limits.max_check_retries,
+                            failure.report,
+                            context.status,
+                        ))
+                    }
+                    TaskCheckFailure::LimitExceeded { retries } => {
+                        project::record_runtime_event_best_effort(
+                            context.run_id.clone(),
+                            "submit_check_limit_exceeded",
+                            serde_json::json!({
+                                "task_id": context.task_id,
+                                "retries": retries,
+                                "max_retries": config.limits.max_check_retries,
+                            }),
+                        )
+                        .await;
+                        Ok(format!(
+                            "Final review gate failed during /submit and hit the retry limit ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
+                            config.limits.max_check_retries, failure.report,
+                        ))
+                    }
+                };
+            }
             match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
                 Ok(()) => {
                     store::write_state(&state).await?;
@@ -180,6 +257,16 @@ async fn record_task_status(context: Option<&RuntimeTaskContext>, status: &str) 
     } else {
         project::record_current_task_status_best_effort(status).await;
     }
+}
+
+fn should_use_legacy_state(
+    state: &crate::state::machine::StateData,
+    context: Option<&RuntimeTaskContext>,
+) -> bool {
+    context.is_none()
+        || context.is_some_and(|context| {
+            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        })
 }
 
 #[cfg(test)]
@@ -299,6 +386,11 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "reviewing");
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.claimed_by, None);
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Executing);
+        assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
 
         teardown(previous);
     }

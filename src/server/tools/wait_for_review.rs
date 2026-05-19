@@ -60,7 +60,6 @@ async fn run(agent_id: &str) -> Result<String> {
             let task = store::read_task_at(&claim.task_path).await?;
             let submission = store::read_submission_for_run_dir(&run_dir).await?;
             let review = store::read_review_for_run_dir(&run_dir).await?;
-            let state = store::read_state().await?;
 
             info!(
                 agent_id,
@@ -78,8 +77,8 @@ async fn run(agent_id: &str) -> Result<String> {
                 "task": task,
                 "submission": submission,
                 "review": review,
-                "review_cycles_used": state.review_cycles,
-                "check_retries_used": state.check_retries,
+                "review_cycles_used": claim.review_cycles,
+                "check_retries_used": claim.check_retries,
             });
             return Ok(response.to_string());
         }
@@ -159,6 +158,9 @@ async fn claim_state_fallback(
         task_id,
         task_path,
         status: "reviewing".to_string(),
+        check_retries: state.check_retries,
+        review_cycles: state.review_cycles,
+        failure_reason: state.failure_reason.clone(),
         claimed_by: agent_id.to_string(),
         lease_until: state
             .lease_until

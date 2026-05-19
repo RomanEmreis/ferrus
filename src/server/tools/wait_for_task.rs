@@ -75,6 +75,8 @@ async fn run(agent_id: &str) -> Result<String> {
                 "state": state_name_for_task_status(&claim.status),
                 "task": task,
                 "review": review,
+                "check_retries_used": claim.check_retries,
+                "review_cycles_used": claim.review_cycles,
             });
             return Ok(response.to_string());
         }
@@ -155,6 +157,9 @@ async fn claim_state_fallback(
         task_id,
         task_path,
         status: task_status_for_state(&state.state).to_string(),
+        check_retries: state.check_retries,
+        review_cycles: state.review_cycles,
+        failure_reason: state.failure_reason.clone(),
         claimed_by: agent_id.to_string(),
         lease_until: state
             .lease_until
