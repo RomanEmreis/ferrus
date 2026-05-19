@@ -15,6 +15,7 @@ pub mod status;
 pub mod submit;
 pub mod wait_for_answer;
 pub mod wait_for_consult;
+pub mod wait_for_consultation;
 pub mod wait_for_review;
 pub mod wait_for_task;
 

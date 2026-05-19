@@ -1421,6 +1421,55 @@ fn latest_run_id_for_agent_task(
         .optional()?)
 }
 
+fn latest_active_run_for_agent(connection: &Connection, agent_id: &str) -> Result<Option<String>> {
+    Ok(connection
+        .query_row(
+            r#"
+            SELECT id
+            FROM runs
+            WHERE agent = ?1 AND status IN ('running', 'checking', 'reviewing')
+            ORDER BY updated_at DESC, started_at DESC, id DESC
+            LIMIT 1
+            "#,
+            [agent_id],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn consultation_context_for_run(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Option<RuntimeTaskContext>> {
+    Ok(connection
+        .query_row(
+            r#"
+            SELECT tasks.id, tasks.path, tasks.status, tasks.paused_status,
+                   tasks.check_retries, tasks.review_cycles, tasks.failure_reason
+            FROM runs
+            JOIN tasks ON tasks.id = runs.task_id
+            WHERE runs.id = ?1 AND tasks.status = 'consultation'
+            LIMIT 1
+            "#,
+            [run_id],
+            |row| {
+                let task_id = row.get::<_, String>(0)?;
+                Ok(RuntimeTaskContext {
+                    run_dir: run_dir_for_task(&task_id),
+                    task_id,
+                    task_path: row.get(1)?,
+                    status: row.get(2)?,
+                    paused_status: row.get(3)?,
+                    check_retries: row.get::<_, i64>(4)? as u32,
+                    review_cycles: row.get::<_, i64>(5)? as u32,
+                    failure_reason: row.get(6)?,
+                    run_id: Some(run_id.to_string()),
+                })
+            },
+        )
+        .optional()?)
+}
+
 fn run_dir_for_task(task_id: &str) -> String {
     format!(".ferrus/runs/{task_id}")
 }
@@ -1596,6 +1645,77 @@ pub async fn attach_running_run_to_task_best_effort(
             "failed to attach running run to task in ferrus.db"
         );
     }
+}
+
+pub async fn attach_running_run_to_next_consultation(
+    agent_id: &str,
+) -> Result<Option<RuntimeTaskContext>> {
+    let database_path = current_database_path().await?;
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<RuntimeTaskContext>> {
+        let connection = open_runtime_database(&database_path)?;
+        let Some(run_id) = latest_active_run_for_agent(&connection, &agent_id)? else {
+            return Ok(None);
+        };
+
+        if let Some(context) = consultation_context_for_run(&connection, &run_id)? {
+            return Ok(Some(context));
+        }
+
+        let candidate = connection
+            .query_row(
+                r#"
+                SELECT id, path, status, paused_status,
+                       check_retries, review_cycles, failure_reason
+                FROM tasks
+                WHERE status = 'consultation'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM runs
+                      WHERE runs.task_id = tasks.id
+                        AND runs.role = 'supervisor'
+                        AND runs.status IN ('running', 'checking', 'reviewing')
+                  )
+                ORDER BY id
+                LIMIT 1
+                "#,
+                [],
+                |row| {
+                    Ok(RuntimeTaskContext {
+                        task_id: row.get(0)?,
+                        task_path: row.get(1)?,
+                        run_dir: String::new(),
+                        status: row.get(2)?,
+                        paused_status: row.get(3)?,
+                        check_retries: row.get::<_, i64>(4)? as u32,
+                        review_cycles: row.get::<_, i64>(5)? as u32,
+                        failure_reason: row.get(6)?,
+                        run_id: Some(run_id.clone()),
+                    })
+                },
+            )
+            .optional()?;
+        let Some(mut context) = candidate else {
+            return Ok(None);
+        };
+
+        context.run_dir = run_dir_for_task(&context.task_id);
+        connection.execute(
+            "UPDATE runs SET task_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![context.task_id, timestamp(), run_id],
+        )?;
+        insert_event(
+            &connection,
+            Some(&run_id),
+            "run_consultation_attached",
+            &serde_json::json!({
+                "agent": agent_id,
+                "task_id": context.task_id,
+            }),
+        )?;
+        Ok(Some(context))
+    })
+    .await?
 }
 
 pub async fn record_run_finished(run_id: &str, exit_code: i32) -> Result<()> {

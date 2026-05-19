@@ -80,6 +80,14 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         }
         {
             let id = agent_id.clone();
+            app.map_tool("wait_for_consultation", move || {
+                let id = id.clone();
+                async move { tools::wait_for_consultation::handler(&id).await }
+            })
+            .with_description(tools::wait_for_consultation::DESCRIPTION);
+        }
+        {
+            let id = agent_id.clone();
             app.map_tool("respond_consult", move |response| {
                 let id = id.clone();
                 async move { tools::respond_consult::handler_for_agent(&id, response).await }
