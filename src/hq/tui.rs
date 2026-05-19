@@ -17,7 +17,10 @@ use crossterm::{
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::platform;
+use crate::{
+    platform,
+    project::{RunRecord, TaskRecord},
+};
 
 use super::state_watcher::{WatchedState, format_elapsed};
 
@@ -166,6 +169,9 @@ pub struct App {
     status: StatusSnapshot,
     debug: bool,
     messages: Vec<TranscriptLine>,
+    runtime_tasks: Vec<TaskRecord>,
+    runtime_runs: Vec<RunRecord>,
+    runtime_snapshot_at: Option<Instant>,
     input: String,
     cursor_pos: usize,
     history: Vec<String>,
@@ -190,6 +196,9 @@ impl App {
             status: StatusSnapshot::default(),
             debug: false,
             messages: Vec::new(),
+            runtime_tasks: Vec::new(),
+            runtime_runs: Vec::new(),
+            runtime_snapshot_at: None,
             input: String::new(),
             cursor_pos: 0,
             history: load_history(),
@@ -552,6 +561,7 @@ pub async fn run_tui(
         status.branch = branch.clone();
         app.status = status;
     }
+    refresh_runtime_snapshot(&mut app, true).await;
 
     let mut stdout = io::stdout();
     enter_tui()?;
@@ -602,6 +612,7 @@ pub async fn run_tui(
                 }
             }
             _ = tick.tick() => {
+                let refreshed_runtime = refresh_runtime_snapshot(&mut app, false).await;
                 if app.ctrl_c_pending
                     && app
                         .ctrl_c_at
@@ -613,11 +624,18 @@ pub async fn run_tui(
                         clear_live_area(&mut stdout, &ui)?;
                         redraw_live_area(&mut stdout, &app, &mut ui)?;
                     }
+                } else if refreshed_runtime && !app.suspended {
+                    clear_live_area(&mut stdout, &ui)?;
+                    redraw_live_area(&mut stdout, &app, &mut ui)?;
                 }
             }
             changed = state_rx.changed() => {
-                if changed.is_ok()
-                    && let Some(watched) = state_rx.borrow_and_update().clone() {
+                let watched = if changed.is_ok() {
+                    state_rx.borrow_and_update().clone()
+                } else {
+                    None
+                };
+                if let Some(watched) = watched {
                     let supervisor_status = app.status.supervisor_status.clone();
                     let executor_status = app.status.executor_status.clone();
                     let directory = app.status.directory.clone();
@@ -628,6 +646,7 @@ pub async fn run_tui(
                     next.directory = directory;
                     next.branch = branch;
                     app.status = next;
+                    refresh_runtime_snapshot(&mut app, true).await;
                     if !app.suspended && !refresh_status_line(&mut stdout, &app, &ui)? {
                         clear_live_area(&mut stdout, &ui)?;
                         redraw_live_area(&mut stdout, &app, &mut ui)?;
@@ -648,6 +667,24 @@ pub async fn run_tui(
     save_history(&app.history);
     leave_tui()?;
     Ok(())
+}
+
+async fn refresh_runtime_snapshot(app: &mut App, force: bool) -> bool {
+    if !force
+        && app
+            .runtime_snapshot_at
+            .is_some_and(|last| last.elapsed() < Duration::from_secs(1))
+    {
+        return false;
+    }
+    if let Ok(tasks) = crate::project::list_tasks().await {
+        app.runtime_tasks = tasks;
+    }
+    if let Ok(runs) = crate::project::list_runs(12).await {
+        app.runtime_runs = runs;
+    }
+    app.runtime_snapshot_at = Some(Instant::now());
+    true
 }
 
 fn handle_event(
@@ -811,8 +848,11 @@ fn handle_message(
     match msg {
         UiMessage::Info(text) => {
             let lines = split_transcript(&text, TranscriptKind::Info);
-            app.messages.extend(lines.iter().cloned());
-            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
+            push_transcript_lines(app, lines);
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
+            }
         }
         UiMessage::Tip(text) => {
             let line = TranscriptLine {
@@ -820,18 +860,27 @@ fn handle_message(
                 kind: TranscriptKind::Tip,
                 continuation: false,
             };
-            app.messages.push(line.clone());
-            print_message_and_restore_prompt(stdout, app, ui, std::slice::from_ref(&line))?;
+            push_transcript_lines(app, vec![line]);
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
+            }
         }
         UiMessage::Muted(text) => {
             let lines = split_transcript(&text, TranscriptKind::Muted);
-            app.messages.extend(lines.iter().cloned());
-            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
+            push_transcript_lines(app, lines);
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
+            }
         }
         UiMessage::Error(text) => {
             let lines = split_transcript(&text, TranscriptKind::Error);
-            app.messages.extend(lines.iter().cloned());
-            print_message_and_restore_prompt(stdout, app, ui, &lines)?;
+            push_transcript_lines(app, lines);
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
+            }
         }
         UiMessage::Transition { from, to } => {
             let line = TranscriptLine {
@@ -842,8 +891,11 @@ fn handle_message(
                 kind: TranscriptKind::Transition,
                 continuation: false,
             };
-            app.messages.push(line.clone());
-            print_message_and_restore_prompt(stdout, app, ui, std::slice::from_ref(&line))?;
+            push_transcript_lines(app, vec![line]);
+            if !app.suspended {
+                clear_live_area(stdout, ui)?;
+                redraw_live_area(stdout, app, ui)?;
+            }
         }
         UiMessage::StatusUpdate(status) => {
             let mut next = status;
@@ -925,7 +977,16 @@ fn handle_message(
     Ok(false)
 }
 
-// The transcript is real terminal output; only the prompt area is ephemeral.
+fn push_transcript_lines(app: &mut App, lines: Vec<TranscriptLine>) {
+    app.messages.extend(lines);
+    let keep_from = app.messages.len().saturating_sub(200);
+    if keep_from > 0 {
+        app.messages.drain(0..keep_from);
+    }
+}
+
+// The dashboard is ephemeral terminal output; interactive child sessions still
+// suspend it and get the real terminal.
 fn print_startup_header(stdout: &mut Stdout, startup: &StartupHeader) -> Result<()> {
     queue!(stdout, Print("\r\n"))?;
     let width = terminal_width() as usize;
@@ -1651,6 +1712,11 @@ fn print_live_area_border(stdout: &mut Stdout, width: usize) -> Result<()> {
 
 enum LiveAreaLine {
     Status,
+    Dashboard {
+        text: String,
+        color: Color,
+        bold: bool,
+    },
     Selection {
         selected: bool,
         text: String,
@@ -1683,8 +1749,175 @@ fn render_lower_live_area(app: &App, width: usize) -> Vec<LiveAreaLine> {
             )
             .collect()
     } else {
-        vec![LiveAreaLine::Status]
+        render_dashboard_live_area(app, width)
     }
+}
+
+fn render_dashboard_live_area(app: &App, width: usize) -> Vec<LiveAreaLine> {
+    let height = terminal_height() as usize;
+    let max_lines = height.saturating_sub(8).clamp(8, 30);
+    let mut lines = Vec::new();
+
+    lines.push(dashboard_line(
+        dashboard_project_summary(app, width),
+        Color::Grey,
+        false,
+    ));
+    lines.push(dashboard_line(
+        "ACTIVE TASKS".to_string(),
+        Color::Rgb {
+            r: 226,
+            g: 128,
+            b: 18,
+        },
+        true,
+    ));
+    lines.push(dashboard_line(
+        format!(
+            "{:<10} {:<14} {:<13} {:<10} {}",
+            "ID", "STATUS", "PAUSED", "RETRY", "PATH"
+        ),
+        Color::DarkGrey,
+        false,
+    ));
+
+    let active_tasks = app
+        .runtime_tasks
+        .iter()
+        .filter(|task| !matches!(task.status.as_str(), "complete" | "failed" | "idle"))
+        .take(5)
+        .collect::<Vec<_>>();
+    if active_tasks.is_empty() {
+        lines.push(dashboard_line(
+            "no active tasks".to_string(),
+            Color::DarkGrey,
+            false,
+        ));
+    } else {
+        for task in active_tasks {
+            let retry = format!("{}/{}", task.check_retries, task.review_cycles);
+            lines.push(dashboard_line(
+                truncate_to_width(
+                    &format!(
+                        "{:<10} {:<14} {:<13} {:<10} {}",
+                        task.id,
+                        task.status,
+                        task.paused_status.as_deref().unwrap_or("-"),
+                        retry,
+                        task.path
+                    ),
+                    width.max(1),
+                ),
+                task_status_color(&task.status),
+                false,
+            ));
+        }
+    }
+
+    lines.push(dashboard_line(String::new(), Color::DarkGrey, false));
+    lines.push(dashboard_line(
+        "RUNS".to_string(),
+        Color::Rgb {
+            r: 226,
+            g: 128,
+            b: 18,
+        },
+        true,
+    ));
+    lines.push(dashboard_line(
+        format!(
+            "{:<12} {:<10} {:<12} {:<14} {}",
+            "ROLE", "TASK", "STATUS", "PID", "AGENT"
+        ),
+        Color::DarkGrey,
+        false,
+    ));
+    for run in app.runtime_runs.iter().take(5) {
+        let pid = run
+            .pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        lines.push(dashboard_line(
+            truncate_to_width(
+                &format!(
+                    "{:<12} {:<10} {:<12} {:<14} {}",
+                    run.role, run.task_id, run.status, pid, run.agent
+                ),
+                width.max(1),
+            ),
+            run_status_color(&run.status),
+            false,
+        ));
+    }
+    if app.runtime_runs.is_empty() {
+        lines.push(dashboard_line(
+            "no runs recorded".to_string(),
+            Color::DarkGrey,
+            false,
+        ));
+    }
+
+    lines.push(dashboard_line(String::new(), Color::DarkGrey, false));
+    lines.push(dashboard_line(
+        "LIVE ACTIVITY".to_string(),
+        Color::Rgb {
+            r: 226,
+            g: 128,
+            b: 18,
+        },
+        true,
+    ));
+    let remaining = max_lines.saturating_sub(lines.len()).max(3);
+    for message in app
+        .messages
+        .iter()
+        .rev()
+        .take(remaining)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        lines.push(dashboard_line(
+            truncate_to_width(&activity_text(message), width.max(1)),
+            transcript_color(message.kind),
+            matches!(
+                message.kind,
+                TranscriptKind::Error | TranscriptKind::Transition
+            ),
+        ));
+    }
+    if app.messages.is_empty() {
+        lines.push(dashboard_line(
+            "no activity yet".to_string(),
+            Color::DarkGrey,
+            false,
+        ));
+    }
+
+    lines.truncate(max_lines);
+    if lines.is_empty() {
+        lines.push(LiveAreaLine::Status);
+    }
+    lines
+}
+
+fn dashboard_line(text: String, color: Color, bold: bool) -> LiveAreaLine {
+    LiveAreaLine::Dashboard { text, color, bold }
+}
+
+fn dashboard_project_summary(app: &App, width: usize) -> String {
+    let spec = app.status.selected_spec.as_deref().unwrap_or("-");
+    let milestone = app.status.selected_milestone.as_deref().unwrap_or("-");
+    truncate_to_width(
+        &format!(
+            "PROJECT  path: {}  branch: {}  spec: {}  milestone: {}",
+            app.status.directory,
+            app.status.branch.as_deref().unwrap_or("-"),
+            spec,
+            milestone
+        ),
+        width.max(1),
+    )
 }
 
 fn visible_selection_rows(selection: &SelectionState) -> Vec<(bool, &String)> {
@@ -1733,6 +1966,19 @@ fn print_live_area_line(
 ) -> Result<()> {
     match line {
         LiveAreaLine::Status => print_status_line(stdout, status, ctrl_c_pending, debug, width),
+        LiveAreaLine::Dashboard { text, color, bold } => {
+            let content = truncate_to_width(text, width.max(1));
+            let styled = style(content).with(*color);
+            if *bold {
+                queue!(
+                    stdout,
+                    PrintStyledContent(styled.attribute(Attribute::Bold))
+                )?;
+            } else {
+                queue!(stdout, PrintStyledContent(styled))?;
+            }
+            Ok(())
+        }
         LiveAreaLine::Selection { selected, text } => {
             print_selection_line(stdout, *selected, text, width)
         }
@@ -1823,6 +2069,52 @@ fn task_state_color(task_state: &str) -> Color {
     }
 }
 
+fn task_status_color(status: &str) -> Color {
+    match status {
+        "executing" | "addressing" => Color::Green,
+        "consultation" => Color::Blue,
+        "reviewing" => Color::Cyan,
+        "awaiting_human" => Color::Magenta,
+        "complete" => Color::Green,
+        "failed" => Color::Red,
+        _ => Color::Grey,
+    }
+}
+
+fn run_status_color(status: &str) -> Color {
+    match status {
+        "running" | "checking" | "reviewing" => Color::Green,
+        "completed" => Color::DarkGrey,
+        "interrupted" => Color::Yellow,
+        "failed" => Color::Red,
+        _ => Color::Grey,
+    }
+}
+
+fn transcript_color(kind: TranscriptKind) -> Color {
+    match kind {
+        TranscriptKind::Info => Color::Grey,
+        TranscriptKind::Tip => Color::Yellow,
+        TranscriptKind::Muted => Color::DarkGrey,
+        TranscriptKind::Error => Color::Red,
+        TranscriptKind::Transition => Color::Rgb {
+            r: 210,
+            g: 100,
+            b: 10,
+        },
+    }
+}
+
+fn activity_text(line: &TranscriptLine) -> String {
+    match line.kind {
+        TranscriptKind::Muted if !line.text.chars().next().is_some_and(char::is_whitespace) => {
+            format!("  {}", line.text)
+        }
+        TranscriptKind::Error if !line.continuation => format!("! {}", line.text),
+        _ => line.text.clone(),
+    }
+}
+
 fn split_transcript(text: &str, kind: TranscriptKind) -> Vec<TranscriptLine> {
     let mut lines = Vec::new();
     for (idx, line) in text.lines().enumerate() {
@@ -1844,6 +2136,10 @@ fn split_transcript(text: &str, kind: TranscriptKind) -> Vec<TranscriptLine> {
 
 fn terminal_width() -> u16 {
     size().map(|(w, _)| w).unwrap_or(80)
+}
+
+fn terminal_height() -> u16 {
+    size().map(|(_, h)| h).unwrap_or(24)
 }
 
 fn truncate_to_width(text: &str, width: usize) -> String {
