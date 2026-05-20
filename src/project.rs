@@ -79,7 +79,7 @@ pub struct RuntimeRecovery {
     pub state_lease_mirrors_cleared: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRecord {
     pub id: String,
     pub task_id: String,
@@ -108,7 +108,7 @@ pub struct TaskArtifact {
     pub run_dir: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
     pub id: String,
     pub path: String,
