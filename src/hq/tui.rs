@@ -29,7 +29,7 @@ use crate::{
     state::store,
 };
 
-use super::state_watcher::{WatchedState, format_elapsed};
+use super::state_watcher::{WatchedMilestone, WatchedState, format_elapsed};
 
 const MAX_HISTORY: usize = 100;
 const MAX_COMPLETIONS: usize = 8;
@@ -104,6 +104,24 @@ pub struct StatusSnapshot {
     pub executor_status: String,
     pub selected_spec: Option<String>,
     pub selected_milestone: Option<String>,
+    pub selected_milestones: Vec<MilestoneSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneSnapshot {
+    pub marker: String,
+    pub title: String,
+    pub completed: bool,
+}
+
+impl From<WatchedMilestone> for MilestoneSnapshot {
+    fn from(milestone: WatchedMilestone) -> Self {
+        Self {
+            marker: milestone.marker,
+            title: milestone.title,
+            completed: milestone.completed,
+        }
+    }
 }
 
 impl StatusSnapshot {
@@ -136,6 +154,12 @@ impl StatusSnapshot {
             executor_status: "none".to_string(),
             selected_spec: watched.selected_spec_display.clone(),
             selected_milestone: watched.selected_milestone_display.clone(),
+            selected_milestones: watched
+                .selected_milestones
+                .iter()
+                .cloned()
+                .map(MilestoneSnapshot::from)
+                .collect(),
         }
     }
 }
@@ -556,6 +580,7 @@ struct StartupHeader {
 struct TerminalUi {
     cursor_row: u16,
     cursor_col: u16,
+    prompt_area_top: u16,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -597,6 +622,7 @@ pub async fn run_tui(
     let mut ui = TerminalUi {
         cursor_row: 0,
         cursor_col: 0,
+        prompt_area_top: 0,
     };
     redraw_dashboard(&mut stdout, &app, &mut ui)?;
 
@@ -659,14 +685,17 @@ pub async fn run_tui(
                     let executor_status = app.status.executor_status.clone();
                     let directory = app.status.directory.clone();
                     let branch = app.status.branch.clone();
+                    let previous_status = app.status.clone();
                     let mut next = StatusSnapshot::from_watched_state(&watched);
                     next.supervisor_status = supervisor_status;
                     next.executor_status = executor_status;
                     next.directory = directory;
                     next.branch = branch;
                     app.status = next;
-                    refresh_dashboard_snapshot(&mut app, true).await;
-                    if !app.suspended {
+                    let status_changed = status_dashboard_changed(&previous_status, &app.status);
+                    let refreshed_dashboard =
+                        refresh_dashboard_snapshot(&mut app, status_changed).await;
+                    if (status_changed || refreshed_dashboard) && !app.suspended {
                         redraw_dashboard(&mut stdout, &app, &mut ui)?;
                     }
                 }
@@ -683,6 +712,17 @@ pub async fn run_tui(
     save_history(&app.history);
     leave_tui()?;
     Ok(())
+}
+
+fn status_dashboard_changed(previous: &StatusSnapshot, next: &StatusSnapshot) -> bool {
+    previous.task_state != next.task_state
+        || previous.directory != next.directory
+        || previous.branch != next.branch
+        || previous.selected_spec != next.selected_spec
+        || previous.selected_milestone != next.selected_milestone
+        || previous.selected_milestones != next.selected_milestones
+        || previous.supervisor_status != next.supervisor_status
+        || previous.executor_status != next.executor_status
 }
 
 async fn refresh_dashboard_snapshot(app: &mut App, force: bool) -> bool {
@@ -743,7 +783,7 @@ fn handle_event(
         }
         Event::Paste(text) => {
             app.insert_text(&text);
-            redraw_dashboard(stdout, app, ui)?;
+            redraw_prompt_area(stdout, app, ui)?;
         }
         Event::Key(key) => {
             if key.kind != KeyEventKind::Press {
@@ -758,6 +798,7 @@ fn handle_event(
             }
             app.input_suppressed_until = None;
 
+            let mut full_redraw = false;
             if app.selection.is_some() {
                 handle_selection_key(key, app);
             } else if app.confirmation.is_some() {
@@ -773,7 +814,7 @@ fn handle_event(
                         }
                     }
                     (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-                        redraw_dashboard(stdout, app, ui)?
+                        full_redraw = true;
                     }
                     (KeyCode::Char('a'), KeyModifiers::CONTROL) | (KeyCode::Home, _) => {
                         app.move_home()
@@ -823,7 +864,11 @@ fn handle_event(
             }
 
             if !app.should_quit {
-                redraw_dashboard(stdout, app, ui)?;
+                if full_redraw {
+                    redraw_dashboard(stdout, app, ui)?;
+                } else {
+                    redraw_prompt_area(stdout, app, ui)?;
+                }
             }
         }
         _ => {}
@@ -1129,6 +1174,63 @@ fn redraw_dashboard(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
 
     ui.cursor_row = (prompt_top + prompt.cursor_row as usize).min(footer_row) as u16;
     ui.cursor_col = prompt.cursor_col.min(width.saturating_sub(1) as u16);
+    ui.prompt_area_top = prompt_separator_row as u16;
+    queue!(stdout, MoveTo(ui.cursor_col, ui.cursor_row), Show)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn redraw_prompt_area(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Result<()> {
+    let (width, height) = terminal_size_usize();
+    let prompt = dashboard_prompt(app, width);
+    let prompt_rows = prompt.lines.len().max(1);
+    let prompt_accessory = prompt_accessory_lines(app, width);
+    let accessory_rows = prompt_accessory.len();
+    let footer_row = height.saturating_sub(1);
+    let footer_separator_row = footer_row.saturating_sub(1);
+    let prompt_top = footer_separator_row.saturating_sub(prompt_rows + accessory_rows);
+    let prompt_separator_row = prompt_top.saturating_sub(1);
+    let clear_from = usize::from(ui.prompt_area_top).min(prompt_separator_row);
+
+    queue!(stdout, Hide)?;
+    for row in clear_from..=footer_row {
+        queue!(
+            stdout,
+            MoveTo(0, row as u16),
+            Clear(ClearType::UntilNewLine)
+        )?;
+    }
+
+    queue!(stdout, MoveTo(0, prompt_separator_row as u16))?;
+    print_styled_line(stdout, &separator_line(width), width)?;
+
+    for (idx, line) in prompt.lines.iter().enumerate() {
+        let row = prompt_top + idx;
+        if row >= footer_row {
+            break;
+        }
+        queue!(stdout, MoveTo(0, row as u16))?;
+        print_styled_line(stdout, line, width)?;
+    }
+
+    for (idx, line) in prompt_accessory.iter().enumerate() {
+        let row = prompt_top + prompt_rows + idx;
+        if row >= footer_row {
+            break;
+        }
+        queue!(stdout, MoveTo(0, row as u16))?;
+        print_styled_line(stdout, line, width)?;
+    }
+
+    queue!(stdout, MoveTo(0, footer_separator_row as u16))?;
+    print_styled_line(stdout, &separator_line(width), width)?;
+
+    queue!(stdout, MoveTo(0, footer_row as u16))?;
+    print_styled_line(stdout, &footer_line(app, width), width)?;
+
+    ui.cursor_row = (prompt_top + prompt.cursor_row as usize).min(footer_row) as u16;
+    ui.cursor_col = prompt.cursor_col.min(width.saturating_sub(1) as u16);
+    ui.prompt_area_top = prompt_separator_row as u16;
     queue!(stdout, MoveTo(ui.cursor_col, ui.cursor_row), Show)?;
     stdout.flush()?;
     Ok(())
@@ -1137,13 +1239,12 @@ fn redraw_dashboard(stdout: &mut Stdout, app: &App, ui: &mut TerminalUi) -> Resu
 fn dashboard_lines(app: &App, width: usize, max_lines: usize) -> Vec<DashboardLine> {
     let mut lines = Vec::new();
     lines.extend(header_lines(app, width));
-    lines.extend(project_and_recent_lines(app, width));
-
-    if app.status.task_state == "AwaitingHuman" {
-        lines.extend(question_lines(app, width));
-    } else if let Some(error) = app.last_error.as_deref() {
-        lines.extend(error_lines(error, width));
-    }
+    lines.extend(project_and_milestone_lines(app, width));
+    lines.extend(activity_area_lines(
+        app,
+        width,
+        max_lines.saturating_sub(lines.len()),
+    ));
 
     lines.truncate(max_lines);
     lines
@@ -1160,6 +1261,7 @@ fn header_lines(app: &App, width: usize) -> Vec<DashboardLine> {
         .min(width.saturating_sub(HEADER_INSET));
     let mut lines = Vec::new();
 
+    lines.push(DashboardLine::new(StyledLine::plain("", Color::DarkGrey)));
     for idx in 0..logo.len() {
         let logo = pad_or_truncate(logo.get(idx).copied().unwrap_or(""), logo_width);
         lines.push(DashboardLine::styled(
@@ -1187,14 +1289,22 @@ fn header_lines(app: &App, width: usize) -> Vec<DashboardLine> {
 }
 
 fn tip_line(width: usize) -> StyledLine {
+    const TIP_INSET: usize = 1;
     let tip = "Tip: /spec to create a spec · /task to start a task · /help for all commands";
-    let mut line = StyledLine::default();
-    let mut remaining = width;
+    let mut line = StyledLine {
+        segments: vec![StyledSegment {
+            text: " ".repeat(TIP_INSET.min(width)),
+            color: Color::DarkGrey,
+            bold: false,
+        }],
+    };
+    let mut remaining = width.saturating_sub(TIP_INSET);
+    let mut saw_word = false;
     for part in tip.split(' ') {
         if remaining == 0 {
             break;
         }
-        let spacer = usize::from(!line.segments.is_empty());
+        let spacer = usize::from(saw_word);
         if spacer > 0 {
             line.segments.push(StyledSegment {
                 text: " ".to_string(),
@@ -1220,6 +1330,7 @@ fn tip_line(width: usize) -> StyledLine {
             color,
             bold: false,
         });
+        saw_word = true;
     }
     line
 }
@@ -1268,7 +1379,7 @@ fn separator_line(width: usize) -> StyledLine {
     StyledLine::plain("─".repeat(width.max(1)), Color::DarkGrey)
 }
 
-fn project_and_recent_lines(app: &App, width: usize) -> Vec<DashboardLine> {
+fn project_and_milestone_lines(app: &App, width: usize) -> Vec<DashboardLine> {
     const SECTION_INSET: usize = 2;
     if width < 12 + SECTION_INSET * 2 {
         return Vec::new();
@@ -1295,12 +1406,8 @@ fn project_and_recent_lines(app: &App, width: usize) -> Vec<DashboardLine> {
             app.status.selected_milestone.as_deref().unwrap_or("-")
         ),
     ];
-    let mut right = vec![frame_cell(&section_title("Recent"))];
-    right.extend(
-        recent_lines(app, 5)
-            .into_iter()
-            .map(|line| frame_cell(&line)),
-    );
+    let mut right = vec![frame_cell(&section_title("Milestones"))];
+    right.extend(milestone_lines(app, right_width));
     for line in &mut left[2..] {
         *line = frame_cell(line);
     }
@@ -1351,18 +1458,130 @@ fn frame_cell(text: &str) -> String {
     format!(" {text}")
 }
 
+fn milestone_lines(app: &App, width: usize) -> Vec<String> {
+    if app.status.selected_milestones.is_empty() {
+        return vec![frame_cell("no selected milestones")];
+    }
+
+    let content_width = width.saturating_sub(2);
+    let status_width = display_width("pending");
+    app.status
+        .selected_milestones
+        .iter()
+        .map(|milestone| {
+            let label = format!("{}:", milestone_marker_label(&milestone.marker));
+            let status = if milestone.completed {
+                "done"
+            } else {
+                "pending"
+            };
+            let title_width = content_width
+                .saturating_sub(display_width(&label) + status_width + 2)
+                .max(8);
+            let title = truncate_to_width(&milestone.title, title_width);
+            frame_cell(&format!(
+                "{label} {} {status:<status_width$}",
+                pad_or_truncate(&title, title_width)
+            ))
+        })
+        .collect()
+}
+
+fn milestone_marker_label(marker: &str) -> String {
+    marker
+        .strip_prefix('#')
+        .map(|marker| format!("M{marker}"))
+        .unwrap_or_else(|| marker.to_string())
+}
+
+fn activity_area_lines(app: &App, width: usize, max_lines: usize) -> Vec<DashboardLine> {
+    if max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    if app.status.task_state == "AwaitingHuman" {
+        lines.push(DashboardLine::new(StyledLine::plain("", Color::DarkGrey)));
+        lines.extend(question_lines(app, width));
+    } else if let Some(error) = app.last_error.as_deref() {
+        lines.push(DashboardLine::new(StyledLine::plain("", Color::DarkGrey)));
+        lines.extend(error_lines(error, width));
+    }
+
+    let remaining = max_lines.saturating_sub(lines.len());
+    if remaining == 0 {
+        lines.truncate(max_lines);
+        return lines;
+    }
+
+    let mut activity = app
+        .messages
+        .iter()
+        .rev()
+        .take(remaining)
+        .cloned()
+        .collect::<Vec<_>>();
+    activity.reverse();
+
+    if activity.is_empty() {
+        lines.extend(app.runtime_runs.iter().take(remaining).map(|run| {
+            DashboardLine::new(StyledLine::plain(
+                truncate_to_width(
+                    &format!(
+                        "  {}  {}  {}  {}",
+                        short_time(&run.updated_at),
+                        run.task_id,
+                        run.role,
+                        run.status
+                    ),
+                    width,
+                ),
+                Color::DarkGrey,
+            ))
+        }));
+    } else {
+        for line in activity {
+            if !line.continuation {
+                push_activity_gap(&mut lines);
+                if lines.len() >= max_lines {
+                    break;
+                }
+            }
+            lines.push(DashboardLine::new(StyledLine::plain(
+                truncate_to_width(&format!("  {}", activity_text(&line)), width),
+                transcript_color(line.kind),
+            )));
+            if lines.len() >= max_lines {
+                break;
+            }
+        }
+    }
+
+    lines.truncate(max_lines);
+    lines
+}
+
+fn push_activity_gap(lines: &mut Vec<DashboardLine>) {
+    let last_is_blank = lines.last().is_some_and(|line| {
+        line.line
+            .segments
+            .iter()
+            .all(|segment| segment.text.is_empty())
+    });
+    if !last_is_blank {
+        lines.push(DashboardLine::new(StyledLine::plain("", Color::DarkGrey)));
+    }
+}
+
 fn question_lines(app: &App, width: usize) -> Vec<DashboardLine> {
-    let mut lines = vec![
-        DashboardLine::new(separator_line(width)),
-        DashboardLine::new(StyledLine::bold("Question", orange())),
-    ];
+    let mut lines = vec![DashboardLine::new(StyledLine::bold("  Question", orange()))];
     let question = app
         .question
         .as_deref()
         .unwrap_or("Type your answer and press Enter.");
     for line in question.lines().take(3) {
         lines.push(DashboardLine::new(StyledLine::plain(
-            truncate_to_width(line, width),
+            truncate_to_width(&format!("  {line}"), width),
             Color::Grey,
         )));
     }
@@ -1370,13 +1589,10 @@ fn question_lines(app: &App, width: usize) -> Vec<DashboardLine> {
 }
 
 fn error_lines(error: &str, width: usize) -> Vec<DashboardLine> {
-    let mut lines = vec![
-        DashboardLine::new(separator_line(width)),
-        DashboardLine::new(StyledLine::bold("Error", Color::Red)),
-    ];
+    let mut lines = vec![DashboardLine::new(StyledLine::bold("  Error", Color::Red))];
     for line in error.lines().take(3) {
         lines.push(DashboardLine::new(StyledLine::plain(
-            truncate_to_width(line, width),
+            truncate_to_width(&format!("  {line}"), width),
             Color::Red,
         )));
     }
@@ -1416,40 +1632,6 @@ fn completion_dashboard_lines(app: &App, width: usize) -> Vec<StyledLine> {
         },
     ));
     lines
-}
-
-fn recent_lines(app: &App, limit: usize) -> Vec<String> {
-    let mut rows = app
-        .runtime_runs
-        .iter()
-        .take(limit)
-        .map(|run| {
-            format!(
-                "{:<10} {:<10} {:<12} {}",
-                short_time(&run.updated_at),
-                run.task_id,
-                run.role,
-                run.status
-            )
-        })
-        .collect::<Vec<_>>();
-
-    if rows.len() < limit {
-        rows.extend(
-            app.messages
-                .iter()
-                .rev()
-                .take(limit - rows.len())
-                .map(activity_text)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev(),
-        );
-    }
-    if rows.is_empty() {
-        rows.push("no activity yet".to_string());
-    }
-    rows
 }
 
 struct DashboardPrompt {
@@ -1752,7 +1934,7 @@ fn print_framed_dashboard_line(stdout: &mut Stdout, line: &StyledLine, width: us
         if let Some(title) = rest
             .strip_prefix("Project")
             .map(|_| "Project")
-            .or_else(|| rest.strip_prefix("Recent").map(|_| "Recent"))
+            .or_else(|| rest.strip_prefix("Milestones").map(|_| "Milestones"))
         {
             queue!(
                 stdout,
@@ -1763,6 +1945,21 @@ fn print_framed_dashboard_line(stdout: &mut Stdout, line: &StyledLine, width: us
                 )
             )?;
             idx += title.len();
+            continue;
+        }
+        if let Some(status) = rest
+            .strip_prefix("done")
+            .map(|_| ("done", Color::Green))
+            .or_else(|| {
+                rest.strip_prefix("pending")
+                    .map(|_| ("pending", Color::Yellow))
+            })
+        {
+            queue!(
+                stdout,
+                PrintStyledContent(style(status.0.to_string()).with(status.1))
+            )?;
+            idx += status.0.len();
             continue;
         }
 
@@ -1994,6 +2191,16 @@ fn activity_text(line: &TranscriptLine) -> String {
         }
         TranscriptKind::Error if !line.continuation => format!("! {}", line.text),
         _ => line.text.clone(),
+    }
+}
+
+fn transcript_color(kind: TranscriptKind) -> Color {
+    match kind {
+        TranscriptKind::Info => Color::Grey,
+        TranscriptKind::Tip => Color::Yellow,
+        TranscriptKind::Muted => Color::DarkGrey,
+        TranscriptKind::Error => Color::Red,
+        TranscriptKind::Transition => orange(),
     }
 }
 
@@ -2666,11 +2873,12 @@ mod tui_tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(rendered[0].starts_with("  ███████"));
-        assert_eq!(rendered[5], "");
-        assert!(rendered[6].starts_with("  ╭"));
-        assert!(rendered[7].contains("version:"));
-        assert!(rendered[8].contains("supervisor:"));
+        assert_eq!(rendered[0], "");
+        assert!(rendered[1].starts_with("  ███████"));
+        assert_eq!(rendered[6], "");
+        assert!(rendered[7].starts_with("  ╭"));
+        assert!(rendered[8].contains("version:"));
+        assert!(rendered[9].contains("supervisor:"));
     }
 
     #[test]
@@ -2690,6 +2898,7 @@ mod tui_tests {
             .iter()
             .position(|line| line.contains("Tip:"))
             .expect("tip line should be rendered");
+        assert!(rendered[tip_idx].starts_with(" Tip:"));
         let next_non_empty = rendered[tip_idx + 1..]
             .iter()
             .find(|line| !line.is_empty())
@@ -2718,10 +2927,10 @@ mod tui_tests {
     }
 
     #[test]
-    fn project_recent_frame_uses_header_inset() {
+    fn project_milestone_frame_uses_header_inset() {
         let app = App::new();
         let width = 120;
-        let rendered = project_and_recent_lines(&app, 120)
+        let rendered = project_and_milestone_lines(&app, 120)
             .into_iter()
             .map(|row| {
                 row.line
@@ -2738,13 +2947,25 @@ mod tui_tests {
     }
 
     #[test]
-    fn project_recent_frame_rows_keep_terminal_width() {
+    fn project_milestone_frame_rows_keep_terminal_width() {
         let mut app = App::new();
         app.status.directory = "~/Repos/ferrus".into();
         app.status.branch = Some("feature/multi-task".into());
+        app.status.selected_milestones = vec![
+            MilestoneSnapshot {
+                marker: "#1.0".into(),
+                title: "Define dashboard layout".into(),
+                completed: true,
+            },
+            MilestoneSnapshot {
+                marker: "#1.1".into(),
+                title: "Wire runtime activity".into(),
+                completed: false,
+            },
+        ];
         let width = 120;
 
-        let rows = project_and_recent_lines(&app, width);
+        let rows = project_and_milestone_lines(&app, width);
         let rendered = rows
             .iter()
             .map(|row| {
@@ -2762,7 +2983,121 @@ mod tui_tests {
         }
         assert_eq!(rendered[1].find("Project"), rendered[7].find("tasks:"));
         assert!(rendered[1].contains("│ Project"));
-        assert!(rendered[1].contains("│ Recent"));
+        assert!(rendered[1].contains("│ Milestones"));
+        let done_col = rendered[2].find("done").unwrap();
+        let pending_col = rendered[3].find("pending").unwrap();
+        assert_eq!(done_col, pending_col);
+        assert_eq!(char_before_last_border(rendered[2]), Some(' '));
+        assert_eq!(char_before_last_border(rendered[3]), Some(' '));
+    }
+
+    #[test]
+    fn command_output_renders_in_unframed_activity_area() {
+        let mut app = App::new();
+        app.messages.push(TranscriptLine {
+            text: "status output".into(),
+            kind: TranscriptKind::Info,
+            continuation: false,
+        });
+
+        let rendered = dashboard_lines(&app, 120, 40)
+            .into_iter()
+            .map(|line| {
+                line.line
+                    .segments
+                    .into_iter()
+                    .map(|segment| segment.text)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let activity = rendered
+            .iter()
+            .find(|line| line.contains("status output"))
+            .expect("command output should be visible");
+        assert_eq!(activity, "  status output");
+        let activity_idx = rendered
+            .iter()
+            .position(|line| line.contains("status output"))
+            .unwrap();
+        assert_eq!(rendered[activity_idx - 1], "");
+    }
+
+    #[test]
+    fn command_outputs_are_spaced_without_splitting_continuations() {
+        let mut app = App::new();
+        app.messages.extend([
+            TranscriptLine {
+                text: "first command".into(),
+                kind: TranscriptKind::Info,
+                continuation: false,
+            },
+            TranscriptLine {
+                text: "first detail".into(),
+                kind: TranscriptKind::Info,
+                continuation: true,
+            },
+            TranscriptLine {
+                text: "second command".into(),
+                kind: TranscriptKind::Info,
+                continuation: false,
+            },
+        ]);
+
+        let rendered = activity_area_lines(&app, 120, 20)
+            .into_iter()
+            .map(|line| {
+                line.line
+                    .segments
+                    .into_iter()
+                    .map(|segment| segment.text)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let first_idx = rendered
+            .iter()
+            .position(|line| line.contains("first command"))
+            .unwrap();
+        let detail_idx = rendered
+            .iter()
+            .position(|line| line.contains("first detail"))
+            .unwrap();
+        let second_idx = rendered
+            .iter()
+            .position(|line| line.contains("second command"))
+            .unwrap();
+
+        assert_eq!(detail_idx, first_idx + 1);
+        assert_eq!(rendered[first_idx - 1], "");
+        assert_eq!(rendered[second_idx - 1], "");
+    }
+
+    fn char_before_last_border(text: &str) -> Option<char> {
+        let mut before = None;
+        let mut before_last_border = None;
+        for ch in text.chars() {
+            if ch == '│' {
+                before_last_border = before;
+            }
+            before = Some(ch);
+        }
+        before_last_border
+    }
+
+    #[test]
+    fn elapsed_only_status_update_does_not_change_dashboard() {
+        let previous = StatusSnapshot {
+            task_state: "Executing".into(),
+            task_state_detail: "Executing (1s)".into(),
+            ..StatusSnapshot::default()
+        };
+        let next = StatusSnapshot {
+            task_state: "Executing".into(),
+            task_state_detail: "Executing (2s)".into(),
+            ..StatusSnapshot::default()
+        };
+
+        assert!(!status_dashboard_changed(&previous, &next));
     }
 
     #[test]

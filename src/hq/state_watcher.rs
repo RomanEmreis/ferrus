@@ -24,6 +24,14 @@ pub struct WatchedState {
     pub transition: Option<TransitionSnapshot>,
     pub selected_spec_display: Option<String>,
     pub selected_milestone_display: Option<String>,
+    pub selected_milestones: Vec<WatchedMilestone>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WatchedMilestone {
+    pub marker: String,
+    pub title: String,
+    pub completed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,11 +44,14 @@ struct SelectedDisplayCacheKey {
 #[derive(Clone, Debug, Default)]
 struct SelectedDisplayCache {
     key: Option<SelectedDisplayCacheKey>,
-    value: (Option<String>, Option<String>),
+    value: (Option<String>, Option<String>, Vec<WatchedMilestone>),
 }
 
 impl SelectedDisplayCache {
-    async fn get(&mut self, state: &StateData) -> (Option<String>, Option<String>) {
+    async fn get(
+        &mut self,
+        state: &StateData,
+    ) -> (Option<String>, Option<String>, Vec<WatchedMilestone>) {
         let key = SelectedDisplayCacheKey {
             selected_spec: state.selected_spec.clone(),
             selected_milestone: state.selected_milestone.clone(),
@@ -121,7 +132,7 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
             last_sent_state_elapsed_secs = Some(state_elapsed_secs);
             last_sent_task_elapsed_secs = task_elapsed_secs;
             last_state = Some(state.clone());
-            let (selected_spec_display, selected_milestone_display) =
+            let (selected_spec_display, selected_milestone_display, selected_milestones) =
                 selected_display_cache.get(&state).await;
             let _ = tx.send(Some(WatchedState {
                 state,
@@ -129,6 +140,7 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
                 transition,
                 selected_spec_display,
                 selected_milestone_display,
+                selected_milestones,
             }));
         }
     }
@@ -144,21 +156,43 @@ async fn selected_spec_fingerprint(state: &StateData) -> Option<(Option<SystemTi
     Some((metadata.modified().ok(), metadata.len()))
 }
 
-async fn selected_milestone_display(state: &StateData) -> (Option<String>, Option<String>) {
+async fn selected_milestone_display(
+    state: &StateData,
+) -> (Option<String>, Option<String>, Vec<WatchedMilestone>) {
+    let selected_spec_display = state
+        .selected_spec
+        .as_deref()
+        .map(specs::spec_display_name)
+        .map(|name| specs::compact_spec_display_name(&name))
+        .filter(|name| !name.is_empty());
+    let selected_milestones = match state
+        .selected_spec
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
+        Some(path) => specs::load_spec(path)
+            .await
+            .map(|spec| {
+                spec.milestones
+                    .into_iter()
+                    .map(|milestone| WatchedMilestone {
+                        marker: milestone.marker,
+                        title: milestone.title,
+                        completed: milestone.completed,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+
     match specs::resolve_selected(state).await {
         Ok(SelectedMilestoneState::Found(selected)) => (
             Some(specs::compact_spec_display_name(&selected.spec_display)),
             Some(selected.milestone.marker),
+            selected_milestones,
         ),
-        _ => (
-            state
-                .selected_spec
-                .as_deref()
-                .map(specs::spec_display_name)
-                .map(|name| specs::compact_spec_display_name(&name))
-                .filter(|name| !name.is_empty()),
-            None,
-        ),
+        _ => (selected_spec_display, None, selected_milestones),
     }
 }
 

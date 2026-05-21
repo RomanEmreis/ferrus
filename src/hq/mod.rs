@@ -213,41 +213,42 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                     transition: None,
                     selected_spec_display: None,
                     selected_milestone_display: None,
+                    selected_milestones: Vec::new(),
                 }
             };
             ctx.display.status(&watched, &reg);
             if !ctx.headless.is_empty() {
-                ctx.display.info("Headless agents:");
+                let mut lines = vec!["Headless agents:".to_string()];
                 for (name, handle) in &ctx.headless {
                     let status = if handle.is_alive() {
                         "running"
                     } else {
                         "exited"
                     };
-                    ctx.display.info(format!(
+                    lines.push(format!(
                         "  {name} ({status}) — tail logs: {}",
                         handle.log_path.display()
                     ));
                 }
+                ctx.display.info_block(lines);
             }
         }
         ShellCommand::Tasks => {
             let tasks = crate::project::list_tasks().await?;
-            for line in crate::runtime_table::task_lines(&tasks) {
-                ctx.display.info(line);
-            }
+            ctx.display
+                .info_block(crate::runtime_table::task_lines(&tasks));
         }
         ShellCommand::Runs { limit } => {
             let runs = crate::project::list_runs(limit).await?;
-            for line in crate::runtime_table::run_lines(&runs) {
-                ctx.display.info(line);
-            }
+            ctx.display
+                .info_block(crate::runtime_table::run_lines(&runs));
         }
         ShellCommand::Events { limit, run_id } => {
             let events = crate::project::list_events(limit, run_id.clone()).await?;
-            for line in crate::runtime_table::event_lines(&events, run_id.as_deref()) {
-                ctx.display.info(line);
-            }
+            ctx.display.info_block(crate::runtime_table::event_lines(
+                &events,
+                run_id.as_deref(),
+            ));
         }
         ShellCommand::Check { force } => ctx.check(force).await?,
         ShellCommand::Help => {

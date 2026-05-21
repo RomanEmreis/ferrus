@@ -15,6 +15,13 @@ impl Display {
         let _ = self.0.send(UiMessage::Info(msg.into()));
     }
 
+    pub fn info_block(&self, lines: impl IntoIterator<Item = String>) {
+        let text = lines.into_iter().collect::<Vec<_>>().join("\n");
+        if !text.is_empty() {
+            self.info(text);
+        }
+    }
+
     pub fn tip(&self, msg: impl Into<String>) {
         let _ = self.0.send(UiMessage::Tip(msg.into()));
     }
@@ -41,24 +48,24 @@ impl Display {
         let _ = self.0.send(UiMessage::StatusUpdate(snapshot));
 
         let state = &watched.state;
-        self.info(format!("state      : {:?}", state.state));
+        let mut lines = vec![format!("state      : {:?}", state.state)];
         if let Some(by) = &state.claimed_by {
-            self.info(format!("claimed_by : {by}"));
+            lines.push(format!("claimed_by : {by}"));
         }
         if state.check_retries > 0 {
-            self.info(format!("retries    : {}", state.check_retries));
+            lines.push(format!("retries    : {}", state.check_retries));
         }
         if state.review_cycles > 0 {
-            self.info(format!("cycles     : {}", state.review_cycles));
+            lines.push(format!("cycles     : {}", state.review_cycles));
         }
         if let Some(spec) = &state.selected_spec {
-            self.info(format!("spec       : {spec}"));
+            lines.push(format!("spec       : {spec}"));
         }
         if let Some(milestone) = &state.selected_milestone {
-            self.info(format!("milestone  : {milestone}"));
+            lines.push(format!("milestone  : {milestone}"));
         }
         if agents.agents.is_empty() {
-            self.info("agents     : none");
+            lines.push("agents     : none".to_string());
         } else {
             for agent in &agents.agents {
                 let status = match agent.status {
@@ -70,9 +77,10 @@ impl Display {
                     .pid
                     .map(|pid| format!(" pid={pid}"))
                     .unwrap_or_default();
-                self.info(format!("  [{:<10}] {:<10}{}", agent.role, status, pid));
+                lines.push(format!("  [{:<10}] {:<10}{}", agent.role, status, pid));
             }
         }
+        self.info_block(lines);
     }
 
     pub fn suspend(&self) -> oneshot::Receiver<()> {
@@ -174,9 +182,79 @@ fn format_transition_parts(transition: &TransitionSnapshot) -> (Option<String>, 
 mod tests {
     use std::time::Duration;
 
-    use crate::state::machine::TaskState;
+    use tokio::sync::mpsc;
 
-    use super::{TransitionSnapshot, format_transition_parts};
+    use crate::{
+        agent_id::ROLE_SUPERVISOR,
+        hq::{state_watcher::WatchedState, tui::UiMessage},
+        state::{
+            agents::{AgentEntry, AgentStatus, AgentsRegistry},
+            machine::{StateData, TaskState},
+        },
+    };
+
+    use super::{Display, TransitionSnapshot, format_transition_parts};
+
+    #[test]
+    fn info_block_sends_one_multiline_message() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let display = Display(tx);
+
+        display.info_block(vec!["first".to_string(), "second".to_string()]);
+
+        let msg = rx.try_recv().expect("message should be sent");
+        match msg {
+            UiMessage::Info(text) => assert_eq!(text, "first\nsecond"),
+            _ => panic!("expected info message"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn status_sends_details_as_one_transcript_block() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let display = Display(tx);
+        let watched = WatchedState {
+            state: StateData {
+                selected_spec: Some("docs/spec.md".into()),
+                selected_milestone: Some("m1.1".into()),
+                ..StateData::default()
+            },
+            state_elapsed: Duration::default(),
+            transition: None,
+            selected_spec_display: None,
+            selected_milestone_display: None,
+            selected_milestones: Vec::new(),
+        };
+        let agents = AgentsRegistry {
+            agents: vec![AgentEntry {
+                role: ROLE_SUPERVISOR.into(),
+                agent_type: "codex".into(),
+                name: "supervisor".into(),
+                pid: None,
+                status: AgentStatus::Suspended,
+                started_at: None,
+            }],
+        };
+
+        display.status(&watched, &agents);
+
+        assert!(matches!(
+            rx.try_recv().expect("status update should be sent"),
+            UiMessage::StatusUpdate(_)
+        ));
+        let msg = rx.try_recv().expect("status details should be sent");
+        match msg {
+            UiMessage::Info(text) => {
+                assert!(text.contains("state      : Idle\n"));
+                assert!(text.contains("spec       : docs/spec.md\n"));
+                assert!(text.contains("milestone  : m1.1\n"));
+                assert!(text.contains("  [supervisor] suspended"));
+            }
+            _ => panic!("expected info message"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
 
     #[test]
     fn hides_elapsed_when_transition_starts_from_idle() {
