@@ -5,6 +5,7 @@
 
 use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
+    validate_toml_mcp_server,
 };
 use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
 use anyhow::Result;
@@ -70,6 +71,10 @@ impl SupervisorAgent for Supervisor {
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
         codex_headless_prompt_transport()
     }
+
+    fn validate_interactive_launch(&self, role: &str, index: u32) -> Result<()> {
+        validate_interactive_launch(role, index)
+    }
 }
 
 impl ExecutorAgent for Executor {
@@ -89,6 +94,10 @@ impl ExecutorAgent for Executor {
 
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
         codex_headless_prompt_transport()
+    }
+
+    fn validate_interactive_launch(&self, role: &str, index: u32) -> Result<()> {
+        validate_interactive_launch(role, index)
     }
 }
 
@@ -142,6 +151,13 @@ fn apply_opposite_role_mcp_override(command: &mut Command, role: &str, index: u3
     command
         .arg("--config")
         .arg(format!("mcp_servers.{opposite_server}.enabled=false"));
+}
+
+fn validate_interactive_launch(role: &str, index: u32) -> Result<()> {
+    validate_toml_mcp_server(
+        std::path::Path::new(".codex/config.toml"),
+        &mcp_server_name(role, index),
+    )
 }
 
 fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
@@ -542,6 +558,67 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
+    }
+
+    #[test]
+    fn codex_interactive_preflight_reports_missing_config() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let agent = Supervisor::new(None);
+
+        let err = agent
+            .validate_interactive_launch(ROLE_SUPERVISOR, 1)
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("Invalid MCP configuration"));
+        assert!(message.contains(".codex/config.toml"));
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn codex_interactive_preflight_reports_missing_role_server() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::create_dir_all(".codex").unwrap();
+        std::fs::write(
+            ".codex/config.toml",
+            "[mcp_servers.ferrus-executor-1]\ncommand = \"ferrus\"\nargs = []\n",
+        )
+        .unwrap();
+        let agent = Supervisor::new(None);
+
+        let err = agent
+            .validate_interactive_launch(ROLE_SUPERVISOR, 1)
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("MCP server `ferrus-supervisor-1` not found"));
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn codex_interactive_preflight_accepts_registered_role_server() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::create_dir_all(".codex").unwrap();
+        std::fs::write(
+            ".codex/config.toml",
+            "[mcp_servers.ferrus-supervisor-1]\ncommand = \"ferrus\"\nargs = []\n",
+        )
+        .unwrap();
+        let agent = Supervisor::new(None);
+
+        agent
+            .validate_interactive_launch(ROLE_SUPERVISOR, 1)
+            .unwrap();
+        std::env::set_current_dir(previous).unwrap();
     }
 
     #[test]

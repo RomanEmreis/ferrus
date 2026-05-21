@@ -386,6 +386,67 @@ impl Drop for ResumeGuard {
     }
 }
 
+fn clear_primary_screen() {
+    use std::io::Write as _;
+
+    let mut stdout = std::io::stdout();
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::MoveTo(0, 0)
+    );
+    let _ = stdout.flush();
+}
+
+fn tee_interactive_stderr(
+    child: &mut tokio::process::Child,
+) -> Option<tokio::task::JoinHandle<String>> {
+    use std::io::Write as _;
+    use tokio::io::AsyncReadExt as _;
+
+    let mut stderr = child.stderr.take()?;
+    Some(tokio::spawn(async move {
+        let mut captured = Vec::new();
+        let mut buf = [0; 8192];
+        loop {
+            let read = stderr.read(&mut buf).await.unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            let chunk = &buf[..read];
+            let _ = std::io::stderr().write_all(chunk);
+            let _ = std::io::stderr().flush();
+            captured.extend_from_slice(chunk);
+            if captured.len() > 8192 {
+                let extra = captured.len() - 8192;
+                captured.drain(0..extra);
+            }
+        }
+        String::from_utf8_lossy(&captured).trim().to_string()
+    }))
+}
+
+async fn finish_interactive_stderr(handle: Option<tokio::task::JoinHandle<String>>) -> String {
+    match handle {
+        Some(handle) => handle.await.unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+fn interactive_exit_error(
+    role: &str,
+    agent_type: &str,
+    status: std::process::ExitStatus,
+    stderr: &str,
+) -> String {
+    let mut message = format!("{role} agent ({agent_type}) exited with {status}");
+    if !stderr.trim().is_empty() {
+        message.push_str("\n\nstderr:\n");
+        message.push_str(stderr.trim());
+    }
+    message
+}
+
 enum TaskMilestoneSelection {
     UseFallback,
     Use(SelectedMilestone),
@@ -673,15 +734,24 @@ impl HqContext {
         let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let stderr = tee_interactive_stderr(&mut child);
         self.mark_agent_running(role, agent_type, name, child.id())
             .await?;
 
-        let _ = child.wait().await;
+        let status = child
+            .wait()
+            .await
+            .with_context(|| format!("Failed to wait for {program}"))?;
+        let stderr = finish_interactive_stderr(stderr).await;
+        clear_primary_screen();
         guard.resume_now();
         self.mark_agent_suspended(name).await?;
+        if !status.success() {
+            anyhow::bail!(interactive_exit_error(role, agent_type, status, &stderr));
+        }
         Ok(())
     }
 
@@ -1012,6 +1082,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
         );
+        agent.validate_interactive_launch(ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)?;
         self.spawn_interactive_command(
             ROLE_SUPERVISOR,
             agent.name(),
@@ -1034,6 +1105,7 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
+        agent.validate_interactive_launch(ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)?;
         self.spawn_interactive_command(
             ROLE_EXECUTOR,
             agent.name(),
@@ -1150,6 +1222,7 @@ impl HqContext {
                 })?,
         );
 
+        supervisor.validate_interactive_launch(ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)?;
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
         let mut resume_guard = ResumeGuard::new(self.display.clone());
@@ -1157,9 +1230,10 @@ impl HqContext {
         let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let stderr = tee_interactive_stderr(&mut child);
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
             ROLE_SUPERVISOR,
@@ -1169,10 +1243,14 @@ impl HqContext {
         )
         .await?;
 
+        let mut child_status = None;
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
-                _ = child.wait() => break,
+                status = child.wait() => {
+                    child_status = Some(status.with_context(|| format!("Failed to wait for {program}"))?);
+                    break;
+                }
                 _ = ticker.tick() => {
                     if let Ok(s) = store::read_state().await
                         && s.state == TaskState::Executing {
@@ -1186,9 +1264,21 @@ impl HqContext {
                 }
             }
         }
+        let stderr = finish_interactive_stderr(stderr).await;
+        clear_primary_screen();
         resume_guard.resume_now();
 
         self.mark_agent_suspended(&supervisor_id).await?;
+        if let Some(status) = child_status
+            && !status.success()
+        {
+            anyhow::bail!(interactive_exit_error(
+                ROLE_SUPERVISOR,
+                supervisor.name(),
+                status,
+                &stderr
+            ));
+        }
 
         let new_state = store::read_state().await?;
         if new_state.state == TaskState::Executing {
@@ -1382,6 +1472,7 @@ impl HqContext {
                 })?,
         );
 
+        supervisor.validate_interactive_launch(ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)?;
         let ack_rx = self.display.suspend();
         let _ = ack_rx.await;
         let mut resume_guard = ResumeGuard::new(self.display.clone());
@@ -1389,9 +1480,10 @@ impl HqContext {
         let mut child = cmd
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
+        let stderr = tee_interactive_stderr(&mut child);
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
             ROLE_SUPERVISOR,
@@ -1402,10 +1494,14 @@ impl HqContext {
         .await?;
 
         let mut created_path = None;
+        let mut child_status = None;
         let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
-                _ = child.wait() => break,
+                status = child.wait() => {
+                    child_status = Some(status.with_context(|| format!("Failed to wait for {program}"))?);
+                    break;
+                }
                 _ = ticker.tick() => {
                     if let Ok(path) = store::read_last_spec_path().await {
                         let path = path.trim();
@@ -1422,9 +1518,21 @@ impl HqContext {
                 }
             }
         }
+        let stderr = finish_interactive_stderr(stderr).await;
+        clear_primary_screen();
         resume_guard.resume_now();
 
         self.mark_agent_suspended(&supervisor_id).await?;
+        if let Some(status) = child_status
+            && !status.success()
+        {
+            anyhow::bail!(interactive_exit_error(
+                ROLE_SUPERVISOR,
+                supervisor.name(),
+                status,
+                &stderr
+            ));
+        }
 
         if created_path.is_none()
             && let Ok(path) = store::read_last_spec_path().await
@@ -1654,6 +1762,33 @@ pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionA
 mod tests {
     use super::*;
     use TaskState::*;
+
+    #[cfg(unix)]
+    fn failed_exit_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        std::process::ExitStatus::from_raw(1 << 8)
+    }
+
+    #[cfg(windows)]
+    fn failed_exit_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+
+        std::process::ExitStatus::from_raw(1)
+    }
+
+    #[test]
+    fn interactive_exit_error_names_role_agent_and_status() {
+        let message = interactive_exit_error(
+            ROLE_SUPERVISOR,
+            "codex",
+            failed_exit_status(),
+            "broken config",
+        );
+
+        assert!(message.contains("supervisor agent (codex) exited with"));
+        assert!(message.contains("stderr:\nbroken config"));
+    }
 
     #[test]
     fn idle_to_executing_spawns_executor() {

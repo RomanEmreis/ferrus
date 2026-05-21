@@ -95,6 +95,12 @@ pub trait SupervisorAgent: Send + Sync {
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
         HeadlessPromptTransport::Argv
     }
+
+    /// Validates backend-specific files/settings needed before HQ leaves the dashboard
+    /// for an interactive session.
+    fn validate_interactive_launch(&self, _role: &str, _index: u32) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Behavior required from an executor-capable agent implementation.
@@ -144,6 +150,12 @@ pub trait ExecutorAgent: Send + Sync {
     /// Describes how headless prompt text should be delivered.
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
         HeadlessPromptTransport::Argv
+    }
+
+    /// Validates backend-specific files/settings needed before HQ leaves the dashboard
+    /// for an interactive session.
+    fn validate_interactive_launch(&self, _role: &str, _index: u32) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -249,6 +261,72 @@ pub(crate) async fn allow_mcp_server_tools_in_json_settings(
     tokio::fs::write(path, content).await?;
     if added {
         println!("Allowed {permission} in {}", path.display());
+    }
+    Ok(())
+}
+
+pub(crate) fn invalid_mcp_config(message: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("Invalid MCP configuration:\n{message}")
+}
+
+pub(crate) fn absolute_display_path(path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    }
+}
+
+pub(crate) fn ensure_mcp_config_file_exists(path: &Path) -> Result<()> {
+    if !path.exists() {
+        bail!(invalid_mcp_config(format!(
+            "MCP config file not found: {}",
+            absolute_display_path(path).display()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_json_mcp_server(path: &Path, key: &str) -> Result<()> {
+    ensure_mcp_config_file_exists(path)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let root: Value = serde_json::from_str(&content)
+        .map_err(|err| invalid_mcp_config(format!("Failed to parse {}: {err}", path.display())))?;
+    let servers = root
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid_mcp_config(format!("{} mcpServers is not an object", path.display()))
+        })?;
+    if !servers.contains_key(key) {
+        bail!(invalid_mcp_config(format!(
+            "MCP server `{key}` not found in {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_toml_mcp_server(path: &Path, key: &str) -> Result<()> {
+    ensure_mcp_config_file_exists(path)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let root: toml::Value = toml::from_str(&content)
+        .map_err(|err| invalid_mcp_config(format!("Failed to parse {}: {err}", path.display())))?;
+    let servers = root
+        .get("mcp_servers")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| {
+            invalid_mcp_config(format!("{} mcp_servers is not a table", path.display()))
+        })?;
+    if !servers.contains_key(key) {
+        bail!(invalid_mcp_config(format!(
+            "MCP server `{key}` not found in {}",
+            path.display()
+        )));
     }
     Ok(())
 }

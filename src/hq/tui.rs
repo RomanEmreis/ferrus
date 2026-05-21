@@ -222,6 +222,7 @@ pub struct App {
     ctrl_c_pending: bool,
     ctrl_c_at: Option<Instant>,
     input_suppressed_until: Option<Instant>,
+    redraw_on_resume: bool,
 }
 
 impl App {
@@ -252,6 +253,7 @@ impl App {
             ctrl_c_pending: false,
             ctrl_c_at: None,
             input_suppressed_until: None,
+            redraw_on_resume: false,
         }
     }
 
@@ -964,11 +966,11 @@ fn handle_message(
             }
         }
         UiMessage::Error(text) => {
-            let lines = split_transcript(&text, TranscriptKind::Error);
-            app.messages.extend(lines.iter().cloned());
             app.last_error = Some(text);
             if !app.suspended {
                 redraw_dashboard(stdout, app, ui)?;
+            } else {
+                app.redraw_on_resume = true;
             }
         }
         UiMessage::Transition { from, to } => {
@@ -1014,6 +1016,8 @@ fn handle_message(
             app.clear_completion();
             app.input_suppressed_until = Some(Instant::now() + Duration::from_millis(500));
             app.suspended = false;
+            let _redraw_pending = app.redraw_on_resume;
+            app.redraw_on_resume = false;
             ui.cursor_row = 0;
             ui.cursor_col = 0;
             redraw_dashboard(stdout, app, ui)?;
