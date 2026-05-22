@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 
@@ -25,6 +28,36 @@ pub struct SpecDocument {
     pub path: String,
     pub milestones: Vec<Milestone>,
     lines: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MilestoneReadiness {
+    Ready,
+    Pending,
+    Done,
+}
+
+impl MilestoneReadiness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Pending => "pending",
+            Self::Done => "done",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestonePlanItem {
+    pub milestone: Milestone,
+    pub readiness: MilestoneReadiness,
+    pub blocked_by: Vec<String>,
+}
+
+impl SpecDocument {
+    pub fn milestone_plan(&self) -> Vec<MilestonePlanItem> {
+        milestone_plan(&self.milestones)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,6 +152,44 @@ pub fn parse_spec(path: &str, content: &str) -> SpecDocument {
         milestones,
         lines,
     }
+}
+
+pub fn milestone_plan(milestones: &[Milestone]) -> Vec<MilestonePlanItem> {
+    let completed_refs = milestones
+        .iter()
+        .filter(|milestone| milestone.completed)
+        .flat_map(milestone_refs)
+        .collect::<HashSet<_>>();
+
+    milestones
+        .iter()
+        .cloned()
+        .map(|milestone| {
+            if milestone.completed {
+                return MilestonePlanItem {
+                    milestone,
+                    readiness: MilestoneReadiness::Done,
+                    blocked_by: Vec::new(),
+                };
+            }
+
+            let blocked_by = dependency_refs(&milestone.depends_on)
+                .into_iter()
+                .filter(|dependency| !completed_refs.contains(&normalize_ref(dependency)))
+                .collect::<Vec<_>>();
+            let readiness = if blocked_by.is_empty() {
+                MilestoneReadiness::Ready
+            } else {
+                MilestoneReadiness::Pending
+            };
+
+            MilestonePlanItem {
+                milestone,
+                readiness,
+                blocked_by,
+            }
+        })
+        .collect()
 }
 
 pub async fn select_first_incomplete(state: &mut StateData, spec_path: &str) -> Result<()> {
@@ -281,6 +352,40 @@ fn parse_child_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
     Some(value)
 }
 
+fn dependency_refs(depends_on: &str) -> Vec<String> {
+    let depends_on = depends_on.trim();
+    if depends_on.is_empty()
+        || matches!(
+            depends_on.to_ascii_lowercase().as_str(),
+            "none" | "n/a" | "na" | "-"
+        )
+    {
+        return Vec::new();
+    }
+
+    depends_on
+        .split(',')
+        .map(str::trim)
+        .filter(|dependency| !dependency.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn milestone_refs(milestone: &Milestone) -> Vec<String> {
+    let mut refs = vec![
+        normalize_ref(&milestone.id),
+        normalize_ref(&milestone.marker),
+    ];
+    if let Some(marker) = milestone.marker.strip_prefix('#') {
+        refs.push(normalize_ref(marker));
+    }
+    refs
+}
+
+fn normalize_ref(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
 fn mark_line_completed(line: &mut String) {
     if let Some(pos) = line.find("- [ ]") {
         line.replace_range(pos..pos + 5, "- [x]");
@@ -340,6 +445,55 @@ mod tests {
             compact_spec_display_name("spec-workflow-with-a-long-title"),
             "spec-workflow-w..."
         );
+    }
+
+    #[test]
+    fn classifies_milestones_by_dependency_readiness() {
+        let spec = parse_spec(
+            "docs/specs/2026-05-22-multi-task-sqlite-dashboard.md",
+            "## Milestones\n\
+             - [x] #1.0 Storage foundation\n\
+               - ID: m1.0\n\
+               - Depends on: none\n\n\
+             - [ ] #1.1 Dashboard readiness\n\
+               - ID: m1.1\n\
+               - Depends on: m1.0\n\n\
+             - [ ] #2.0 Scheduler\n\
+               - ID: m2.0\n\
+               - Depends on: m1.1\n\n\
+             - [ ] #2.1 Batch flow\n\
+               - ID: m2.1\n\
+               - Depends on: #1.0, m1.1\n",
+        );
+
+        let plan = spec.milestone_plan();
+
+        assert_eq!(plan[0].readiness, MilestoneReadiness::Done);
+        assert_eq!(plan[0].blocked_by, Vec::<String>::new());
+        assert_eq!(plan[1].readiness, MilestoneReadiness::Ready);
+        assert_eq!(plan[1].blocked_by, Vec::<String>::new());
+        assert_eq!(plan[2].readiness, MilestoneReadiness::Pending);
+        assert_eq!(plan[2].blocked_by, vec!["m1.1"]);
+        assert_eq!(plan[3].readiness, MilestoneReadiness::Pending);
+        assert_eq!(plan[3].blocked_by, vec!["m1.1"]);
+    }
+
+    #[test]
+    fn dependency_readiness_accepts_marker_references() {
+        let spec = parse_spec(
+            "docs/specs/spec.md",
+            "## Milestones\n\
+             - [x] #1.0 First\n\
+               - ID: m1.0\n\
+               - Depends on: none\n\n\
+             - [ ] #1.1 Second\n\
+               - ID: m1.1\n\
+               - Depends on: #1.0\n",
+        );
+
+        let plan = spec.milestone_plan();
+
+        assert_eq!(plan[1].readiness, MilestoneReadiness::Ready);
     }
 
     #[tokio::test]

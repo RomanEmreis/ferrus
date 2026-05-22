@@ -3,7 +3,7 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 
-use crate::specs::{self, SelectedMilestoneState};
+use crate::specs::{self, MilestoneReadiness, SelectedMilestoneState};
 use crate::state::{
     machine::{StateData, TaskState},
     store,
@@ -32,6 +32,7 @@ pub struct WatchedMilestone {
     pub marker: String,
     pub title: String,
     pub completed: bool,
+    pub readiness: MilestoneReadiness,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,12 +174,13 @@ async fn selected_milestone_display(
         Some(path) => specs::load_spec(path)
             .await
             .map(|spec| {
-                spec.milestones
+                spec.milestone_plan()
                     .into_iter()
-                    .map(|milestone| WatchedMilestone {
-                        marker: milestone.marker,
-                        title: milestone.title,
-                        completed: milestone.completed,
+                    .map(|item| WatchedMilestone {
+                        marker: item.milestone.marker,
+                        title: item.milestone.title,
+                        completed: item.milestone.completed,
+                        readiness: item.readiness,
                     })
                     .collect()
             })

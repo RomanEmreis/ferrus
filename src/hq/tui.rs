@@ -30,6 +30,7 @@ use crate::{
 };
 
 use super::state_watcher::{WatchedMilestone, WatchedState, format_elapsed};
+use crate::specs::MilestoneReadiness;
 
 const MAX_HISTORY: usize = 100;
 const MAX_COMPLETIONS: usize = 8;
@@ -112,6 +113,7 @@ pub struct MilestoneSnapshot {
     pub marker: String,
     pub title: String,
     pub completed: bool,
+    pub readiness: MilestoneReadiness,
 }
 
 impl From<WatchedMilestone> for MilestoneSnapshot {
@@ -120,6 +122,7 @@ impl From<WatchedMilestone> for MilestoneSnapshot {
             marker: milestone.marker,
             title: milestone.title,
             completed: milestone.completed,
+            readiness: milestone.readiness,
         }
     }
 }
@@ -1474,11 +1477,7 @@ fn milestone_lines(app: &App, width: usize) -> Vec<String> {
         .iter()
         .map(|milestone| {
             let label = format!("{}:", milestone_marker_label(&milestone.marker));
-            let status = if milestone.completed {
-                "done"
-            } else {
-                "pending"
-            };
+            let status = milestone.readiness.as_str();
             let title_width = content_width
                 .saturating_sub(display_width(&label) + status_width + 2)
                 .max(8);
@@ -1954,6 +1953,7 @@ fn print_framed_dashboard_line(stdout: &mut Stdout, line: &StyledLine, width: us
         if let Some(status) = rest
             .strip_prefix("done")
             .map(|_| ("done", Color::Green))
+            .or_else(|| rest.strip_prefix("ready").map(|_| ("ready", Color::Blue)))
             .or_else(|| {
                 rest.strip_prefix("pending")
                     .map(|_| ("pending", Color::Yellow))
@@ -2960,11 +2960,19 @@ mod tui_tests {
                 marker: "#1.0".into(),
                 title: "Define dashboard layout".into(),
                 completed: true,
+                readiness: MilestoneReadiness::Done,
             },
             MilestoneSnapshot {
                 marker: "#1.1".into(),
                 title: "Wire runtime activity".into(),
                 completed: false,
+                readiness: MilestoneReadiness::Ready,
+            },
+            MilestoneSnapshot {
+                marker: "#2.0".into(),
+                title: "Wait for previous milestone".into(),
+                completed: false,
+                readiness: MilestoneReadiness::Pending,
             },
         ];
         let width = 120;
@@ -2989,10 +2997,13 @@ mod tui_tests {
         assert!(rendered[1].contains("│ Project"));
         assert!(rendered[1].contains("│ Milestones"));
         let done_col = rendered[2].find("done").unwrap();
-        let pending_col = rendered[3].find("pending").unwrap();
+        let ready_col = rendered[3].find("ready").unwrap();
+        let pending_col = rendered[4].find("pending").unwrap();
+        assert_eq!(done_col, ready_col);
         assert_eq!(done_col, pending_col);
         assert_eq!(char_before_last_border(rendered[2]), Some(' '));
         assert_eq!(char_before_last_border(rendered[3]), Some(' '));
+        assert_eq!(char_before_last_border(rendered[4]), Some(' '));
     }
 
     #[test]
