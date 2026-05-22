@@ -1363,8 +1363,42 @@ impl HqContext {
 
         self.display
             .info_block(run_plan_lines(&plan, selected_count));
+        self.launch_batch_task_supervisor(&plan, selected_count)
+            .await?;
+        Ok(())
+    }
+
+    async fn launch_batch_task_supervisor(
+        &mut self,
+        plan: &RunPlan,
+        selected_count: usize,
+    ) -> Result<()> {
+        if selected_count == 0 {
+            return Ok(());
+        }
+
+        self.ensure_hq_config().await?;
+        let supervisor = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
+        let context = run_plan_prompt_context(plan, selected_count);
+        let prompt = agent_manager::supervisor_batch_task_prompt(&context, selected_count);
+
+        self.display.info(format!(
+            "Spawning supervisor ({}) for batch task preparation…",
+            supervisor.name()
+        ));
+        self.display.tip(
+            "Review each task draft with the supervisor; approved tasks will be queued as pending.",
+        );
+
+        let supervisor_id = self.supervisor_agent_id()?;
+        self.spawn_interactive_supervisor(&supervisor_id, Some(&prompt))
+            .await?;
         self.display
-            .tip("Next: batch supervisor launch will use this deterministic plan.");
+            .info("Batch preparation session finished. Use /tasks to inspect queued tasks.");
         Ok(())
     }
 
@@ -1847,6 +1881,23 @@ fn run_plan_lines(plan: &RunPlan, selected_count: usize) -> Vec<String> {
     lines
 }
 
+fn run_plan_prompt_context(plan: &RunPlan, selected_count: usize) -> String {
+    let mut lines = vec![
+        format!("Spec: {}", plan.spec_path),
+        format!("Task count: {selected_count}"),
+        "Milestones:".to_string(),
+    ];
+
+    for milestone in plan.eligible.iter().take(selected_count) {
+        lines.push(format!(
+            "- Milestone ID: {}\n  Marker: {}\n  Title: {}",
+            milestone.id, milestone.marker, milestone.title
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn selected_milestone_prompt_context(selected: &SelectedMilestone) -> String {
     format!(
         "Spec: {}\nMilestone: {}\nMilestone ID: {}\nCompleted: {}\nDepends on: {}",
@@ -2166,6 +2217,33 @@ mod tests {
         );
 
         std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn run_plan_prompt_context_uses_selected_prefix_only() {
+        let plan = RunPlan {
+            spec_path: "docs/specs/spec.md".to_string(),
+            eligible: vec![
+                RunPlanMilestone {
+                    id: "m1.0".to_string(),
+                    marker: "#1.0".to_string(),
+                    title: "First task".to_string(),
+                },
+                RunPlanMilestone {
+                    id: "m1.1".to_string(),
+                    marker: "#1.1".to_string(),
+                    title: "Second task".to_string(),
+                },
+            ],
+            skipped: Vec::new(),
+        };
+
+        let context = run_plan_prompt_context(&plan, 1);
+
+        assert!(context.contains("Spec: docs/specs/spec.md"));
+        assert!(context.contains("Task count: 1"));
+        assert!(context.contains("Milestone ID: m1.0"));
+        assert!(!context.contains("Milestone ID: m1.1"));
     }
 
     #[test]

@@ -179,6 +179,7 @@ Recovery is SQLite-first:
 - MCP resources `ferrus://task`, `ferrus://task/<task-id>`, and `ferrus://task_template`.
 - MCP tool `/enqueue_task` for queued pending task artifacts.
 - HQ `/run --limit N` planning for ready milestones, including duplicate-task exclusion.
+- `/run` launches one interactive supervisor session for the exact selected milestone list and queues approved tasks with `/enqueue_task`.
 - Lease claiming, lease renewal, stale lease recovery, and DB lease handoff fixes.
 - Migration fixes for active artifacts and Windows path handling.
 - Completed task history preservation during HQ reset paths.
@@ -269,7 +270,7 @@ Depends on: m2.0, m2.1
 Add `/run` and `/run --limit N` deterministic planning, including confirmation when fewer milestones are eligible
 than the requested limit.
 
-### [ ] #2.4 Batch task preparation
+### [x] #2.4 Batch task preparation
 
 ID: m2.4
 Depends on: m2.2, m2.3
