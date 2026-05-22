@@ -57,6 +57,8 @@ async fn run(description: String) -> Result<String> {
             "task_id": artifact.id,
             "path": artifact.path,
             "run_dir": artifact.run_dir,
+            "spec_path": state.task_spec,
+            "milestone_id": state.task_milestone,
             "description_bytes": description.len(),
         }),
     )

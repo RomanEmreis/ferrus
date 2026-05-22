@@ -39,9 +39,11 @@ pub fn task_lines(tasks: &[TaskRecord]) -> Vec<String> {
     }
 
     let mut lines = vec![format!(
-        "{:<14} {:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} Path",
+        "{:<14} {:<14} {:<14} {:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} Path",
         "ID",
         "Status",
+        "Spec",
+        "Milestone",
         "Paused",
         "Claimed by",
         "Lease until",
@@ -52,9 +54,11 @@ pub fn task_lines(tasks: &[TaskRecord]) -> Vec<String> {
     )];
     lines.extend(tasks.iter().map(|task| {
         format!(
-            "{:<14} {:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} {}",
+            "{:<14} {:<14} {:<14} {:<14} {:<14} {:<24} {:<22} {:<22} {:<6} {:<7} {:<28} {}",
             task.id,
             task.status,
+            compact(task.spec_path.as_deref().unwrap_or("-"), 14),
+            task.milestone_id.as_deref().unwrap_or("-"),
             task.paused_status.as_deref().unwrap_or("-"),
             task.claimed_by.as_deref().unwrap_or("-"),
             task.lease_until.as_deref().unwrap_or("-"),
@@ -140,6 +144,31 @@ mod tests {
             task_lines(&[]),
             vec!["No tasks recorded in ferrus.db.".to_string()]
         );
+    }
+
+    #[test]
+    fn task_lines_include_origin_fields() {
+        let tasks = vec![TaskRecord {
+            id: "t-001".to_string(),
+            path: ".ferrus/tasks/t-001.md".to_string(),
+            spec_path: Some("docs/specs/spec.md".to_string()),
+            milestone_id: Some("m1.0".to_string()),
+            status: "pending".to_string(),
+            paused_status: None,
+            claimed_by: None,
+            lease_until: None,
+            last_heartbeat: None,
+            check_retries: 0,
+            review_cycles: 0,
+            failure_reason: None,
+        }];
+
+        let lines = task_lines(&tasks);
+
+        assert!(lines[0].contains("Spec"));
+        assert!(lines[0].contains("Milestone"));
+        assert!(lines[1].contains("docs/specs/sp"));
+        assert!(lines[1].contains("m1.0"));
     }
 
     #[test]

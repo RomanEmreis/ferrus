@@ -112,6 +112,8 @@ pub struct TaskArtifact {
 pub struct TaskRecord {
     pub id: String,
     pub path: String,
+    pub spec_path: Option<String>,
+    pub milestone_id: Option<String>,
     pub status: String,
     pub paused_status: Option<String>,
     pub claimed_by: Option<String>,
@@ -134,6 +136,14 @@ pub struct RuntimeTaskContext {
     pub review_cycles: u32,
     pub failure_reason: Option<String>,
     pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CurrentTaskRecord {
+    id: String,
+    path: String,
+    spec_path: Option<String>,
+    milestone_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -662,34 +672,52 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
         let connection = open_runtime_database(&database_path)?;
         let mut statement = connection.prepare(
             r#"
-            SELECT id, path, status, paused_status, claimed_by, lease_until, last_heartbeat,
-                   check_retries, review_cycles, failure_reason
+            SELECT id, path, spec_path, milestone_id, status, paused_status, claimed_by,
+                   lease_until, last_heartbeat, check_retries, review_cycles, failure_reason
             FROM tasks
             ORDER BY
                 CASE WHEN id = 'current' THEN 0 ELSE 1 END,
                 id
             "#,
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok(TaskRecord {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                status: row.get(2)?,
-                paused_status: row.get(3)?,
-                claimed_by: row.get(4)?,
-                lease_until: row.get(5)?,
-                last_heartbeat: row.get(6)?,
-                check_retries: row.get::<_, i64>(7)? as u32,
-                review_cycles: row.get::<_, i64>(8)? as u32,
-                failure_reason: row.get(9)?,
-            })
-        })?;
+        let rows = statement.query_map([], task_record_from_row)?;
 
         let mut tasks = Vec::new();
         for row in rows {
             tasks.push(row?);
         }
         Ok(tasks)
+    })
+    .await?
+}
+
+#[allow(dead_code)]
+pub async fn find_non_terminal_task_by_origin(
+    spec_path: &str,
+    milestone_id: &str,
+) -> Result<Option<TaskRecord>> {
+    let database_path = current_database_path().await?;
+    let spec_path = spec_path.to_string();
+    let milestone_id = milestone_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<TaskRecord>> {
+        let connection = open_runtime_database(&database_path)?;
+        let task = connection
+            .query_row(
+                r#"
+                SELECT id, path, spec_path, milestone_id, status, paused_status, claimed_by,
+                       lease_until, last_heartbeat, check_retries, review_cycles, failure_reason
+                FROM tasks
+                WHERE spec_path = ?1
+                  AND milestone_id = ?2
+                  AND status NOT IN ('idle', 'reset', 'complete', 'failed')
+                ORDER BY id
+                LIMIT 1
+                "#,
+                params![spec_path, milestone_id],
+                task_record_from_row,
+            )
+            .optional()?;
+        Ok(task)
     })
     .await?
 }
@@ -777,19 +805,62 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
     })
 }
 
+fn task_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
+    Ok(TaskRecord {
+        id: row.get(0)?,
+        path: row.get(1)?,
+        spec_path: row.get(2)?,
+        milestone_id: row.get(3)?,
+        status: row.get(4)?,
+        paused_status: row.get(5)?,
+        claimed_by: row.get(6)?,
+        lease_until: row.get(7)?,
+        last_heartbeat: row.get(8)?,
+        check_retries: row.get::<_, i64>(9)? as u32,
+        review_cycles: row.get::<_, i64>(10)? as u32,
+        failure_reason: row.get(11)?,
+    })
+}
+
 pub async fn record_current_task_status(status: &str) -> Result<()> {
-    let (task_id, task_path) = current_task_identity().await;
-    record_task_status(&task_id, &task_path, status).await
+    let task = current_task_record().await;
+    record_task_status_with_origin(
+        &task.id,
+        &task.path,
+        status,
+        task.spec_path.as_deref(),
+        task.milestone_id.as_deref(),
+    )
+    .await
 }
 
 pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) -> Result<()> {
+    record_task_status_with_origin(task_id, task_path, status, None, None).await
+}
+
+pub async fn record_task_status_with_origin(
+    task_id: &str,
+    task_path: &str,
+    status: &str,
+    spec_path: Option<&str>,
+    milestone_id: Option<&str>,
+) -> Result<()> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
     let task_path = task_path.to_string();
     let status = status.to_string();
+    let spec_path = spec_path.map(str::to_string);
+    let milestone_id = milestone_id.map(str::to_string);
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
-        upsert_task(&connection, &task_id, &task_path, &status)?;
+        upsert_task(
+            &connection,
+            &task_id,
+            &task_path,
+            &status,
+            spec_path.as_deref(),
+            milestone_id.as_deref(),
+        )?;
         if clears_task_lease_for_status(&status) {
             clear_task_lease(&connection, &task_id)?;
         }
@@ -2055,26 +2126,13 @@ async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Op
         let task = connection
             .query_row(
                 r#"
-                SELECT id, path, status, paused_status, claimed_by, lease_until, last_heartbeat,
-                       check_retries, review_cycles, failure_reason
+                SELECT id, path, spec_path, milestone_id, status, paused_status, claimed_by,
+                       lease_until, last_heartbeat, check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE id = ?1
                 "#,
                 [task_id],
-                |row| {
-                    Ok(TaskRecord {
-                        id: row.get(0)?,
-                        path: row.get(1)?,
-                        status: row.get(2)?,
-                        paused_status: row.get(3)?,
-                        claimed_by: row.get(4)?,
-                        lease_until: row.get(5)?,
-                        last_heartbeat: row.get(6)?,
-                        check_retries: row.get::<_, i64>(7)? as u32,
-                        review_cycles: row.get::<_, i64>(8)? as u32,
-                        failure_reason: row.get(9)?,
-                    })
-                },
+                task_record_from_row,
             )
             .optional()?;
         Ok(task)
@@ -2089,18 +2147,30 @@ async fn current_database_path() -> Result<PathBuf> {
     Ok(PathBuf::from(local_ref.data_dir).join("ferrus.db"))
 }
 
-async fn current_task_identity() -> (String, String) {
+async fn current_task_record() -> CurrentTaskRecord {
     let Ok(state) = crate::state::store::read_state().await else {
-        return (CURRENT_TASK_ID.to_string(), CURRENT_TASK_PATH.to_string());
+        return CurrentTaskRecord {
+            id: CURRENT_TASK_ID.to_string(),
+            path: CURRENT_TASK_PATH.to_string(),
+            spec_path: None,
+            milestone_id: None,
+        };
     };
-    (
-        state
+    CurrentTaskRecord {
+        id: state
             .active_task_id
             .unwrap_or_else(|| CURRENT_TASK_ID.to_string()),
-        state
+        path: state
             .active_task_path
             .unwrap_or_else(|| CURRENT_TASK_PATH.to_string()),
-    )
+        spec_path: state.task_spec,
+        milestone_id: state.task_milestone,
+    }
+}
+
+async fn current_task_identity() -> (String, String) {
+    let task = current_task_record().await;
+    (task.id, task.path)
 }
 
 fn open_runtime_database(path: &Path) -> Result<Connection> {
@@ -2120,6 +2190,8 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             path TEXT NOT NULL,
             status TEXT NOT NULL,
             paused_status TEXT,
+            spec_path TEXT,
+            milestone_id TEXT,
             claimed_by TEXT,
             lease_until TEXT,
             last_heartbeat TEXT,
@@ -2152,6 +2224,8 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         "#,
     )?;
     ensure_column(connection, "tasks", "paused_status", "TEXT")?;
+    ensure_column(connection, "tasks", "spec_path", "TEXT")?;
+    ensure_column(connection, "tasks", "milestone_id", "TEXT")?;
     ensure_column(connection, "tasks", "claimed_by", "TEXT")?;
     ensure_column(connection, "tasks", "lease_until", "TEXT")?;
     ensure_column(connection, "tasks", "last_heartbeat", "TEXT")?;
@@ -2171,16 +2245,25 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn upsert_task(connection: &Connection, id: &str, path: &str, status: &str) -> Result<()> {
+fn upsert_task(
+    connection: &Connection,
+    id: &str,
+    path: &str,
+    status: &str,
+    spec_path: Option<&str>,
+    milestone_id: Option<&str>,
+) -> Result<()> {
     connection.execute(
         r#"
-        INSERT INTO tasks (id, path, status)
-        VALUES (?1, ?2, ?3)
+        INSERT INTO tasks (id, path, status, spec_path, milestone_id)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         ON CONFLICT(id) DO UPDATE SET
             path = excluded.path,
-            status = excluded.status
+            status = excluded.status,
+            spec_path = COALESCE(excluded.spec_path, tasks.spec_path),
+            milestone_id = COALESCE(excluded.milestone_id, tasks.milestone_id)
         "#,
-        params![id, path, status],
+        params![id, path, status, spec_path, milestone_id],
     )?;
     Ok(())
 }
@@ -2873,6 +2956,84 @@ mod tests {
         assert_eq!(tasks[0].status, "executing");
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(tasks[0].lease_until.is_some());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn current_task_status_records_origin_metadata() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        let mut state = store::read_state().await.unwrap();
+        state.task_spec = Some("docs/specs/spec.md".to_string());
+        state.task_milestone = Some("m1.0".to_string());
+        store::write_state(&state).await.unwrap();
+
+        record_current_task_status("executing").await.unwrap();
+
+        let tasks = list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.spec_path.as_deref(), Some("docs/specs/spec.md"));
+        assert_eq!(task.milestone_id.as_deref(), Some("m1.0"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn task_status_update_preserves_existing_origin_metadata() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status_with_origin(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            "executing",
+            Some("docs/specs/spec.md"),
+            Some("m1.0"),
+        )
+        .await
+        .unwrap();
+
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
+            .await
+            .unwrap();
+
+        let tasks = list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.spec_path.as_deref(), Some("docs/specs/spec.md"));
+        assert_eq!(task.milestone_id.as_deref(), Some("m1.0"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn finds_non_terminal_task_by_origin() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status_with_origin(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            "pending",
+            Some("docs/specs/spec.md"),
+            Some("m1.1"),
+        )
+        .await
+        .unwrap();
+
+        let task = find_non_terminal_task_by_origin("docs/specs/spec.md", "m1.1")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(task.id, "t-002");
+
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "complete")
+            .await
+            .unwrap();
+        let task = find_non_terminal_task_by_origin("docs/specs/spec.md", "m1.1")
+            .await
+            .unwrap();
+        assert!(task.is_none());
 
         teardown(previous);
     }
