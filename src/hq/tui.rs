@@ -50,6 +50,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/review", "spawn supervisor in review mode"),
     ("/status", "show task state and agents"),
     ("/tasks", "list SQLite task runtime rows"),
+    ("/run", "plan a batch run from ready milestones"),
     ("/runs", "list SQLite run attempts"),
     ("/events", "list SQLite runtime events"),
     ("/attach", "show log path for a running headless session"),
@@ -2803,6 +2804,7 @@ mod tui_tests {
         assert!(commands.contains(&"/spec"));
         assert!(commands.contains(&"/check"));
         assert!(commands.contains(&"/tasks"));
+        assert!(commands.contains(&"/run"));
         assert!(commands.contains(&"/runs"));
         assert!(commands.contains(&"/events"));
         assert!(commands.contains(&"/model"));

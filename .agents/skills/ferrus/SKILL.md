@@ -75,6 +75,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `/resume` | Resume the executor headlessly; also recovers Consultation by relaunching both consultant and executor |
 | `/status` | Show task state, agent list, and session log paths |
 | `/tasks` | List SQLite task runtime rows |
+| `/run [--limit N]` | Plan a batch run from ready milestones in the selected spec |
 | `/runs [--limit N]` | List SQLite run attempts |
 | `/events [--limit N] [--run <id>]` | List SQLite runtime events |
 | `/attach <name>` | Show log path for a running headless agent |

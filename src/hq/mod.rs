@@ -13,7 +13,7 @@ use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::platform;
-use crate::specs::{self, SelectedMilestone, SelectedMilestoneState};
+use crate::specs::{self, MilestoneReadiness, SelectedMilestone, SelectedMilestoneState};
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
@@ -238,6 +238,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             ctx.display
                 .info_block(crate::runtime_table::task_lines(&tasks));
         }
+        ShellCommand::Run { limit } => ctx.run_batch_plan(limit).await?,
         ShellCommand::Runs { limit } => {
             let runs = crate::project::list_runs(limit).await?;
             ctx.display
@@ -268,6 +269,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 "  /review            Manually spawn supervisor in review mode\n",
                 "  /status            Show task state, agent list, and session log paths\n",
                 "  /tasks             List SQLite task runtime rows\n",
+                "  /run [--limit N]   Plan a batch run from ready milestones\n",
                 "  /runs [--limit N]  List SQLite run attempts\n",
                 "  /events [--limit N]\n",
                 "                     List SQLite runtime events\n",
@@ -451,6 +453,28 @@ enum TaskMilestoneSelection {
     UseFallback,
     Use(SelectedMilestone),
     Stop,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunPlanMilestone {
+    id: String,
+    marker: String,
+    title: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SkippedRunMilestone {
+    id: String,
+    marker: String,
+    title: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunPlan {
+    spec_path: String,
+    eligible: Vec<RunPlanMilestone>,
+    skipped: Vec<SkippedRunMilestone>,
 }
 
 impl ModelTarget {
@@ -1295,6 +1319,55 @@ impl HqContext {
         Ok(())
     }
 
+    async fn run_batch_plan(&mut self, limit: Option<usize>) -> Result<()> {
+        if limit == Some(0) {
+            self.display.error("/run --limit must be greater than 0.");
+            return Ok(());
+        }
+
+        let state = store::read_state().await?;
+        let Some(spec_path) = state
+            .selected_spec
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        else {
+            self.display
+                .error("No selected spec. Run /milestones or /spec before /run.");
+            return Ok(());
+        };
+
+        let plan = build_run_plan(spec_path).await?;
+        if plan.eligible.is_empty() {
+            self.display.info_block(run_plan_lines(&plan, 0));
+            return Ok(());
+        }
+
+        let available = plan.eligible.len();
+        let requested = limit.unwrap_or(available);
+        let selected_count = requested.min(available);
+        if let Some(limit) = limit
+            && limit > available
+        {
+            self.display.info(format!(
+                "/run --limit {limit} requested, but only {available} ready milestone(s) are eligible."
+            ));
+            let reply_rx = self
+                .display
+                .confirm_continue(format!("Proceed with {available}?"));
+            if !reply_rx.await.unwrap_or(false) {
+                self.display.muted("Run planning cancelled.");
+                return Ok(());
+            }
+        }
+
+        self.display
+            .info_block(run_plan_lines(&plan, selected_count));
+        self.display
+            .tip("Next: batch supervisor launch will use this deterministic plan.");
+        Ok(())
+    }
+
     async fn selected_milestone_for_task(
         &self,
         state: &StateData,
@@ -1684,6 +1757,96 @@ async fn prepare_spec_session_files() -> Result<()> {
         .context("Failed to clear .ferrus/LAST_SPEC_PATH")
 }
 
+async fn build_run_plan(spec_path: &str) -> Result<RunPlan> {
+    let spec = specs::load_spec(spec_path).await?;
+    let mut eligible = Vec::new();
+    let mut skipped = Vec::new();
+
+    for item in spec.milestone_plan() {
+        let milestone = item.milestone;
+        match item.readiness {
+            MilestoneReadiness::Done => skipped.push(SkippedRunMilestone {
+                id: milestone.id,
+                marker: milestone.marker,
+                title: milestone.title,
+                reason: "done".to_string(),
+            }),
+            MilestoneReadiness::Pending => skipped.push(SkippedRunMilestone {
+                id: milestone.id,
+                marker: milestone.marker,
+                title: milestone.title,
+                reason: format!("waiting for {}", item.blocked_by.join(", ")),
+            }),
+            MilestoneReadiness::Ready => {
+                if let Some(task) =
+                    crate::project::find_non_terminal_task_by_origin(spec_path, &milestone.id)
+                        .await?
+                {
+                    skipped.push(SkippedRunMilestone {
+                        id: milestone.id,
+                        marker: milestone.marker,
+                        title: milestone.title,
+                        reason: format!("task {} is {}", task.id, task.status),
+                    });
+                } else {
+                    eligible.push(RunPlanMilestone {
+                        id: milestone.id,
+                        marker: milestone.marker,
+                        title: milestone.title,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(RunPlan {
+        spec_path: spec.path,
+        eligible,
+        skipped,
+    })
+}
+
+fn run_plan_lines(plan: &RunPlan, selected_count: usize) -> Vec<String> {
+    let mut lines = vec![
+        "Run plan".to_string(),
+        format!("spec      : {}", plan.spec_path),
+        format!("eligible  : {}", plan.eligible.len()),
+        format!("selected  : {selected_count}"),
+    ];
+
+    if !plan.eligible.is_empty() {
+        lines.push(String::new());
+        lines.push("selected milestones:".to_string());
+        for milestone in plan.eligible.iter().take(selected_count) {
+            lines.push(format!(
+                "  {}  {:<8} {}",
+                milestone.marker, milestone.id, milestone.title
+            ));
+        }
+    }
+
+    if !plan.skipped.is_empty() {
+        lines.push(String::new());
+        lines.push("skipped milestones:".to_string());
+        for milestone in &plan.skipped {
+            lines.push(format!(
+                "  {}  {:<8} {} ({})",
+                milestone.marker, milestone.id, milestone.title, milestone.reason
+            ));
+        }
+    }
+
+    if selected_count > 0 {
+        lines.push(String::new());
+        lines.push(
+            "Batch supervisor launch is not wired yet; this command currently validates the plan."
+                .to_string(),
+        );
+    }
+
+    lines
+}
+
 fn selected_milestone_prompt_context(selected: &SelectedMilestone) -> String {
     format!(
         "Spec: {}\nMilestone: {}\nMilestone ID: {}\nCompleted: {}\nDepends on: {}",
@@ -1936,6 +2099,71 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "complete");
+
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_plan_selects_ready_milestones_and_skips_existing_tasks() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::fs::create_dir_all(dir.path().join("docs/specs")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let data_dir = dir.path().join("runtime");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        let local_ref_toml = toml::to_string_pretty(&local_ref).unwrap();
+        tokio::fs::write(".ferrus/project.toml", local_ref_toml)
+            .await
+            .unwrap();
+        let spec_path = "docs/specs/spec.md";
+        tokio::fs::write(
+            spec_path,
+            "## Milestones\n\
+             - [x] #1.0 Foundation\n\
+               - ID: m1.0\n\
+               - Depends on: none\n\n\
+             - [ ] #1.1 Ready one\n\
+               - ID: m1.1\n\
+               - Depends on: m1.0\n\n\
+             - [ ] #1.2 Already queued\n\
+               - ID: m1.2\n\
+               - Depends on: m1.0\n\n\
+             - [ ] #2.0 Blocked\n\
+               - ID: m2.0\n\
+               - Depends on: m1.1\n",
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status_with_origin(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            "pending",
+            Some(spec_path),
+            Some("m1.2"),
+        )
+        .await
+        .unwrap();
+
+        let plan = build_run_plan(spec_path).await.unwrap();
+
+        assert_eq!(plan.eligible.len(), 1);
+        assert_eq!(plan.eligible[0].id, "m1.1");
+        assert!(plan.skipped.iter().any(|milestone| {
+            milestone.id == "m1.2" && milestone.reason == "task t-002 is pending"
+        }));
+        assert!(
+            plan.skipped
+                .iter()
+                .any(|milestone| milestone.id == "m2.0" && milestone.reason == "waiting for m1.1")
+        );
 
         std::env::set_current_dir(previous).unwrap();
     }

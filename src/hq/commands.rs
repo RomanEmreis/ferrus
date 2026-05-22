@@ -24,6 +24,12 @@ pub enum ShellCommand {
     Status,
     /// List task runtime rows from ferrus.db.
     Tasks,
+    /// Plan a batch run from ready milestones in the selected spec.
+    Run {
+        /// Maximum number of ready milestones to include.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// List run attempts from ferrus.db.
     Runs {
         /// Maximum number of run rows to show.
@@ -139,6 +145,20 @@ mod tests {
         assert!(matches!(
             parse_command("/tasks").unwrap(),
             ShellCommand::Tasks
+        ));
+    }
+    #[test]
+    fn parse_run() {
+        assert!(matches!(
+            parse_command("/run").unwrap(),
+            ShellCommand::Run { limit: None }
+        ));
+    }
+    #[test]
+    fn parse_run_limit() {
+        assert!(matches!(
+            parse_command("/run --limit 3").unwrap(),
+            ShellCommand::Run { limit: Some(3) }
         ));
     }
     #[test]

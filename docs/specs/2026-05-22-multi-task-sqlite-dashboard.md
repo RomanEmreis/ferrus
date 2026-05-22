@@ -178,6 +178,7 @@ Recovery is SQLite-first:
 - `TASK.md` as a reusable task template.
 - MCP resources `ferrus://task`, `ferrus://task/<task-id>`, and `ferrus://task_template`.
 - MCP tool `/enqueue_task` for queued pending task artifacts.
+- HQ `/run --limit N` planning for ready milestones, including duplicate-task exclusion.
 - Lease claiming, lease renewal, stale lease recovery, and DB lease handoff fixes.
 - Migration fixes for active artifacts and Windows path handling.
 - Completed task history preservation during HQ reset paths.
@@ -260,7 +261,7 @@ Depends on: m2.1
 
 Add `/enqueue_task` for supervisor-driven queued task creation without entering the single active task state.
 
-### [ ] #2.3 Run command planning
+### [x] #2.3 Run command planning
 
 ID: m2.3
 Depends on: m2.0, m2.1
