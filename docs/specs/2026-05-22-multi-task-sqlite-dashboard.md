@@ -170,12 +170,14 @@ Recovery is SQLite-first:
 - Runtime database `ferrus.db`.
 - SQLite tables for tasks, runs, and events.
 - Task runtime fields for leases, heartbeat, pause status, retry counters, review counters, and failure reasons.
+- Task origin metadata for `spec_path` and `milestone_id`.
 - `ferrus migrate`, `ferrus doctor`, `ferrus recover`, `ferrus projects list`.
 - Runtime inspection commands for tasks, runs, and events.
 - Numbered task artifacts under `.ferrus/tasks/`.
 - Run artifact directories under `.ferrus/runs/<task-id>/`.
 - `TASK.md` as a reusable task template.
 - MCP resources `ferrus://task`, `ferrus://task/<task-id>`, and `ferrus://task_template`.
+- MCP tool `/enqueue_task` for queued pending task artifacts.
 - Lease claiming, lease renewal, stale lease recovery, and DB lease handoff fixes.
 - Migration fixes for active artifacts and Windows path handling.
 - Completed task history preservation during HQ reset paths.
@@ -244,14 +246,14 @@ Depends on: m1.1
 Add a reusable readiness calculation that classifies milestones as `ready`, `pending`, or `done`
 based on completion and dependency state.
 
-### [ ] #2.1 Task origin metadata
+### [x] #2.1 Task origin metadata
 
 ID: m2.1
 Depends on: m1.0
 
 Store `spec_path` and `milestone_id` on SQLite task rows so HQ can prevent duplicate queued or active tasks.
 
-### [ ] #2.2 Enqueue task tool
+### [x] #2.2 Enqueue task tool
 
 ID: m2.2
 Depends on: m2.1

@@ -42,6 +42,9 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         app.map_tool("create_task", tools::create_task::handler)
             .with_description(tools::create_task::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::create_task::INPUT_SCHEMA));
+        app.map_tool("enqueue_task", tools::enqueue_task::handler)
+            .with_description(tools::enqueue_task::DESCRIPTION)
+            .with_input_schema(|_| ToolSchema::from_json_str(tools::enqueue_task::INPUT_SCHEMA));
         app.map_tool("create_spec", tools::create_spec::handler)
             .with_description(tools::create_spec::DESCRIPTION)
             .with_input_schema(|_| ToolSchema::from_json_str(tools::create_spec::INPUT_SCHEMA));

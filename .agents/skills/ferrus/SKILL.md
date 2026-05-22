@@ -90,6 +90,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Tool | From state | Description |
 |---|---|---|
 | `create_task` | Idle | Write task description; moves to Executing |
+| `enqueue_task` | — | Write numbered task artifact and DB `pending` row without changing `STATE.json` |
 | `create_spec` | any | Write approved Markdown spec to the configured spec directory |
 | `wait_for_review` | — | Long-poll until state is Reviewing |
 | `review_pending` | Reviewing | Read task + submission context |

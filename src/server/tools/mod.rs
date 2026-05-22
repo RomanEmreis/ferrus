@@ -6,6 +6,7 @@ pub mod check_gate;
 pub mod consult;
 pub mod create_spec;
 pub mod create_task;
+pub mod enqueue_task;
 pub mod heartbeat;
 pub mod reject;
 pub mod reset;
