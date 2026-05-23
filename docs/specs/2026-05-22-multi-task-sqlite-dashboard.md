@@ -233,14 +233,14 @@ Recovery is SQLite-first:
 - Shared milestone readiness calculation with `ready`, `pending`, and `done`.
 - Dashboard milestone rendering uses shared readiness.
 - `/run` scheduler starts queued tasks with executor sessions up to `limits.max_parallel_tasks`.
+- Role-only MCP registrations for `ferrus-executor` and `ferrus-supervisor`.
+- Runtime identity propagation through `FERRUS_AGENT_ID`, `FERRUS_TASK_ID`, and `FERRUS_RUN_ID` for HQ-managed headless sessions.
+- `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
+- Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 
 ## What Remains
 
-- Replace indexed MCP server registrations with role-only registrations.
-- Add runtime identity propagation through environment variables for `agent_id`, `task_id`, and `run_id`.
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Add `ferrus doctor` warnings for legacy indexed MCP registrations.
-- Add `ferrus migrate` conversion from indexed registrations to role-only registrations.
 - Harden multi-executor scheduling beyond the initial post-`/run` launch path.
 - Add worktree isolation via `runs.workspace_path`.
 - Add final integration/review policy for parallel outputs.
@@ -335,7 +335,7 @@ Depends on: m3.0
 
 Run concurrent executors in isolated workspaces using `runs.workspace_path`.
 
-### [ ] #3.1a Role-only MCP registration and runtime identity
+### [x] #3.1a Role-only MCP registration and runtime identity
 
 ID: m3.1a
 Depends on: m3.0

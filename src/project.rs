@@ -2,6 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -20,6 +21,7 @@ const PROJECT_VERSION: u32 = 1;
 const LOCAL_PROJECT_TOML: &str = ".ferrus/project.toml";
 const CURRENT_TASK_ID: &str = "current";
 const CURRENT_TASK_PATH: &str = ".ferrus/TASK.md";
+static RUN_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocalProjectRef {
@@ -1747,13 +1749,28 @@ pub async fn record_runtime_event_best_effort(
     }
 }
 
+pub fn allocate_run_id(role: &str, agent: &str) -> String {
+    generate_run_id(role, agent)
+}
+
+#[cfg(test)]
 pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<RunRecord> {
+    let run_id = allocate_run_id(role, agent);
+    record_run_started_with_id(&run_id, role, agent, pid).await
+}
+
+pub async fn record_run_started_with_id(
+    run_id: &str,
+    role: &str,
+    agent: &str,
+    pid: u32,
+) -> Result<RunRecord> {
     let database_path = current_database_path().await?;
     let workspace_path = path_string(&canonical_current_dir().await?);
     let (task_id, task_path) = current_task_identity().await;
+    let run_id = run_id.to_string();
     let role = role.to_string();
     let agent = agent.to_string();
-    let run_id = generate_run_id(&role, &agent, pid);
     let started_at = timestamp();
     let updated_at = started_at.clone();
     let record = RunRecord {
@@ -1811,11 +1828,16 @@ pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<Run
     Ok(record)
 }
 
-pub async fn record_run_started_best_effort(role: &str, agent: &str, pid: u32) -> Option<String> {
-    match record_run_started(role, agent, pid).await {
+pub async fn record_run_started_with_id_best_effort(
+    run_id: &str,
+    role: &str,
+    agent: &str,
+    pid: u32,
+) -> Option<String> {
+    match record_run_started_with_id(run_id, role, agent, pid).await {
         Ok(record) => Some(record.id),
         Err(err) => {
-            warn!(error = ?err, role, agent, pid, "failed to mirror run start into ferrus.db");
+            warn!(error = ?err, run_id, role, agent, pid, "failed to mirror run start into ferrus.db");
             None
         }
     }
@@ -2789,7 +2811,7 @@ fn generate_project_id(workspace_dir: &Path) -> String {
     format!("P{:012X}{:016X}", millis & 0xFFFFFFFFFFFF, hash)
 }
 
-fn generate_run_id(role: &str, agent: &str, pid: u32) -> String {
+fn generate_run_id(role: &str, agent: &str) -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -2797,7 +2819,10 @@ fn generate_run_id(role: &str, agent: &str, pid: u32) -> String {
     let mut hasher = DefaultHasher::new();
     role.hash(&mut hasher);
     agent.hash(&mut hasher);
-    pid.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    RUN_ID_COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .hash(&mut hasher);
     millis.hash(&mut hasher);
     let hash = hasher.finish();
     format!("r-{:012x}-{:016x}", millis & 0xFFFFFFFFFFFF, hash)
@@ -3597,6 +3622,28 @@ mod tests {
                 .iter()
                 .all(|event| event.run_id.as_deref() == Some(run.id.as_str()))
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn record_run_started_can_use_preallocated_run_id() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        let run_id = allocate_run_id("executor", "executor:codex:t-002");
+
+        let run = record_run_started_with_id(
+            &run_id,
+            "executor",
+            "executor:codex:t-002",
+            std::process::id(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(run.id, run_id);
+        let runs = list_runs(10).await.unwrap();
+        assert!(runs.iter().any(|run| run.id == run_id));
 
         teardown(previous);
     }
