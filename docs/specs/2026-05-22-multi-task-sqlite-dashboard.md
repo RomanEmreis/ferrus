@@ -238,12 +238,13 @@ Recovery is SQLite-first:
 - `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 - Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.
+- `/run` executor sessions create/reuse git worktrees under `~/.ferrus/projects/<id>/worktrees/<task-id>`, run the agent in that cwd, and pass `FERRUS_PROJECT_ROOT` so MCP runtime state still uses the canonical project `.ferrus`.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
 - Harden multi-executor scheduling beyond the initial post-`/run` launch path.
-- Add actual worktree checkout lifecycle and route eligible executors through the new workspace cwd hook.
+- Harden worktree cleanup/reuse policy and add the integration path for outputs produced in isolated workspaces.
 - Add final integration/review policy for parallel outputs.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
 - Add multi-task ask-human queue handling.
@@ -329,7 +330,7 @@ Depends on: m2.4
 
 Start queued tasks with executors up to the configured parallelism limit and track their runs through SQLite.
 
-### [ ] #3.1 Worktree isolation
+### [x] #3.1 Worktree isolation
 
 ID: m3.1
 Depends on: m3.0

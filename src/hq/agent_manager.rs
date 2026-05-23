@@ -1,4 +1,4 @@
-use crate::agent_id::{ENV_AGENT_ID, ENV_RUN_ID, ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::agent_id::{ENV_AGENT_ID, ENV_PROJECT_ROOT, ENV_RUN_ID, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent};
 use crate::platform::{self, ShutdownSignal};
 use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
@@ -387,6 +387,7 @@ pub async fn spawn_headless_executor_with_env(
     index: u32,
     debug: bool,
     env: Vec<(&'static str, String)>,
+    workspace: Option<HeadlessWorkspace>,
 ) -> Result<HeadlessHandle> {
     let command = agent
         .spawn_with_index(AgentRunMode::Headless { prompt }, index)
@@ -405,9 +406,15 @@ pub async fn spawn_headless_executor_with_env(
         prompt,
         debug,
         env,
-        workspace_dir: None,
+        workspace,
     })
     .await
+}
+
+#[derive(Debug, Clone)]
+pub struct HeadlessWorkspace {
+    pub workspace_dir: PathBuf,
+    pub project_root: PathBuf,
 }
 
 pub async fn spawn_headless_supervisor(
@@ -433,7 +440,7 @@ pub async fn spawn_headless_supervisor(
         prompt,
         debug,
         env: vec![(ENV_AGENT_ID, name.to_string())],
-        workspace_dir: None,
+        workspace: None,
     })
     .await
 }
@@ -447,7 +454,7 @@ struct HeadlessSpawn<'a> {
     prompt: &'a str,
     debug: bool,
     env: Vec<(&'static str, String)>,
-    workspace_dir: Option<PathBuf>,
+    workspace: Option<HeadlessWorkspace>,
 }
 
 async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle> {
@@ -465,9 +472,22 @@ async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle
         .with_context(|| format!("Failed to open log file {}", log_path.display()))?;
     let run_id = crate::project::allocate_run_id(request.role, request.name);
     request.env.push((ENV_RUN_ID, run_id.clone()));
-    let workspace_path = match request.workspace_dir.as_ref() {
+    if let Some(workspace) = request.workspace.as_ref() {
+        request.env.push((
+            ENV_PROJECT_ROOT,
+            std::fs::canonicalize(&workspace.project_root)
+                .unwrap_or_else(|_| workspace.project_root.clone())
+                .display()
+                .to_string(),
+        ));
+    }
+    let workspace_path = match request
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.workspace_dir.as_path())
+    {
         Some(workspace_dir) => std::fs::canonicalize(workspace_dir)
-            .unwrap_or_else(|_| workspace_dir.clone())
+            .unwrap_or_else(|_| workspace_dir.to_path_buf())
             .display()
             .to_string(),
         None => {
@@ -485,8 +505,8 @@ async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle
     for (key, value) in request.env {
         request.command.env(key, value);
     }
-    if let Some(workspace_dir) = request.workspace_dir.as_ref() {
-        request.command.current_dir(workspace_dir);
+    if let Some(workspace) = request.workspace.as_ref() {
+        request.command.current_dir(&workspace.workspace_dir);
     }
     let command_summary = format_command(&request.command);
 

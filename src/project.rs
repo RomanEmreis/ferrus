@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::{platform, state::machine::TaskState};
+use crate::{agent_id::ENV_PROJECT_ROOT, platform, state::machine::TaskState};
 
 const PROJECT_VERSION: u32 = 1;
 const LOCAL_PROJECT_TOML: &str = ".ferrus/project.toml";
@@ -295,7 +295,7 @@ pub async fn register_current_project() -> Result<ProjectRegistration> {
         name,
         data_dir: path_string(&data_dir),
     };
-    write_toml(Path::new(LOCAL_PROJECT_TOML), &local_ref).await?;
+    write_toml(&project_path(LOCAL_PROJECT_TOML), &local_ref).await?;
 
     let database_path = data_dir.join("ferrus.db");
     initialize_database(&database_path).await?;
@@ -2755,10 +2755,35 @@ async fn copy_if_nonempty(from: &str, to: &str) -> Result<()> {
 }
 
 async fn read_local_project_ref() -> Result<LocalProjectRef> {
-    let contents = tokio::fs::read_to_string(LOCAL_PROJECT_TOML)
+    let path = project_path(LOCAL_PROJECT_TOML);
+    let contents = tokio::fs::read_to_string(&path)
         .await
         .context("Failed to read .ferrus/project.toml")?;
     toml::from_str(&contents).context("Failed to parse .ferrus/project.toml")
+}
+
+fn project_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() || !starts_with_ferrus_dir(path) {
+        return path.to_path_buf();
+    }
+    std::env::var(ENV_PROJECT_ROOT)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|root| root.join(path))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn starts_with_ferrus_dir(path: &Path) -> bool {
+    path.components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        == Some(".ferrus")
 }
 
 async fn read_project_metadata_from(path: &Path) -> Result<ProjectMetadata> {

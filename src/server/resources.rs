@@ -31,25 +31,25 @@ pub async fn read_for_agent(
         ),
         "question" => (
             "text/markdown",
-            tokio::fs::read_to_string(".ferrus/QUESTION.md")
+            tokio::fs::read_to_string(store::resolve_project_path(".ferrus/QUESTION.md"))
                 .await
                 .unwrap_or_default(),
         ),
         "answer" => (
             "text/markdown",
-            tokio::fs::read_to_string(".ferrus/ANSWER.md")
+            tokio::fs::read_to_string(store::resolve_project_path(".ferrus/ANSWER.md"))
                 .await
                 .unwrap_or_default(),
         ),
         "consult_template" => (
             "text/markdown",
-            tokio::fs::read_to_string(".ferrus/CONSULT_TEMPLATE.md")
+            tokio::fs::read_to_string(store::resolve_project_path(".ferrus/CONSULT_TEMPLATE.md"))
                 .await
                 .unwrap_or_default(),
         ),
         "spec_template" => (
             "text/markdown",
-            tokio::fs::read_to_string(".ferrus/SPEC_TEMPLATE.md")
+            tokio::fs::read_to_string(store::resolve_project_path(".ferrus/SPEC_TEMPLATE.md"))
                 .await
                 .unwrap_or_else(|_| SPEC_TEMPLATE.to_string()),
         ),

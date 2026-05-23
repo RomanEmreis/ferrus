@@ -5,6 +5,7 @@ mod state_watcher;
 mod tui;
 
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tokio::sync::watch;
 
@@ -879,6 +880,7 @@ impl HqContext {
             index,
             self.debug,
             vec![(ENV_AGENT_ID, name.to_string())],
+            None,
         )
         .await?;
         self.store_headless_handle(name, handle);
@@ -902,6 +904,7 @@ impl HqContext {
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
         agent.validate_interactive_launch(ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)?;
+        let workspace = prepare_executor_workspace(task_id).await?;
         let handle = agent_manager::spawn_headless_executor_with_env(
             agent.as_ref(),
             name,
@@ -912,6 +915,10 @@ impl HqContext {
                 (ENV_AGENT_ID, name.to_string()),
                 (ENV_TASK_ID, task_id.to_string()),
             ],
+            Some(agent_manager::HeadlessWorkspace {
+                workspace_dir: workspace.workspace_dir.clone(),
+                project_root: workspace.project_root.clone(),
+            }),
         )
         .await?;
         self.store_headless_handle(name, handle);
@@ -2066,6 +2073,81 @@ async fn reconcile_agent_pids() {
             let _ = write_agents(&reg).await;
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ExecutorWorkspace {
+    project_root: PathBuf,
+    workspace_dir: PathBuf,
+}
+
+async fn prepare_executor_workspace(task_id: &str) -> Result<ExecutorWorkspace> {
+    let registration = crate::project::touch_current_project().await?;
+    let project_root = PathBuf::from(&registration.metadata.workspace_dir);
+    if !git_is_work_tree(&project_root).await {
+        anyhow::bail!(
+            "Cannot start isolated executor workspace: {} is not a git worktree.",
+            project_root.display()
+        );
+    }
+
+    let workspace_dir = registration.data_dir.join("worktrees").join(task_id);
+    if tokio::fs::try_exists(&workspace_dir).await? {
+        if git_is_work_tree(&workspace_dir).await {
+            return Ok(ExecutorWorkspace {
+                project_root,
+                workspace_dir,
+            });
+        }
+        anyhow::bail!(
+            "Cannot start isolated executor workspace: {} already exists and is not a git worktree.",
+            workspace_dir.display()
+        );
+    }
+
+    let parent = workspace_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("workspace path has no parent"))?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .with_context(|| format!("Failed to create {}", parent.display()))?;
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&project_root)
+        .args(["worktree", "add", "--detach"])
+        .arg(&workspace_dir)
+        .arg("HEAD")
+        .output()
+        .await
+        .context("Failed to run git worktree add")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "Failed to create isolated executor workspace at {}: {}",
+            workspace_dir.display(),
+            if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+
+    Ok(ExecutorWorkspace {
+        project_root,
+        workspace_dir,
+    })
+}
+
+async fn git_is_work_tree(path: &Path) -> bool {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .await;
+    matches!(output, Ok(output) if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
 }
 
 #[allow(dead_code)]

@@ -2,13 +2,43 @@ use anyhow::{Context, Result};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use crate::agent_id::ENV_PROJECT_ROOT;
+
 use super::machine::StateData;
 
 const FERRUS_DIR: &str = ".ferrus";
 const LOGS_DIR: &str = ".ferrus/logs";
 
 fn path(filename: &str) -> PathBuf {
-    Path::new(FERRUS_DIR).join(filename)
+    resolve_project_path(Path::new(FERRUS_DIR).join(filename))
+}
+
+pub fn resolve_project_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() || !starts_with_ferrus_dir(path) {
+        return path.to_path_buf();
+    }
+    project_root_from_env()
+        .map(|root| root.join(path))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn starts_with_ferrus_dir(path: &Path) -> bool {
+    path.components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        == Some(FERRUS_DIR)
+}
+
+fn project_root_from_env() -> Option<PathBuf> {
+    std::env::var(ENV_PROJECT_ROOT)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 pub async fn read_state() -> Result<StateData> {
@@ -169,8 +199,8 @@ pub async fn write_submission_for_run_dir(run_dir: &str, content: &str) -> Resul
 /// Write a full check log to `.ferrus/logs/check_{attempt}_{ts}.txt`.
 /// Creates the logs directory if it doesn't exist. Returns the file path.
 pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<PathBuf> {
-    let logs_dir = Path::new(LOGS_DIR);
-    tokio::fs::create_dir_all(logs_dir)
+    let logs_dir = resolve_project_path(LOGS_DIR);
+    tokio::fs::create_dir_all(&logs_dir)
         .await
         .with_context(|| format!("Failed to create {}", logs_dir.display()))?;
     let filename = format!("check_{attempt}_{ts}.txt");
@@ -379,13 +409,15 @@ async fn write_file(filename: &str, content: &str) -> Result<()> {
 }
 
 async fn read_path(path: &Path) -> Result<String> {
-    tokio::fs::read_to_string(path)
+    let path = resolve_project_path(path);
+    tokio::fs::read_to_string(&path)
         .await
         .with_context(|| format!("Failed to read {}", path.display()))
 }
 
 async fn read_path_or_empty(path: &Path) -> Result<String> {
-    match tokio::fs::read_to_string(path).await {
+    let path = resolve_project_path(path);
+    match tokio::fs::read_to_string(&path).await {
         Ok(contents) => Ok(contents),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(err) => Err(err).with_context(|| format!("Failed to read {}", path.display())),
@@ -393,12 +425,13 @@ async fn read_path_or_empty(path: &Path) -> Result<String> {
 }
 
 async fn write_path(path: &Path, content: &str) -> Result<()> {
+    let path = resolve_project_path(path);
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    tokio::fs::write(path, content)
+    tokio::fs::write(&path, content)
         .await
         .with_context(|| format!("Failed to write {}", path.display()))
 }
