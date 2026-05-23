@@ -1,8 +1,11 @@
 use anyhow::Result;
 use neva::prelude::*;
+use std::path::Path;
+use tokio::process::Command;
 use tracing::info;
 
 use crate::{
+    agent_id::ENV_PROJECT_ROOT,
     config::Config,
     project::{self, RuntimeTaskContext, TaskCheckFailure},
     state::{machine::TaskState, machine::TransitionError, store},
@@ -77,6 +80,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
             project::record_task_check_passed(&context.task_id).await?;
         }
         write_submission(&state, runtime_context.as_ref(), &content).await?;
+        write_submission_patch(runtime_context.as_ref()).await?;
         if use_legacy_state {
             store::write_state(&state).await?;
         }
@@ -114,6 +118,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
                 project::record_task_check_passed(&context.task_id).await?;
             }
             write_submission(&state, runtime_context.as_ref(), &content).await?;
+            write_submission_patch(runtime_context.as_ref()).await?;
             if use_legacy_state {
                 store::write_state(&state).await?;
             }
@@ -249,6 +254,69 @@ async fn write_submission(
         return Ok(());
     }
     store::write_submission(content).await
+}
+
+async fn write_submission_patch(context: Option<&RuntimeTaskContext>) -> Result<()> {
+    let Some(context) = context else {
+        return Ok(());
+    };
+    if !is_isolated_executor_workspace(context).await {
+        return Ok(());
+    }
+
+    let patch = workspace_patch().await?;
+    store::write_patch_for_run_dir(&context.run_dir, &patch).await
+}
+
+async fn is_isolated_executor_workspace(context: &RuntimeTaskContext) -> bool {
+    let Some(project_root) = std::env::var(ENV_PROJECT_ROOT)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let current_dir = std::env::current_dir().ok();
+    let workspace_path = context
+        .workspace_path
+        .as_deref()
+        .map(Path::new)
+        .map(|path| path.to_path_buf())
+        .or(current_dir);
+    let Some(workspace_path) = workspace_path else {
+        return false;
+    };
+    !equivalent_paths(&workspace_path, Path::new(&project_root)).await
+}
+
+async fn equivalent_paths(left: &Path, right: &Path) -> bool {
+    let left = tokio::fs::canonicalize(left)
+        .await
+        .unwrap_or_else(|_| left.to_path_buf());
+    let right = tokio::fs::canonicalize(right)
+        .await
+        .unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+async fn workspace_patch() -> Result<String> {
+    let _ = Command::new("git").args(["add", "-N", "."]).output().await;
+    let output = Command::new("git")
+        .args(["diff", "--binary", "HEAD", "--"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "Failed to capture executor workspace patch: {}",
+            if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 async fn record_task_status(context: Option<&RuntimeTaskContext>, status: &str) {

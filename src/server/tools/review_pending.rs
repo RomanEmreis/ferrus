@@ -39,7 +39,7 @@ async fn run(agent_id: &str) -> Result<String> {
     }
     ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
 
-    let (task, submission, review) = read_review_context(runtime_context.as_ref()).await?;
+    let (task, submission, review, patch) = read_review_context(runtime_context.as_ref()).await?;
 
     let mut response = format!("## Task\n\n{task}\n");
 
@@ -51,6 +51,15 @@ async fn run(agent_id: &str) -> Result<String> {
     if !review.trim().is_empty() {
         response.push_str("\n## Previous Review Notes\n\n");
         response.push_str(&review);
+    }
+
+    if !patch.trim().is_empty() {
+        response.push_str("\n## Implementation Patch\n\n```diff\n");
+        response.push_str(&patch);
+        if !patch.ends_with('\n') {
+            response.push('\n');
+        }
+        response.push_str("```\n");
     }
 
     let review_cycles = runtime_context
@@ -76,12 +85,13 @@ async fn run(agent_id: &str) -> Result<String> {
 
 async fn read_review_context(
     context: Option<&RuntimeTaskContext>,
-) -> Result<(String, String, String)> {
+) -> Result<(String, String, String, String)> {
     if let Some(context) = context {
         return Ok((
             store::read_task_at(&context.task_path).await?,
             store::read_submission_for_run_dir(&context.run_dir).await?,
             store::read_review_for_run_dir(&context.run_dir).await?,
+            store::read_patch_for_run_dir(&context.run_dir).await?,
         ));
     }
 
@@ -89,5 +99,79 @@ async fn read_review_context(
         store::read_task().await?,
         store::read_submission().await?,
         store::read_review().await?,
+        String::new(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::machine::StateData;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/runs/t-007")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 1\n\n[lease]\nttl_secs = 60\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
+        store::write_state(&StateData::default()).await.unwrap();
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn review_pending_includes_scoped_implementation_patch() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        tokio::fs::write(".ferrus/tasks/t-007.md", "task body")
+            .await
+            .unwrap();
+        store::write_submission_for_run_dir(".ferrus/runs/t-007", "submission")
+            .await
+            .unwrap();
+        store::write_patch_for_run_dir(
+            ".ferrus/runs/t-007",
+            "diff --git a/file.txt b/file.txt\n+new line\n",
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let response = run("supervisor:codex:7").await.unwrap();
+
+        assert!(response.contains("## Implementation Patch"));
+        assert!(response.contains("```diff"));
+        assert!(response.contains("diff --git a/file.txt b/file.txt"));
+
+        teardown(previous);
+    }
 }

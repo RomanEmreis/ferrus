@@ -1,5 +1,7 @@
 use anyhow::Result;
 use neva::prelude::*;
+use std::path::Path;
+use tokio::process::Command;
 use tracing::info;
 
 use crate::{
@@ -44,6 +46,7 @@ async fn run(agent_id: &str) -> Result<String> {
         store::write_state(&state).await?;
         project::record_current_task_status_best_effort("complete").await;
     } else if let Some(context) = runtime_context.as_ref() {
+        apply_approved_patch(context).await?;
         project::record_task_status_best_effort(&context.task_id, &context.task_path, "complete")
             .await;
     }
@@ -60,6 +63,37 @@ async fn run(agent_id: &str) -> Result<String> {
 
     info!("Task approved, state → Complete");
     Ok("Task approved. State: Complete. Well done!".to_string())
+}
+
+async fn apply_approved_patch(context: &RuntimeTaskContext) -> Result<()> {
+    let patch = store::read_patch_for_run_dir(&context.run_dir).await?;
+    if patch.trim().is_empty() {
+        return Ok(());
+    }
+
+    let project_root = std::env::current_dir()?;
+    let patch_path = store::resolve_project_path(Path::new(&context.run_dir).join("PATCH.diff"));
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&project_root)
+        .args(["apply", "--whitespace=nowarn"])
+        .arg(&patch_path)
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "Cannot approve task {} because its patch could not be applied to {}: {}",
+            context.task_id,
+            project_root.display(),
+            if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(())
 }
 
 fn should_use_legacy_state(
@@ -140,5 +174,81 @@ mod tests {
         assert_eq!(task.claimed_by, None);
 
         teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn approve_applies_scoped_patch_before_marking_task_complete() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        if !git(dir.path(), ["init"]).success() {
+            teardown(previous);
+            return;
+        }
+        tokio::fs::write("file.txt", "old\n").await.unwrap();
+        assert!(git(dir.path(), ["add", "file.txt"]).success());
+        assert!(
+            git(
+                dir.path(),
+                [
+                    "-c",
+                    "user.email=ferrus@example.invalid",
+                    "-c",
+                    "user.name=Ferrus",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+            )
+            .success()
+        );
+        tokio::fs::write("file.txt", "new\n").await.unwrap();
+        let patch = git_output(dir.path(), ["diff", "--binary", "HEAD", "--", "file.txt"]);
+        tokio::fs::write("file.txt", "old\n").await.unwrap();
+        assert!(!patch.trim().is_empty());
+
+        store::write_state(&StateData::default()).await.unwrap();
+        store::write_patch_for_run_dir(".ferrus/runs/t-007", &patch)
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run("supervisor:codex:7").await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string("file.txt").await.unwrap(),
+            "new\n"
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "complete");
+
+        teardown(previous);
+    }
+
+    fn git<const N: usize>(cwd: &std::path::Path, args: [&str; N]) -> std::process::ExitStatus {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .status()
+            .unwrap()
+    }
+
+    fn git_output<const N: usize>(cwd: &std::path::Path, args: [&str; N]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 }

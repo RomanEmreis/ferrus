@@ -140,6 +140,7 @@ pub struct RuntimeTaskContext {
     pub review_cycles: u32,
     pub failure_reason: Option<String>,
     pub run_id: Option<String>,
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1555,7 +1556,7 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
             )
             .optional()?
         {
-            let run_id = latest_run_id_for_agent_task(&connection, &agent_id, &task_id)?;
+            let run = latest_run_for_agent_task(&connection, &agent_id, &task_id)?;
             return Ok(Some(RuntimeTaskContext {
                 run_dir: run_dir_for_task(&task_id),
                 task_id,
@@ -1565,14 +1566,16 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                 check_retries,
                 review_cycles,
                 failure_reason,
-                run_id,
+                run_id: run.as_ref().map(|run| run.id.clone()),
+                workspace_path: run.map(|run| run.workspace_path),
             }));
         }
 
         let context = connection
             .query_row(
                 r#"
-                SELECT runs.id, tasks.id, tasks.path, tasks.status, tasks.paused_status,
+                SELECT runs.id, runs.workspace_path,
+                       tasks.id, tasks.path, tasks.status, tasks.paused_status,
                        tasks.check_retries, tasks.review_cycles, tasks.failure_reason
                 FROM runs
                 JOIN tasks ON tasks.id = runs.task_id
@@ -1583,17 +1586,19 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                 [&agent_id],
                 |row| {
                     let run_id = row.get::<_, String>(0)?;
-                    let task_id = row.get::<_, String>(1)?;
+                    let workspace_path = row.get::<_, String>(1)?;
+                    let task_id = row.get::<_, String>(2)?;
                     Ok(RuntimeTaskContext {
                         run_dir: run_dir_for_task(&task_id),
                         task_id,
-                        task_path: row.get(2)?,
-                        status: row.get(3)?,
-                        paused_status: row.get(4)?,
-                        check_retries: row.get::<_, i64>(5)? as u32,
-                        review_cycles: row.get::<_, i64>(6)? as u32,
-                        failure_reason: row.get(7)?,
+                        task_path: row.get(3)?,
+                        status: row.get(4)?,
+                        paused_status: row.get(5)?,
+                        check_retries: row.get::<_, i64>(6)? as u32,
+                        review_cycles: row.get::<_, i64>(7)? as u32,
+                        failure_reason: row.get(8)?,
                         run_id: Some(run_id),
+                        workspace_path: Some(workspace_path),
                     })
                 },
             )
@@ -1639,22 +1644,33 @@ fn renew_task_lease_in_transaction(
     Ok(Some(lease_until))
 }
 
-fn latest_run_id_for_agent_task(
+#[derive(Debug, Clone)]
+struct RuntimeRunIdentity {
+    id: String,
+    workspace_path: String,
+}
+
+fn latest_run_for_agent_task(
     connection: &Connection,
     agent_id: &str,
     task_id: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<RuntimeRunIdentity>> {
     Ok(connection
         .query_row(
             r#"
-            SELECT id
+            SELECT id, workspace_path
             FROM runs
             WHERE agent = ?1 AND task_id = ?2
             ORDER BY updated_at DESC, started_at DESC, id DESC
             LIMIT 1
             "#,
             params![agent_id, task_id],
-            |row| row.get(0),
+            |row| {
+                Ok(RuntimeRunIdentity {
+                    id: row.get(0)?,
+                    workspace_path: row.get(1)?,
+                })
+            },
         )
         .optional()?)
 }
@@ -1702,6 +1718,7 @@ fn consultation_context_for_run(
                     review_cycles: row.get::<_, i64>(5)? as u32,
                     failure_reason: row.get(6)?,
                     run_id: Some(run_id.to_string()),
+                    workspace_path: None,
                 })
             },
         )
@@ -1964,6 +1981,7 @@ pub async fn attach_running_run_to_next_consultation(
                         review_cycles: row.get::<_, i64>(5)? as u32,
                         failure_reason: row.get(6)?,
                         run_id: Some(run_id.clone()),
+                        workspace_path: None,
                     })
                 },
             )

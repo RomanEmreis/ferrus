@@ -60,6 +60,7 @@ async fn run(agent_id: &str) -> Result<String> {
             let task = store::read_task_at(&claim.task_path).await?;
             let submission = store::read_submission_for_run_dir(&run_dir).await?;
             let review = store::read_review_for_run_dir(&run_dir).await?;
+            let patch = store::read_patch_for_run_dir(&run_dir).await?;
 
             info!(
                 agent_id,
@@ -77,6 +78,7 @@ async fn run(agent_id: &str) -> Result<String> {
                 "task": task,
                 "submission": submission,
                 "review": review,
+                "patch": patch,
                 "review_cycles_used": claim.review_cycles,
                 "check_retries_used": claim.check_retries,
             });
@@ -227,6 +229,9 @@ mod tests {
         tokio::fs::write(".ferrus/runs/t-003/SUBMISSION.md", "submission")
             .await
             .unwrap();
+        store::write_patch_for_run_dir(".ferrus/runs/t-003", "diff --git a/a b/a\n+change\n")
+            .await
+            .unwrap();
         crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
             .await
             .unwrap();
@@ -238,6 +243,7 @@ mod tests {
         assert_eq!(response["task_id"], "t-003");
         assert_eq!(response["task"], "review task");
         assert_eq!(response["submission"], "submission");
+        assert_eq!(response["patch"], "diff --git a/a b/a\n+change\n");
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-003").unwrap();
         assert_eq!(task.claimed_by.as_deref(), Some("supervisor:codex:1"));

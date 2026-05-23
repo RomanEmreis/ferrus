@@ -239,13 +239,14 @@ Recovery is SQLite-first:
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 - Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.
 - `/run` executor sessions create/reuse git worktrees under `~/.ferrus/projects/<id>/worktrees/<task-id>`, run the agent in that cwd, and pass `FERRUS_PROJECT_ROOT` so MCP runtime state still uses the canonical project `.ferrus`.
+- Isolated executor submissions persist `PATCH.diff`; review context exposes the patch; approval applies the patch to the canonical workspace before marking the task complete.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
 - Harden multi-executor scheduling beyond the initial post-`/run` launch path.
-- Harden worktree cleanup/reuse policy and add the integration path for outputs produced in isolated workspaces.
-- Add final integration/review policy for parallel outputs.
+- Harden worktree cleanup/reuse policy for isolated executor workspaces.
+- Improve integration conflict UX and recovery for rejected/failed patch application.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
 - Add multi-task ask-human queue handling.
 - Connect dashboard panels to real queued/running/reviewing task and run state.
@@ -345,7 +346,7 @@ Depends on: m3.0
 Replace indexed MCP registrations with role-only registrations and pass concrete `agent_id`, `task_id`, and `run_id`
 through runtime context rather than static MCP config.
 
-### [ ] #3.2 Parallel review and integration
+### [x] #3.2 Parallel review and integration
 
 ID: m3.2
 Depends on: m3.1, m3.1a
