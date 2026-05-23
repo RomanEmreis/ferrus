@@ -13,6 +13,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::agent_id::DEFAULT_AGENT_INDEX;
+
 /// Describes one MCP server entry for a spawned Ferrus agent.
 ///
 /// Ferrus writes these values into client-facing configuration so external
@@ -57,7 +59,12 @@ pub trait SupervisorAgent: Send + Sync {
     ///
     /// Returns an error when Ferrus cannot resolve the launcher command for
     /// the selected backend and mode.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command>;
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+        self.spawn_with_index(mode, DEFAULT_AGENT_INDEX)
+    }
+
+    /// Builds the command used for a specific role-scoped MCP server index.
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, index: u32) -> Result<Command>;
 
     /// Builds a command that returns the backend version string.
     ///
@@ -117,7 +124,12 @@ pub trait ExecutorAgent: Send + Sync {
     ///
     /// Returns an error when Ferrus cannot resolve the launcher command for
     /// the selected backend and mode.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command>;
+    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+        self.spawn_with_index(mode, DEFAULT_AGENT_INDEX)
+    }
+
+    /// Builds the command used for a specific role-scoped MCP server index.
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, index: u32) -> Result<Command>;
 
     /// Builds a command that returns the backend version string.
     ///

@@ -7,7 +7,7 @@ use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
     validate_toml_mcp_server,
 };
-use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
 use anyhow::Result;
 #[cfg(windows)]
 use anyhow::anyhow;
@@ -60,8 +60,8 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        codex_command(mode, self.model(), ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, index: u32) -> Result<Command> {
+        codex_command(mode, self.model(), ROLE_SUPERVISOR, index)
     }
 
     fn model(&self) -> Option<&str> {
@@ -84,8 +84,8 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        codex_command(mode, self.model(), ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, index: u32) -> Result<Command> {
+        codex_command(mode, self.model(), ROLE_EXECUTOR, index)
     }
 
     fn model(&self) -> Option<&str> {

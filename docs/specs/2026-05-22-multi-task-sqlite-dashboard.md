@@ -186,19 +186,13 @@ Recovery is SQLite-first:
 - Supervisor/executor launch preflight validation in backend-specific agent modules.
 - New HQ dashboard foundation with project panel, milestones panel, command output area, prompt/footer, error display, and ask-human groundwork.
 - Dashboard fixes for prompt stability, multiline input, command output spacing, stderr/error display, and backend-specific preflight errors.
+- Shared milestone readiness calculation with `ready`, `pending`, and `done`.
+- Dashboard milestone rendering uses shared readiness.
+- `/run` scheduler starts queued tasks with executor sessions up to `limits.max_parallel_tasks`.
 
 ## What Remains
 
-- Add shared milestone readiness calculation with `ready`, `pending`, and `done`.
-- Update dashboard milestone rendering to use shared readiness, not only `[x]`.
-- Add `spec_path` and `milestone_id` metadata to SQLite task records.
-- Add duplicate prevention for `(spec_path, milestone_id)` tasks.
-- Add `/enqueue_task` MCP tool.
-- Add supervisor prompt for batch task preparation that requires exactly the HQ-selected milestone set.
-- Add `/run` command parsing and deterministic ready milestone selection.
-- Add `/run --limit N` confirmation when fewer than N milestones are eligible.
-- Connect `/run` to one interactive supervisor session that prepares multiple approved task artifacts.
-- Start executors for queued tasks within the configured parallelism limit.
+- Harden multi-executor scheduling beyond the initial post-`/run` launch path.
 - Add worktree isolation via `runs.workspace_path`.
 - Add final integration/review policy for parallel outputs.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
@@ -240,7 +234,7 @@ Depends on: m1.0
 Introduce the HQ dashboard surface with stable prompt behavior, command output area, project/milestone panels,
 error display, and backend launch preflight errors.
 
-### [ ] #2.0 Shared milestone readiness
+### [x] #2.0 Shared milestone readiness
 
 ID: m2.0
 Depends on: m1.1
@@ -278,7 +272,7 @@ Depends on: m2.2, m2.3
 Launch one interactive supervisor session with an exact HQ-selected milestone list and require approved task artifacts
 for each selected milestone.
 
-### [ ] #3.0 Multi-executor scheduling
+### [x] #3.0 Multi-executor scheduling
 
 ID: m3.0
 Depends on: m2.4

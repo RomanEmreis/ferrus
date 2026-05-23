@@ -380,14 +380,15 @@ impl Drop for HeadlessHandle {
     }
 }
 
-pub async fn spawn_headless_executor(
+pub async fn spawn_headless_executor_with_index(
     agent: &dyn ExecutorAgent,
     name: &str,
     prompt: &str,
+    index: u32,
     debug: bool,
 ) -> Result<HeadlessHandle> {
     let command = agent
-        .spawn(AgentRunMode::Headless { prompt })
+        .spawn_with_index(AgentRunMode::Headless { prompt }, index)
         .with_context(|| {
             format!(
                 "Failed to resolve launcher for executor agent {}",

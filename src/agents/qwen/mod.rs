@@ -51,7 +51,7 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Qwen command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, _index: u32) -> Result<Command> {
         Ok(qwen_command(mode, self.model()))
     }
 
@@ -71,7 +71,7 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Qwen command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, _index: u32) -> Result<Command> {
         Ok(qwen_command(mode, self.model()))
     }
 

@@ -38,6 +38,9 @@ pub struct LimitsConfig {
     /// returns timeout so the agent can poll again.
     #[serde(default = "default_wait_timeout_secs")]
     pub wait_timeout_secs: u64,
+    /// Maximum number of executor sessions HQ may run at the same time.
+    #[serde(default = "default_max_parallel_tasks")]
+    pub max_parallel_tasks: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +209,9 @@ const fn default_max_feedback_lines() -> usize {
 const fn default_wait_timeout_secs() -> u64 {
     60
 }
+const fn default_max_parallel_tasks() -> usize {
+    1
+}
 const fn default_ttl_secs() -> u64 {
     90
 }
@@ -366,6 +372,7 @@ commands = ["cargo test"]
         assert_eq!(config.limits.max_review_cycles, 3);
         assert_eq!(config.limits.max_feedback_lines, 30);
         assert_eq!(config.limits.wait_timeout_secs, 60);
+        assert_eq!(config.limits.max_parallel_tasks, 1);
     }
 
     #[test]
@@ -379,6 +386,7 @@ max_check_retries = 7
 max_review_cycles = 4
 max_feedback_lines = 12
 wait_timeout_secs = 900
+max_parallel_tasks = 3
 
 [lease]
 ttl_secs = 120
@@ -400,6 +408,7 @@ directory = "docs/feature-specs"
         assert_eq!(config.limits.max_review_cycles, 4);
         assert_eq!(config.limits.max_feedback_lines, 12);
         assert_eq!(config.limits.wait_timeout_secs, 900);
+        assert_eq!(config.limits.max_parallel_tasks, 3);
         assert_eq!(config.lease.ttl_secs, 120);
         assert_eq!(config.lease.heartbeat_interval_secs, 45);
         assert_eq!(config.spec.directory, "docs/feature-specs");

@@ -14,6 +14,7 @@ max_check_retries = 20  # consecutive check failures before state → Failed
 max_review_cycles = 3   # reject→fix cycles before state → Failed
 max_feedback_lines = 30 # trailing lines per failing command shown in /check and /submit output (full output always in .ferrus/logs/)
 wait_timeout_secs = 60 # max duration of a single wait_* tool call before it returns timeout so the agent can poll again
+max_parallel_tasks = 1 # max concurrent executor sessions; register additional executor MCP entries before increasing
 
 [agents]
 path = ".agents" # root directory for agent skill files
@@ -378,6 +379,7 @@ max_check_retries = 20   # check failures before Failed
 max_review_cycles = 3    # reject→fix cycles before Failed
 max_feedback_lines = 30  # lines per command shown in /check and /submit output
 wait_timeout_secs = 60   # max duration of one wait_* tool call; agents should call again after timeout
+max_parallel_tasks = 1   # max concurrent executor sessions
 
 [lease]
 ttl_secs = 90            # lease validity without renewal

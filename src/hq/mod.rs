@@ -523,15 +523,15 @@ impl HqContext {
     }
 
     fn executor_agent_id(&self) -> Result<String> {
+        self.executor_agent_id_for_index(DEFAULT_AGENT_INDEX)
+    }
+
+    fn executor_agent_id_for_index(&self, index: u32) -> Result<String> {
         let executor = self
             .executor
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?;
-        Ok(agent_id(
-            ROLE_EXECUTOR,
-            executor.name(),
-            DEFAULT_AGENT_INDEX,
-        ))
+        Ok(agent_id(ROLE_EXECUTOR, executor.name(), index))
     }
 
     fn supervisor_agent_id(&self) -> Result<String> {
@@ -850,6 +850,16 @@ impl HqContext {
     }
 
     async fn spawn_headless_executor(&mut self, name: &str, prompt: &str) -> Result<()> {
+        self.spawn_headless_executor_with_index(name, prompt, DEFAULT_AGENT_INDEX)
+            .await
+    }
+
+    async fn spawn_headless_executor_with_index(
+        &mut self,
+        name: &str,
+        prompt: &str,
+        index: u32,
+    ) -> Result<()> {
         if !self.prepare_headless_slot(name).await {
             return Ok(());
         }
@@ -859,9 +869,15 @@ impl HqContext {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
-        let handle =
-            agent_manager::spawn_headless_executor(agent.as_ref(), name, prompt, self.debug)
-                .await?;
+        agent.validate_interactive_launch(ROLE_EXECUTOR, index)?;
+        let handle = agent_manager::spawn_headless_executor_with_index(
+            agent.as_ref(),
+            name,
+            prompt,
+            index,
+            self.debug,
+        )
+        .await?;
         self.store_headless_handle(name, handle);
         Ok(())
     }
@@ -1399,7 +1415,86 @@ impl HqContext {
             .await?;
         self.display
             .info("Batch preparation session finished. Use /tasks to inspect queued tasks.");
+        self.schedule_queued_tasks().await?;
         Ok(())
+    }
+
+    async fn schedule_queued_tasks(&mut self) -> Result<usize> {
+        self.ensure_hq_config().await?;
+        let config = Config::load().await?;
+        let max_parallel = config.limits.max_parallel_tasks.max(1);
+        let tasks = crate::project::list_tasks().await?;
+        let pending_count = tasks.iter().filter(|task| task.status == "pending").count();
+        if pending_count == 0 {
+            return Ok(0);
+        }
+
+        let running = self.running_executor_count();
+        let slots = max_parallel.saturating_sub(running);
+        if slots == 0 {
+            self.display.info(format!(
+                "{pending_count} queued task(s) waiting; executor parallelism limit is {max_parallel}."
+            ));
+            return Ok(0);
+        }
+
+        let requested = pending_count.min(slots);
+        let mut spawned = 0usize;
+        let mut spawn_error = None;
+        let prompt = agent_manager::executor_prompt();
+
+        for index in 1..=max_parallel {
+            if spawned >= requested {
+                break;
+            }
+            let index = u32::try_from(index).context("Executor index exceeds u32 range")?;
+            let name = self.executor_agent_id_for_index(index)?;
+            if self
+                .headless
+                .get(&name)
+                .is_some_and(agent_manager::HeadlessHandle::is_alive)
+            {
+                continue;
+            }
+
+            match self
+                .spawn_headless_executor_with_index(&name, prompt, index)
+                .await
+            {
+                Ok(()) => spawned += 1,
+                Err(err) => {
+                    spawn_error = Some(err);
+                    break;
+                }
+            }
+        }
+
+        let scheduled = crate::project::schedule_pending_tasks(spawned).await?;
+        if !scheduled.is_empty() {
+            let task_ids = scheduled
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.display.info(format!(
+                "Scheduled {} queued task(s): {task_ids}",
+                scheduled.len()
+            ));
+        }
+        if let Some(err) = spawn_error {
+            self.display.error(format!(
+                "Could not start more executor sessions after scheduling {} task(s): {err}",
+                scheduled.len()
+            ));
+        }
+        Ok(scheduled.len())
+    }
+
+    fn running_executor_count(&self) -> usize {
+        self.headless
+            .iter()
+            .filter(|(name, handle)| name.starts_with(ROLE_EXECUTOR) && handle.is_alive())
+            .count()
     }
 
     async fn selected_milestone_for_task(

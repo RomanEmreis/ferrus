@@ -57,7 +57,7 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, _index: u32) -> Result<Command> {
         Ok(claude_command(
             ROLE_SUPERVISOR,
             mode,
@@ -82,7 +82,7 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Claude command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, _index: u32) -> Result<Command> {
         Ok(claude_command(
             ROLE_EXECUTOR,
             mode,
