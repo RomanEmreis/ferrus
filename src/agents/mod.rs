@@ -279,11 +279,19 @@ pub(crate) fn absolute_display_path(path: &Path) -> std::path::PathBuf {
     }
 }
 
+pub(crate) fn display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+pub(crate) fn absolute_display_path_string(path: &Path) -> String {
+    display_path(&absolute_display_path(path))
+}
+
 pub(crate) fn ensure_mcp_config_file_exists(path: &Path) -> Result<()> {
     if !path.exists() {
         bail!(invalid_mcp_config(format!(
             "MCP config file not found: {}",
-            absolute_display_path(path).display()
+            absolute_display_path_string(path)
         )));
     }
     Ok(())
@@ -292,19 +300,23 @@ pub(crate) fn ensure_mcp_config_file_exists(path: &Path) -> Result<()> {
 pub(crate) fn validate_json_mcp_server(path: &Path, key: &str) -> Result<()> {
     ensure_mcp_config_file_exists(path)?;
     let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    let root: Value = serde_json::from_str(&content)
-        .map_err(|err| invalid_mcp_config(format!("Failed to parse {}: {err}", path.display())))?;
+        .with_context(|| format!("Failed to read {}", display_path(path)))?;
+    let root: Value = serde_json::from_str(&content).map_err(|err| {
+        invalid_mcp_config(format!("Failed to parse {}: {err}", display_path(path)))
+    })?;
     let servers = root
         .get("mcpServers")
         .and_then(Value::as_object)
         .ok_or_else(|| {
-            invalid_mcp_config(format!("{} mcpServers is not an object", path.display()))
+            invalid_mcp_config(format!(
+                "{} mcpServers is not an object",
+                display_path(path)
+            ))
         })?;
     if !servers.contains_key(key) {
         bail!(invalid_mcp_config(format!(
             "MCP server `{key}` not found in {}",
-            path.display()
+            display_path(path)
         )));
     }
     Ok(())
@@ -313,19 +325,20 @@ pub(crate) fn validate_json_mcp_server(path: &Path, key: &str) -> Result<()> {
 pub(crate) fn validate_toml_mcp_server(path: &Path, key: &str) -> Result<()> {
     ensure_mcp_config_file_exists(path)?;
     let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    let root: toml::Value = toml::from_str(&content)
-        .map_err(|err| invalid_mcp_config(format!("Failed to parse {}: {err}", path.display())))?;
+        .with_context(|| format!("Failed to read {}", display_path(path)))?;
+    let root: toml::Value = toml::from_str(&content).map_err(|err| {
+        invalid_mcp_config(format!("Failed to parse {}: {err}", display_path(path)))
+    })?;
     let servers = root
         .get("mcp_servers")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| {
-            invalid_mcp_config(format!("{} mcp_servers is not a table", path.display()))
+            invalid_mcp_config(format!("{} mcp_servers is not a table", display_path(path)))
         })?;
     if !servers.contains_key(key) {
         bail!(invalid_mcp_config(format!(
             "MCP server `{key}` not found in {}",
-            path.display()
+            display_path(path)
         )));
     }
     Ok(())
