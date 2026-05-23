@@ -4,7 +4,7 @@ use anyhow::Result;
 use neva::App;
 use neva::types::ToolSchema;
 
-use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
+use crate::agent_id::{ENV_AGENT_ID, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
 use crate::platform;
 
 mod prompts;
@@ -26,7 +26,13 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         Some(Role::Executor) => ROLE_EXECUTOR,
         None => "agent",
     };
-    let agent_id = Arc::new(agent_id(role_str, &agent_name, agent_index));
+    let agent_id = Arc::new(
+        std::env::var(ENV_AGENT_ID)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| agent_id(role_str, &agent_name, agent_index)),
+    );
 
     let mut app = App::new().with_options(|opt| {
         opt.with_stdio()

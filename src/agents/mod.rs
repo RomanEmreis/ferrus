@@ -226,17 +226,16 @@ fn current_exe_string() -> Result<String> {
         .into_owned())
 }
 
-fn serve_args(role: &str, agent_name: &str, index: u32) -> Vec<String> {
+fn serve_args(role: &str, agent_name: &str, _index: u32) -> Vec<String> {
     // Ferrus reconnects to agents through `ferrus serve`, so every backend uses
-    // the same argument shape with role and agent identity baked in.
+    // the same role-level argument shape. Concrete agent/task/run identity is
+    // supplied at runtime through FERRUS_* environment variables.
     vec![
         "serve".to_string(),
         "--role".to_string(),
         role.to_string(),
         "--agent-name".to_string(),
         agent_name.to_string(),
-        "--agent-index".to_string(),
-        index.to_string(),
     ]
 }
 
@@ -451,8 +450,8 @@ mod tests {
     #[test]
     fn mcp_permission_uses_mcp_server_wildcard() {
         assert_eq!(
-            mcp_server_tools_permission("ferrus-supervisor-1"),
-            "mcp__ferrus-supervisor-1__*"
+            mcp_server_tools_permission("ferrus-supervisor"),
+            "mcp__ferrus-supervisor__*"
         );
     }
 
@@ -466,14 +465,14 @@ mod tests {
 
         let added = add_json_allow_permission(
             &mut root,
-            "mcp__ferrus-executor-1__*",
+            "mcp__ferrus-executor__*",
             Path::new(".claude/settings.local.json"),
         )
         .unwrap();
         assert!(added);
         assert_eq!(
             root["permissions"]["allow"],
-            serde_json::json!(["Bash(cargo test)", "mcp__ferrus-executor-1__*"])
+            serde_json::json!(["Bash(cargo test)", "mcp__ferrus-executor__*"])
         );
     }
 
@@ -481,20 +480,20 @@ mod tests {
     fn add_json_allow_permission_is_idempotent() {
         let mut root = serde_json::json!({
             "permissions": {
-                "allow": ["mcp__ferrus-supervisor-1__*"]
+                "allow": ["mcp__ferrus-supervisor__*"]
             }
         });
 
         let added = add_json_allow_permission(
             &mut root,
-            "mcp__ferrus-supervisor-1__*",
+            "mcp__ferrus-supervisor__*",
             Path::new(".qwen/settings.json"),
         )
         .unwrap();
         assert!(!added);
         assert_eq!(
             root["permissions"]["allow"],
-            serde_json::json!(["mcp__ferrus-supervisor-1__*"])
+            serde_json::json!(["mcp__ferrus-supervisor__*"])
         );
     }
 }

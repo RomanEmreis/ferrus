@@ -7,6 +7,7 @@ use tokio::time::sleep;
 use tracing::info;
 
 use crate::{
+    agent_id::ENV_TASK_ID,
     config::Config,
     project::{self, ReadyTaskClaim, TaskLease},
     state::{machine::TaskState, store},
@@ -100,6 +101,10 @@ async fn claim_ready_task(
     ttl_secs: u64,
     state: &mut crate::state::machine::StateData,
 ) -> Result<Option<TaskLease>> {
+    if let Some(task_id) = runtime_task_id() {
+        return claim_runtime_task(&task_id, agent_id, ttl_secs).await;
+    }
+
     match project::claim_next_ready_task(agent_id, ttl_secs).await {
         Ok(ReadyTaskClaim::Claimed(task)) | Ok(ReadyTaskClaim::AlreadyClaimed(task)) => {
             mirror_state_lease_if_current_task(state, &task).await?;
@@ -114,6 +119,24 @@ async fn claim_ready_task(
             claim_state_fallback(agent_id, ttl_secs, state).await
         }
     }
+}
+
+async fn claim_runtime_task(
+    task_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> Result<Option<TaskLease>> {
+    match project::claim_ready_task_by_id(task_id, agent_id, ttl_secs).await? {
+        ReadyTaskClaim::Claimed(task) | ReadyTaskClaim::AlreadyClaimed(task) => Ok(Some(task)),
+        ReadyTaskClaim::NoAvailable => Ok(None),
+    }
+}
+
+fn runtime_task_id() -> Option<String> {
+    std::env::var(ENV_TASK_ID)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 async fn mirror_state_lease_if_current_task(

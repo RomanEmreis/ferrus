@@ -7,7 +7,7 @@ use super::{
     AgentRunMode, ExecutorAgent, SupervisorAgent, allow_mcp_server_tools_in_json_settings,
     normalized_model, validate_json_mcp_server,
 };
-use crate::agent_id::mcp_server_name;
+use crate::agent_id::{legacy_mcp_server_name, mcp_server_name};
 use anyhow::Result;
 use std::process::Command;
 
@@ -110,10 +110,15 @@ pub(crate) async fn allow_mcp_server_tools(server_key: &str) -> Result<()> {
 }
 
 fn validate_interactive_launch(role: &str, index: u32) -> Result<()> {
-    validate_json_mcp_server(
-        std::path::Path::new(".qwen/settings.json"),
-        &mcp_server_name(role, index),
-    )
+    let path = std::path::Path::new(".qwen/settings.json");
+    let primary = mcp_server_name(role);
+    match validate_json_mcp_server(path, &primary) {
+        Ok(()) => Ok(()),
+        Err(primary_err) => {
+            let legacy = legacy_mcp_server_name(role, index);
+            validate_json_mcp_server(path, &legacy).map_err(|_| primary_err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,18 +172,10 @@ mod tests {
         assert!(!entry.command.is_empty());
         assert_eq!(
             entry.args,
-            vec![
-                "serve",
-                "--role",
-                "supervisor",
-                "--agent-name",
-                "qwen-code",
-                "--agent-index",
-                "2",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            vec!["serve", "--role", "supervisor", "--agent-name", "qwen-code",]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
         );
         assert_eq!(entry.model.as_deref(), Some("qwen3-coder-plus"));
     }
@@ -189,18 +186,10 @@ mod tests {
         assert!(!entry.command.is_empty());
         assert_eq!(
             entry.args,
-            vec![
-                "serve",
-                "--role",
-                "executor",
-                "--agent-name",
-                "qwen-code",
-                "--agent-index",
-                "4",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            vec!["serve", "--role", "executor", "--agent-name", "qwen-code",]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
     }
@@ -220,7 +209,7 @@ mod tests {
             .unwrap_err();
         let message = err.to_string();
 
-        assert!(message.contains("MCP server `ferrus-executor-1` not found"));
+        assert!(message.contains("MCP server `ferrus-executor` not found"));
         std::env::set_current_dir(previous).unwrap();
     }
 
@@ -233,7 +222,7 @@ mod tests {
         std::fs::create_dir_all(".qwen").unwrap();
         std::fs::write(
             ".qwen/settings.json",
-            r#"{"mcpServers":{"ferrus-executor-1":{"command":"ferrus","args":[]}}}"#,
+            r#"{"mcpServers":{"ferrus-executor":{"command":"ferrus","args":[]}}}"#,
         )
         .unwrap();
         let agent = Executor::new(None);

@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::register;
 use crate::project;
 
 pub async fn run() -> Result<()> {
@@ -12,6 +13,10 @@ pub async fn run() -> Result<()> {
     for check in &report.checks {
         let status = if check.ok { "ok" } else { "error" };
         println!("{status}: {}", check.message);
+    }
+
+    for warning in register::legacy_mcp_config_warnings().await? {
+        println!("warning: {warning}");
     }
 
     if report.has_errors() {

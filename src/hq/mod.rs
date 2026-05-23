@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use tokio::process::Command;
 use tokio::sync::watch;
 
-use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id};
+use crate::agent_id::{
+    DEFAULT_AGENT_INDEX, ENV_AGENT_ID, ENV_TASK_ID, ROLE_EXECUTOR, ROLE_SUPERVISOR, agent_id,
+};
 use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
@@ -870,12 +872,46 @@ impl HqContext {
                 .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
         );
         agent.validate_interactive_launch(ROLE_EXECUTOR, index)?;
-        let handle = agent_manager::spawn_headless_executor_with_index(
+        let handle = agent_manager::spawn_headless_executor_with_env(
             agent.as_ref(),
             name,
             prompt,
             index,
             self.debug,
+            vec![(ENV_AGENT_ID, name.to_string())],
+        )
+        .await?;
+        self.store_headless_handle(name, handle);
+        Ok(())
+    }
+
+    async fn spawn_headless_executor_for_task(
+        &mut self,
+        name: &str,
+        prompt: &str,
+        index: u32,
+        task_id: &str,
+    ) -> Result<()> {
+        if !self.prepare_headless_slot(name).await {
+            return Ok(());
+        }
+
+        let agent = std::sync::Arc::clone(
+            self.executor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
+        );
+        agent.validate_interactive_launch(ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)?;
+        let handle = agent_manager::spawn_headless_executor_with_env(
+            agent.as_ref(),
+            name,
+            prompt,
+            index,
+            self.debug,
+            vec![
+                (ENV_AGENT_ID, name.to_string()),
+                (ENV_TASK_ID, task_id.to_string()),
+            ],
         )
         .await?;
         self.store_headless_handle(name, handle);
@@ -1442,13 +1478,18 @@ impl HqContext {
         let mut spawned = 0usize;
         let mut spawn_error = None;
         let prompt = agent_manager::executor_prompt();
+        let pending_tasks = tasks
+            .into_iter()
+            .filter(|task| task.status == "pending")
+            .take(requested)
+            .collect::<Vec<_>>();
 
-        for index in 1..=max_parallel {
+        for task in &pending_tasks {
             if spawned >= requested {
                 break;
             }
-            let index = u32::try_from(index).context("Executor index exceeds u32 range")?;
-            let name = self.executor_agent_id_for_index(index)?;
+            let index = u32::try_from(spawned + 1).context("Executor index exceeds u32 range")?;
+            let name = self.executor_agent_id_for_task(&task.id)?;
             if self
                 .headless
                 .get(&name)
@@ -1458,7 +1499,7 @@ impl HqContext {
             }
 
             match self
-                .spawn_headless_executor_with_index(&name, prompt, index)
+                .spawn_headless_executor_for_task(&name, prompt, index, &task.id)
                 .await
             {
                 Ok(()) => spawned += 1,
@@ -1495,6 +1536,14 @@ impl HqContext {
             .iter()
             .filter(|(name, handle)| name.starts_with(ROLE_EXECUTOR) && handle.is_alive())
             .count()
+    }
+
+    fn executor_agent_id_for_task(&self, task_id: &str) -> Result<String> {
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?;
+        Ok(format!("{}:{}:{}", ROLE_EXECUTOR, executor.name(), task_id))
     }
 
     async fn selected_milestone_for_task(

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::server::Role;
+use crate::{agent_id::DEFAULT_AGENT_INDEX, server::Role};
 
 pub mod commands;
 
@@ -37,7 +37,7 @@ enum Commands {
         #[arg(long, default_value = "unknown")]
         agent_name: String,
         /// Index disambiguating multiple agents of the same role and name (e.g. 1, 2)
-        #[arg(long, default_value_t = 0u32)]
+        #[arg(long, default_value_t = DEFAULT_AGENT_INDEX)]
         agent_index: u32,
     },
     /// Write MCP config files so agents can launch ferrus automatically

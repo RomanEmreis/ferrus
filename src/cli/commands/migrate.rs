@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::register;
 use crate::project;
 
 pub async fn run() -> Result<()> {
@@ -12,5 +13,8 @@ pub async fn run() -> Result<()> {
     );
     println!("Initialized {}", registration.database_path.display());
     println!("Created .ferrus/tasks/ and .ferrus/runs/");
+    for message in register::migrate_legacy_mcp_configs().await? {
+        println!("{message}");
+    }
     Ok(())
 }

@@ -7,7 +7,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
@@ -1256,6 +1258,93 @@ pub async fn claim_next_ready_task(agent_id: &str, ttl_secs: u64) -> Result<Read
     claim_next_task_with_statuses(agent_id, ttl_secs, &["executing", "addressing"]).await
 }
 
+pub async fn claim_ready_task_by_id(
+    task_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> Result<ReadyTaskClaim> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let now = Utc::now();
+        let Some(mut candidate) = task_candidate_by_id(&transaction, &task_id)? else {
+            transaction.commit()?;
+            return Ok(ReadyTaskClaim::NoAvailable);
+        };
+
+        if !matches!(
+            candidate.status.as_str(),
+            "pending" | "executing" | "addressing"
+        ) {
+            transaction.commit()?;
+            return Ok(ReadyTaskClaim::NoAvailable);
+        }
+
+        if candidate.status == "pending" {
+            transaction.execute(
+                "UPDATE tasks SET status = 'executing', paused_status = NULL WHERE id = ?1 AND status = 'pending'",
+                [&candidate.id],
+            )?;
+            insert_event_in_transaction(
+                &transaction,
+                None,
+                "task_scheduled",
+                &serde_json::json!({
+                    "task_id": candidate.id,
+                    "previous_status": candidate.status,
+                    "status": "executing",
+                    "scheduled_at": timestamp(),
+                }),
+            )?;
+            candidate.status = "executing".to_string();
+            candidate.paused_status = None;
+        }
+
+        let lease_until = parse_lease_until(candidate.lease_until.as_deref());
+        let lease_active = lease_until
+            .as_ref()
+            .is_some_and(|lease_until| now < *lease_until);
+        if lease_active && candidate.claimed_by.as_deref() == Some(agent_id.as_str()) {
+            transaction.commit()?;
+            return Ok(ReadyTaskClaim::AlreadyClaimed(TaskLease {
+                task_id: candidate.id,
+                task_path: candidate.path,
+                status: candidate.status,
+                paused_status: candidate.paused_status,
+                check_retries: candidate.check_retries,
+                review_cycles: candidate.review_cycles,
+                failure_reason: candidate.failure_reason,
+                claimed_by: agent_id,
+                lease_until: lease_until.expect("active lease exists"),
+            }));
+        }
+        if lease_active {
+            transaction.commit()?;
+            return Ok(ReadyTaskClaim::NoAvailable);
+        }
+
+        let lease_until =
+            now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
+        claim_task_in_transaction(&transaction, &candidate.id, &agent_id, lease_until, now)?;
+        transaction.commit()?;
+        Ok(ReadyTaskClaim::Claimed(TaskLease {
+            task_id: candidate.id,
+            task_path: candidate.path,
+            status: candidate.status,
+            paused_status: candidate.paused_status,
+            check_retries: candidate.check_retries,
+            review_cycles: candidate.review_cycles,
+            failure_reason: candidate.failure_reason,
+            claimed_by: agent_id,
+            lease_until,
+        }))
+    })
+    .await?
+}
+
 pub async fn claim_next_review_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
     claim_next_task_with_statuses(agent_id, ttl_secs, &["reviewing"]).await
 }
@@ -1857,16 +1946,19 @@ pub async fn attach_running_run_to_next_consultation(
     let database_path = current_database_path().await?;
     let agent_id = agent_id.to_string();
     tokio::task::spawn_blocking(move || -> Result<Option<RuntimeTaskContext>> {
-        let connection = open_runtime_database(&database_path)?;
-        let Some(run_id) = latest_active_run_for_agent(&connection, &agent_id)? else {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(run_id) = latest_active_run_for_agent(&transaction, &agent_id)? else {
+            transaction.commit()?;
             return Ok(None);
         };
 
-        if let Some(context) = consultation_context_for_run(&connection, &run_id)? {
+        if let Some(context) = consultation_context_for_run(&transaction, &run_id)? {
+            transaction.commit()?;
             return Ok(Some(context));
         }
 
-        let candidate = connection
+        let candidate = transaction
             .query_row(
                 r#"
                 SELECT id, path, status, paused_status,
@@ -1900,16 +1992,33 @@ pub async fn attach_running_run_to_next_consultation(
             )
             .optional()?;
         let Some(mut context) = candidate else {
+            transaction.commit()?;
             return Ok(None);
         };
 
         context.run_dir = run_dir_for_task(&context.task_id);
-        connection.execute(
-            "UPDATE runs SET task_id = ?1, updated_at = ?2 WHERE id = ?3",
+        let attached = transaction.execute(
+            r#"
+            UPDATE runs
+            SET task_id = ?1, updated_at = ?2
+            WHERE id = ?3
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM runs active_runs
+                  WHERE active_runs.task_id = ?1
+                    AND active_runs.role = 'supervisor'
+                    AND active_runs.status IN ('running', 'checking', 'reviewing')
+                    AND active_runs.id <> ?3
+              )
+            "#,
             params![context.task_id, timestamp(), run_id],
         )?;
-        insert_event(
-            &connection,
+        if attached == 0 {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        insert_event_in_transaction(
+            &transaction,
             Some(&run_id),
             "run_consultation_attached",
             &serde_json::json!({
@@ -1917,6 +2026,7 @@ pub async fn attach_running_run_to_next_consultation(
                 "task_id": context.task_id,
             }),
         )?;
+        transaction.commit()?;
         Ok(Some(context))
     })
     .await?
@@ -2486,6 +2596,38 @@ fn task_candidates_by_status(
     Ok(tasks)
 }
 
+fn task_candidate_by_id(
+    transaction: &Transaction<'_>,
+    task_id: &str,
+) -> Result<Option<ReadyTaskCandidate>> {
+    let task = transaction
+        .query_row(
+            r#"
+            SELECT id, path, status, paused_status, check_retries, review_cycles, failure_reason,
+                   claimed_by, lease_until
+            FROM tasks
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+            [task_id],
+            |row| {
+                Ok(ReadyTaskCandidate {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    status: row.get(2)?,
+                    paused_status: row.get(3)?,
+                    check_retries: row.get::<_, i64>(4)? as u32,
+                    review_cycles: row.get::<_, i64>(5)? as u32,
+                    failure_reason: row.get(6)?,
+                    claimed_by: row.get(7)?,
+                    lease_until: row.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(task)
+}
+
 fn claim_task_in_transaction(
     transaction: &Transaction<'_>,
     task_id: &str,
@@ -3042,6 +3184,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_claim_ready_task_by_id_promotes_pending_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "pending")
+            .await
+            .unwrap();
+
+        let claim = claim_ready_task_by_id("t-002", "executor:codex:t-002", 60)
+            .await
+            .unwrap();
+
+        match claim {
+            ReadyTaskClaim::Claimed(task) => {
+                assert_eq!(task.task_id, "t-002");
+                assert_eq!(task.task_path, ".ferrus/tasks/t-002.md");
+                assert_eq!(task.status, "executing");
+                assert_eq!(task.claimed_by, "executor:codex:t-002");
+            }
+            _ => panic!("expected pending task to be promoted and claimed"),
+        }
+
+        let tasks = list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-002").unwrap();
+        assert_eq!(task.status, "executing");
+        assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:t-002"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
     async fn sqlite_claim_next_review_task_claims_reviewing_rows_only() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
@@ -3517,6 +3689,45 @@ mod tests {
                 .iter()
                 .all(|event| event.run_id.as_deref() == Some(run.id.as_str()))
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn consultation_attachment_is_exclusive_to_one_supervisor_run() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        record_task_consultation_requested("t-007", "executing")
+            .await
+            .unwrap();
+        let first_run = record_run_started("supervisor", "supervisor:codex:1", std::process::id())
+            .await
+            .unwrap();
+        let second_run = record_run_started("supervisor", "supervisor:codex:2", std::process::id())
+            .await
+            .unwrap();
+
+        let first = attach_running_run_to_next_consultation("supervisor:codex:1")
+            .await
+            .unwrap();
+        let second = attach_running_run_to_next_consultation("supervisor:codex:2")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first.as_ref().map(|context| context.task_id.as_str()),
+            Some("t-007")
+        );
+        assert!(second.is_none());
+
+        let runs = list_runs(10).await.unwrap();
+        let first = runs.iter().find(|run| run.id == first_run.id).unwrap();
+        let second = runs.iter().find(|run| run.id == second_run.id).unwrap();
+        assert_eq!(first.task_id, "t-007");
+        assert_eq!(second.task_id, "t-001");
 
         teardown(previous);
     }

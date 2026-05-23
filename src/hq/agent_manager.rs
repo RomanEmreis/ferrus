@@ -380,12 +380,13 @@ impl Drop for HeadlessHandle {
     }
 }
 
-pub async fn spawn_headless_executor_with_index(
+pub async fn spawn_headless_executor_with_env(
     agent: &dyn ExecutorAgent,
     name: &str,
     prompt: &str,
     index: u32,
     debug: bool,
+    env: Vec<(&'static str, String)>,
 ) -> Result<HeadlessHandle> {
     let command = agent
         .spawn_with_index(AgentRunMode::Headless { prompt }, index)
@@ -395,15 +396,16 @@ pub async fn spawn_headless_executor_with_index(
                 agent.name()
             )
         })?;
-    spawn_headless(
-        agent.name(),
+    spawn_headless(HeadlessSpawn {
+        agent_type: agent.name(),
         command,
-        agent.headless_prompt_transport(),
-        ROLE_EXECUTOR,
+        prompt_transport: agent.headless_prompt_transport(),
+        role: ROLE_EXECUTOR,
         name,
         prompt,
         debug,
-    )
+        env,
+    })
     .await
 }
 
@@ -421,95 +423,107 @@ pub async fn spawn_headless_supervisor(
                 agent.name()
             )
         })?;
-    spawn_headless(
-        agent.name(),
+    spawn_headless(HeadlessSpawn {
+        agent_type: agent.name(),
         command,
-        agent.headless_prompt_transport(),
-        ROLE_SUPERVISOR,
+        prompt_transport: agent.headless_prompt_transport(),
+        role: ROLE_SUPERVISOR,
         name,
         prompt,
         debug,
-    )
+        env: Vec::new(),
+    })
     .await
 }
 
-async fn spawn_headless(
-    agent_type: &str,
-    mut command: StdCommand,
+struct HeadlessSpawn<'a> {
+    agent_type: &'a str,
+    command: StdCommand,
     prompt_transport: HeadlessPromptTransport,
-    role: &str,
-    name: &str,
-    prompt: &str,
+    role: &'a str,
+    name: &'a str,
+    prompt: &'a str,
     debug: bool,
-) -> Result<HeadlessHandle> {
+    env: Vec<(&'static str, String)>,
+}
+
+async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle> {
     let log_dir = std::path::Path::new(".ferrus/logs");
     tokio::fs::create_dir_all(log_dir)
         .await
         .context("Failed to create .ferrus/logs")?;
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S");
-    let log_path = log_dir.join(format!("{role}_{ts}.log"));
+    let log_path = log_dir.join(format!("{}_{ts}.log", request.role));
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .with_context(|| format!("Failed to open log file {}", log_path.display()))?;
-    if debug {
-        append_debug_agent_flags(agent_type, &mut command);
+    if request.debug {
+        append_debug_agent_flags(request.agent_type, &mut request.command);
     }
-    let command_summary = format_command(&command);
+    for (key, value) in request.env {
+        request.command.env(key, value);
+    }
+    let command_summary = format_command(&request.command);
 
-    let logger = if debug {
+    let logger = if request.debug {
         let log_stderr = log_file
             .try_clone()
             .context("Failed to clone log file handle")?;
-        let stdin = if prompt_transport == HeadlessPromptTransport::Stdin {
+        let stdin = if request.prompt_transport == HeadlessPromptTransport::Stdin {
             Stdio::piped()
         } else {
             Stdio::null()
         };
-        command
+        request
+            .command
             .stdin(stdin)
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_stderr));
         None
     } else {
-        let stdin = if prompt_transport == HeadlessPromptTransport::Stdin {
+        let stdin = if request.prompt_transport == HeadlessPromptTransport::Stdin {
             Stdio::piped()
         } else {
             Stdio::null()
         };
-        command
+        request
+            .command
             .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         Some(Arc::new(Mutex::new(SlimLogger::new(log_file))))
     };
 
-    platform::configure_headless_command(&mut command);
+    platform::configure_headless_command(&mut request.command);
 
-    let mut child = command.spawn().with_context(|| {
+    let mut child = request.command.spawn().with_context(|| {
         format!(
             "Failed to spawn {} headlessly as {role}. {}. log={}",
-            command.get_program().to_string_lossy(),
+            request.command.get_program().to_string_lossy(),
             command_summary,
-            log_path.display()
+            log_path.display(),
+            role = request.role
         )
     })?;
-    if prompt_transport == HeadlessPromptTransport::Stdin {
-        stream_prompt_to_stdin(&mut child, prompt).context("Failed to stream initial prompt")?;
+    if request.prompt_transport == HeadlessPromptTransport::Stdin {
+        stream_prompt_to_stdin(&mut child, request.prompt)
+            .context("Failed to stream initial prompt")?;
     }
 
     let pid = child.id();
-    let db_run_id = crate::project::record_run_started_best_effort(role, name, pid).await;
+    let db_run_id =
+        crate::project::record_run_started_best_effort(request.role, request.name, pid).await;
     let platform_guard = match platform::attach_headless_process(pid) {
         Ok(guard) => Some(guard),
         Err(err) => {
             tracing::warn!(
                 error = ?err,
                 pid,
-                role,
-                agent_type,
+                role = request.role,
+                agent_type = request.agent_type,
                 "failed to attach platform process guard; continuing without it"
             );
             None
@@ -521,10 +535,13 @@ async fn spawn_headless(
         let mut logger = logger.lock().expect("logger poisoned");
         logger.log_event(
             "Started",
-            format!("{name} ({role}, {agent_type}, pid {pid})"),
+            format!(
+                "{} ({}, {}, pid {pid})",
+                request.name, request.role, request.agent_type
+            ),
         )?;
         logger.log_event("Agent meta", &command_summary)?;
-        logger.log_initial_prompt(prompt)?;
+        logger.log_initial_prompt(request.prompt)?;
     }
 
     if let Some(logger) = logger.as_ref() {
@@ -538,9 +555,9 @@ async fn spawn_headless(
 
     let mut reg = read_agents().await?;
     reg.upsert(AgentEntry {
-        role: role.to_string(),
-        agent_type: agent_type.to_string(),
-        name: name.to_string(),
+        role: request.role.to_string(),
+        agent_type: request.agent_type.to_string(),
+        name: request.name.to_string(),
         pid: Some(pid),
         status: AgentStatus::Running,
         started_at: Some(chrono::Utc::now()),
@@ -558,7 +575,7 @@ async fn spawn_headless(
         }
         let _ = exit_tx.send(Some(code));
     });
-    let name_owned = name.to_string();
+    let name_owned = request.name.to_string();
     let db_run_id_for_exit = db_run_id.clone();
     let mut registry_exit_rx = exit_rx.clone();
     tokio::spawn(async move {
@@ -582,7 +599,7 @@ async fn spawn_headless(
     });
 
     Ok(HeadlessHandle {
-        name: name.to_string(),
+        name: request.name.to_string(),
         log_path,
         pid,
         exit_rx,

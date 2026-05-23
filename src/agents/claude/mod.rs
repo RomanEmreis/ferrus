@@ -7,7 +7,7 @@ use super::{
     AgentRunMode, ExecutorAgent, SupervisorAgent, allow_mcp_server_tools_in_json_settings,
     normalized_model, validate_json_mcp_server,
 };
-use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, legacy_mcp_server_name, mcp_server_name};
 use crate::config::ClaudeMcpIsolation;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -144,10 +144,15 @@ pub(crate) fn claude_role_mcp_config_path(role: &str) -> PathBuf {
 }
 
 fn validate_interactive_launch(role: &str, index: u32) -> Result<()> {
-    validate_json_mcp_server(
-        &claude_role_mcp_config_path(role),
-        &mcp_server_name(role, index),
-    )
+    let path = claude_role_mcp_config_path(role);
+    let primary = mcp_server_name(role);
+    match validate_json_mcp_server(&path, &primary) {
+        Ok(()) => Ok(()),
+        Err(primary_err) => {
+            let legacy = legacy_mcp_server_name(role, index);
+            validate_json_mcp_server(&path, &legacy).map_err(|_| primary_err)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -258,8 +263,6 @@ mod tests {
                 "supervisor",
                 "--agent-name",
                 "claude-code",
-                "--agent-index",
-                "2",
             ]
             .into_iter()
             .map(String::from)
@@ -276,18 +279,10 @@ mod tests {
         assert!(!entry.command.is_empty());
         assert_eq!(
             entry.args,
-            vec![
-                "serve",
-                "--role",
-                "executor",
-                "--agent-name",
-                "claude-code",
-                "--agent-index",
-                "4",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            vec!["serve", "--role", "executor", "--agent-name", "claude-code",]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
     }
@@ -319,7 +314,7 @@ mod tests {
         std::fs::create_dir_all(".claude").unwrap();
         std::fs::write(
             ".claude/mcp-supervisor.json",
-            r#"{"mcpServers":{"ferrus-supervisor-1":{"command":"ferrus","args":[]}}}"#,
+            r#"{"mcpServers":{"ferrus-supervisor":{"command":"ferrus","args":[]}}}"#,
         )
         .unwrap();
         let agent = Supervisor::new(None, ClaudeMcpIsolation::MergeUser);
