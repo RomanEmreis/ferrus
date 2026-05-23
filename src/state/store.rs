@@ -220,6 +220,15 @@ pub async fn write_question_for_run_dir(run_dir: &str, content: &str) -> Result<
     write_path(&run_file(run_dir, "QUESTION.md"), content).await
 }
 
+#[cfg(test)]
+pub async fn read_question_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path(&run_file(run_dir, "QUESTION.md")).await
+}
+
+pub async fn clear_question_for_run_dir(run_dir: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "QUESTION.md"), "").await
+}
+
 pub async fn read_answer() -> Result<String> {
     if let Ok(state) = read_state().await
         && let Some(path) = active_run_file(&state, "ANSWER.md")
@@ -237,6 +246,19 @@ pub async fn write_answer(content: &str) -> Result<()> {
         write_path(&path, content).await?;
     }
     write_file("ANSWER.md", content).await
+}
+
+pub async fn read_answer_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path(&run_file(run_dir, "ANSWER.md")).await
+}
+
+#[cfg(test)]
+pub async fn write_answer_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "ANSWER.md"), content).await
+}
+
+pub async fn clear_answer_for_run_dir(run_dir: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "ANSWER.md"), "").await
 }
 
 pub async fn read_consult_request() -> Result<String> {

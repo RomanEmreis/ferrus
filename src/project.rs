@@ -216,6 +216,12 @@ pub enum TaskConsultRestore {
     NotInConsultation,
 }
 
+#[derive(Debug, Clone)]
+pub enum TaskHumanAnswerRestore {
+    Restored { status: String },
+    NotAwaitingHuman,
+}
+
 impl DoctorReport {
     pub fn has_errors(&self) -> bool {
         self.checks.iter().any(|check| !check.ok)
@@ -1083,6 +1089,76 @@ pub async fn restore_task_from_consultation(task_id: &str) -> Result<TaskConsult
         )?;
         transaction.commit()?;
         Ok(TaskConsultRestore::Restored {
+            status: resumed_status,
+        })
+    })
+    .await?
+}
+
+pub async fn record_task_human_question_requested(
+    task_id: &str,
+    paused_status: &str,
+) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let paused_status = paused_status.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        connection.execute(
+            "UPDATE tasks SET status = 'awaiting_human', paused_status = ?1 WHERE id = ?2",
+            params![paused_status, task_id],
+        )?;
+        insert_event(
+            &connection,
+            None,
+            "task_human_question_requested",
+            &serde_json::json!({
+                "task_id": task_id,
+                "paused_status": paused_status,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn restore_task_from_human_answer(task_id: &str) -> Result<TaskHumanAnswerRestore> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<TaskHumanAnswerRestore> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction()?;
+        let row = transaction
+            .query_row(
+                "SELECT status, paused_status FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let Some((status, paused_status)) = row else {
+            transaction.commit()?;
+            return Ok(TaskHumanAnswerRestore::NotAwaitingHuman);
+        };
+        if status != "awaiting_human" {
+            transaction.commit()?;
+            return Ok(TaskHumanAnswerRestore::NotAwaitingHuman);
+        }
+        let resumed_status = paused_status.unwrap_or_else(|| "executing".to_string());
+        transaction.execute(
+            "UPDATE tasks SET status = ?1, paused_status = NULL WHERE id = ?2",
+            params![resumed_status, task_id],
+        )?;
+        insert_event_in_transaction(
+            &transaction,
+            None,
+            "task_human_answered",
+            &serde_json::json!({
+                "task_id": task_id,
+                "resumed_status": resumed_status,
+            }),
+        )?;
+        transaction.commit()?;
+        Ok(TaskHumanAnswerRestore::Restored {
             status: resumed_status,
         })
     })

@@ -164,17 +164,6 @@ pub(super) fn ensure_can_ask_human(state: &StateData, agent_id: &str) -> anyhow:
     ensure_lease_owner(state, agent_id)
 }
 
-pub(super) async fn ensure_can_ask_human_or_reclaim(
-    state: &mut StateData,
-    agent_id: &str,
-    ttl_secs: u64,
-) -> anyhow::Result<()> {
-    if state.state == TaskState::Consultation && agent_role(agent_id) == Some(ROLE_SUPERVISOR) {
-        return Ok(());
-    }
-    ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
-}
-
 pub(super) fn ensure_answer_waiter(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
     if let Some(waiter) = state.awaiting_human_by.as_deref() {
         if waiter == agent_id {
