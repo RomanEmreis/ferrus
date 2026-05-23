@@ -730,63 +730,6 @@ pub async fn find_non_terminal_task_by_origin(
     .await?
 }
 
-pub async fn schedule_pending_tasks(limit: usize) -> Result<Vec<TaskRecord>> {
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    let database_path = current_database_path().await?;
-    tokio::task::spawn_blocking(move || -> Result<Vec<TaskRecord>> {
-        let mut connection = open_runtime_database(&database_path)?;
-        let transaction = connection.transaction()?;
-        let mut statement = transaction.prepare(
-            r#"
-            SELECT id, path, spec_path, milestone_id, status, paused_status, claimed_by,
-                   lease_until, last_heartbeat, check_retries, review_cycles, failure_reason
-            FROM tasks
-            WHERE status = 'pending'
-            ORDER BY id
-            LIMIT ?1
-            "#,
-        )?;
-        let rows = statement.query_map([limit as i64], task_record_from_row)?;
-        let mut tasks = Vec::new();
-        for row in rows {
-            tasks.push(row?);
-        }
-        drop(statement);
-
-        let now = timestamp();
-        for task in &tasks {
-            transaction.execute(
-                "UPDATE tasks SET status = 'executing', paused_status = NULL WHERE id = ?1",
-                [&task.id],
-            )?;
-            insert_event_in_transaction(
-                &transaction,
-                None,
-                "task_scheduled",
-                &serde_json::json!({
-                    "task_id": task.id,
-                    "previous_status": task.status,
-                    "status": "executing",
-                    "scheduled_at": now,
-                }),
-            )?;
-        }
-        transaction.commit()?;
-
-        Ok(tasks
-            .into_iter()
-            .map(|mut task| {
-                task.status = "executing".to_string();
-                task.paused_status = None;
-                task
-            })
-            .collect())
-    })
-    .await?
-}
-
 pub async fn list_runs(limit: usize) -> Result<Vec<RunRecord>> {
     let database_path = current_database_path().await?;
     tokio::task::spawn_blocking(move || -> Result<Vec<RunRecord>> {
@@ -3307,41 +3250,6 @@ mod tests {
         assert_eq!(task.status, "reviewing");
         assert_eq!(task.spec_path.as_deref(), Some("docs/specs/spec.md"));
         assert_eq!(task.milestone_id.as_deref(), Some("m1.0"));
-
-        teardown(previous);
-    }
-
-    #[tokio::test]
-    async fn scheduling_pending_tasks_promotes_oldest_pending_rows() {
-        let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (_dir, previous) = setup_project().await;
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "pending")
-            .await
-            .unwrap();
-        record_task_status("t-003", ".ferrus/tasks/t-003.md", "pending")
-            .await
-            .unwrap();
-        record_task_status("t-004", ".ferrus/tasks/t-004.md", "pending")
-            .await
-            .unwrap();
-
-        let scheduled = schedule_pending_tasks(2).await.unwrap();
-
-        assert_eq!(
-            scheduled
-                .iter()
-                .map(|task| task.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["t-002", "t-003"]
-        );
-        assert!(scheduled.iter().all(|task| task.status == "executing"));
-        let tasks = list_tasks().await.unwrap();
-        let t2 = tasks.iter().find(|task| task.id == "t-002").unwrap();
-        let t3 = tasks.iter().find(|task| task.id == "t-003").unwrap();
-        let t4 = tasks.iter().find(|task| task.id == "t-004").unwrap();
-        assert_eq!(t2.status, "executing");
-        assert_eq!(t3.status, "executing");
-        assert_eq!(t4.status, "pending");
 
         teardown(previous);
     }

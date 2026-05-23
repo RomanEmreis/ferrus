@@ -1476,6 +1476,7 @@ impl HqContext {
 
         let requested = pending_count.min(slots);
         let mut spawned = 0usize;
+        let mut started_task_ids = Vec::new();
         let mut spawn_error = None;
         let prompt = agent_manager::executor_prompt();
         let pending_tasks = tasks
@@ -1502,7 +1503,10 @@ impl HqContext {
                 .spawn_headless_executor_for_task(&name, prompt, index, &task.id)
                 .await
             {
-                Ok(()) => spawned += 1,
+                Ok(()) => {
+                    spawned += 1;
+                    started_task_ids.push(task.id.clone());
+                }
                 Err(err) => {
                     spawn_error = Some(err);
                     break;
@@ -1510,25 +1514,19 @@ impl HqContext {
             }
         }
 
-        let scheduled = crate::project::schedule_pending_tasks(spawned).await?;
-        if !scheduled.is_empty() {
-            let task_ids = scheduled
-                .iter()
-                .map(|task| task.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
+        if spawned > 0 {
+            let task_ids = started_task_ids.join(", ");
             self.display.info(format!(
-                "Scheduled {} queued task(s): {task_ids}",
-                scheduled.len()
+                "Started executor session(s) for {} queued task(s): {task_ids}",
+                started_task_ids.len()
             ));
         }
         if let Some(err) = spawn_error {
             self.display.error(format!(
-                "Could not start more executor sessions after scheduling {} task(s): {err}",
-                scheduled.len()
+                "Could not start more executor sessions after starting {spawned} task(s): {err}",
             ));
         }
-        Ok(scheduled.len())
+        Ok(spawned)
     }
 
     fn running_executor_count(&self) -> usize {
@@ -2014,14 +2012,6 @@ fn run_plan_lines(plan: &RunPlan, selected_count: usize) -> Vec<String> {
         }
     }
 
-    if selected_count > 0 {
-        lines.push(String::new());
-        lines.push(
-            "Batch supervisor launch is not wired yet; this command currently validates the plan."
-                .to_string(),
-        );
-    }
-
     lines
 }
 
@@ -2388,6 +2378,24 @@ mod tests {
         assert!(context.contains("Task count: 1"));
         assert!(context.contains("Milestone ID: m1.0"));
         assert!(!context.contains("Milestone ID: m1.1"));
+    }
+
+    #[test]
+    fn run_plan_lines_do_not_report_batch_launch_as_unwired() {
+        let plan = RunPlan {
+            spec_path: "docs/specs/spec.md".to_string(),
+            eligible: vec![RunPlanMilestone {
+                id: "m1.0".to_string(),
+                marker: "#1.0".to_string(),
+                title: "First task".to_string(),
+            }],
+            skipped: Vec::new(),
+        };
+
+        let lines = run_plan_lines(&plan, 1).join("\n");
+
+        assert!(!lines.contains("not wired"));
+        assert!(lines.contains("selected  : 1"));
     }
 
     #[test]
