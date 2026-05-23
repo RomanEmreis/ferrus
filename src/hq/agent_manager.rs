@@ -405,6 +405,7 @@ pub async fn spawn_headless_executor_with_env(
         prompt,
         debug,
         env,
+        workspace_dir: None,
     })
     .await
 }
@@ -432,6 +433,7 @@ pub async fn spawn_headless_supervisor(
         prompt,
         debug,
         env: vec![(ENV_AGENT_ID, name.to_string())],
+        workspace_dir: None,
     })
     .await
 }
@@ -445,6 +447,7 @@ struct HeadlessSpawn<'a> {
     prompt: &'a str,
     debug: bool,
     env: Vec<(&'static str, String)>,
+    workspace_dir: Option<PathBuf>,
 }
 
 async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle> {
@@ -462,12 +465,28 @@ async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle
         .with_context(|| format!("Failed to open log file {}", log_path.display()))?;
     let run_id = crate::project::allocate_run_id(request.role, request.name);
     request.env.push((ENV_RUN_ID, run_id.clone()));
+    let workspace_path = match request.workspace_dir.as_ref() {
+        Some(workspace_dir) => std::fs::canonicalize(workspace_dir)
+            .unwrap_or_else(|_| workspace_dir.clone())
+            .display()
+            .to_string(),
+        None => {
+            let current_dir =
+                std::env::current_dir().context("Failed to resolve current workspace directory")?;
+            std::fs::canonicalize(&current_dir).unwrap_or(current_dir)
+        }
+        .display()
+        .to_string(),
+    };
 
     if request.debug {
         append_debug_agent_flags(request.agent_type, &mut request.command);
     }
     for (key, value) in request.env {
         request.command.env(key, value);
+    }
+    if let Some(workspace_dir) = request.workspace_dir.as_ref() {
+        request.command.current_dir(workspace_dir);
     }
     let command_summary = format_command(&request.command);
 
@@ -522,6 +541,7 @@ async fn spawn_headless(mut request: HeadlessSpawn<'_>) -> Result<HeadlessHandle
         request.role,
         request.name,
         pid,
+        workspace_path,
     )
     .await;
     let platform_guard = match platform::attach_headless_process(pid) {

@@ -237,12 +237,13 @@ Recovery is SQLite-first:
 - Runtime identity propagation through `FERRUS_AGENT_ID`, `FERRUS_TASK_ID`, and `FERRUS_RUN_ID` for HQ-managed headless sessions.
 - `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
+- Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
 - Harden multi-executor scheduling beyond the initial post-`/run` launch path.
-- Add worktree isolation via `runs.workspace_path`.
+- Add actual worktree checkout lifecycle and route eligible executors through the new workspace cwd hook.
 - Add final integration/review policy for parallel outputs.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
 - Add multi-task ask-human queue handling.

@@ -1759,14 +1759,25 @@ pub async fn record_run_started(role: &str, agent: &str, pid: u32) -> Result<Run
     record_run_started_with_id(&run_id, role, agent, pid).await
 }
 
+#[cfg(test)]
 pub async fn record_run_started_with_id(
     run_id: &str,
     role: &str,
     agent: &str,
     pid: u32,
 ) -> Result<RunRecord> {
-    let database_path = current_database_path().await?;
     let workspace_path = path_string(&canonical_current_dir().await?);
+    record_run_started_with_workspace(run_id, role, agent, pid, workspace_path).await
+}
+
+pub async fn record_run_started_with_workspace(
+    run_id: &str,
+    role: &str,
+    agent: &str,
+    pid: u32,
+    workspace_path: String,
+) -> Result<RunRecord> {
+    let database_path = current_database_path().await?;
     let (task_id, task_path) = current_task_identity().await;
     let run_id = run_id.to_string();
     let role = role.to_string();
@@ -1833,8 +1844,9 @@ pub async fn record_run_started_with_id_best_effort(
     role: &str,
     agent: &str,
     pid: u32,
+    workspace_path: String,
 ) -> Option<String> {
-    match record_run_started_with_id(run_id, role, agent, pid).await {
+    match record_run_started_with_workspace(run_id, role, agent, pid, workspace_path).await {
         Ok(record) => Some(record.id),
         Err(err) => {
             warn!(error = ?err, run_id, role, agent, pid, "failed to mirror run start into ferrus.db");
@@ -3644,6 +3656,34 @@ mod tests {
         assert_eq!(run.id, run_id);
         let runs = list_runs(10).await.unwrap();
         assert!(runs.iter().any(|run| run.id == run_id));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn record_run_started_can_store_explicit_workspace_path() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup_project().await;
+        let run_id = allocate_run_id("executor", "executor:codex:t-003");
+        let workspace_path = path_string(&dir.path().join("worktrees").join("t-003"));
+
+        let run = record_run_started_with_workspace(
+            &run_id,
+            "executor",
+            "executor:codex:t-003",
+            std::process::id(),
+            workspace_path.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(run.id, run_id);
+        assert_eq!(run.workspace_path, workspace_path);
+        let runs = list_runs(10).await.unwrap();
+        assert!(
+            runs.iter()
+                .any(|run| run.id == run_id && run.workspace_path == workspace_path)
+        );
 
         teardown(previous);
     }

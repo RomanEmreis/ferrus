@@ -1023,8 +1023,14 @@ mod tests {
         tokio::fs::create_dir_all(".codex").await.unwrap();
         tokio::fs::write(
             ".codex/config.toml",
-            "[mcp_servers.ferrus-executor]\ncommand = \"current\"\nargs = []\n\n\
-             [mcp_servers.ferrus-executor-1]\ncommand = \"legacy\"\nargs = []\n",
+            concat!(
+                "[mcp_servers.ferrus-executor]\n",
+                "command = \"current\"\n",
+                "args = []\n\n",
+                "[mcp_servers.ferrus-executor-1]\n",
+                "command = \"legacy\"\n",
+                "args = []\n",
+            ),
         )
         .await
         .unwrap();
@@ -1065,7 +1071,7 @@ mod tests {
         let codex_content = tokio::fs::read_to_string(".codex/config.toml")
             .await
             .unwrap();
-        let codex_root: toml::Value = codex_content.parse().unwrap();
+        let codex_root: toml::Table = codex_content.parse().unwrap();
         let codex_servers = codex_root
             .get("mcp_servers")
             .and_then(toml::Value::as_table)
