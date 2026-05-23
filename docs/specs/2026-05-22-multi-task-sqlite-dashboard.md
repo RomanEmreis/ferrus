@@ -77,9 +77,53 @@ The project id is stable and opaque. Project name is metadata only because names
 - HQ determines which milestones are ready before launching a supervisor.
 - The supervisor drafts task artifacts for an exact set of milestones chosen by HQ.
 - Agents should not be trusted to infer task identity. Runtime should pass task identity deterministically.
+- MCP server registration describes role capability only, not a concrete runtime identity.
+- New MCP server names should be role-only: `ferrus-executor` and `ferrus-supervisor`.
+- Indexed MCP server names such as `ferrus-executor-1` and `ferrus-supervisor-1` are legacy compatibility only.
+- Parallel executor and reviewer processes should share the same role-level MCP registration.
+- Concrete `agent_id`, `task_id`, and `run_id` should be provided at runtime, preferably through environment variables inherited by the agent-spawned stdio MCP server:
+  - `FERRUS_AGENT_ID`
+  - `FERRUS_TASK_ID`
+  - `FERRUS_RUN_ID`
+- `ferrus serve` should prefer runtime environment identity over static CLI/config identity, while retaining a fallback for manually started agents.
 - MCP resource `ferrus://task/<task-id>` is supported for numbered task artifacts.
 - MCP resource `ferrus://task_template` returns the task template.
 - A new MCP tool should enqueue task artifacts without entering the old single active task state.
+
+## MCP Registration and Runtime Identity
+
+Static MCP registration must be shared by all workers of the same role:
+
+```text
+ferrus-executor   -> ferrus serve --role executor --agent-name <backend>
+ferrus-supervisor -> ferrus serve --role supervisor --agent-name <backend>
+```
+
+The static config answers "which Ferrus role tools are available to this agent client?" It must not answer
+"which concrete task/run is this process working on?" That concrete identity belongs to runtime state.
+
+For HQ-managed sessions, HQ should launch each agent process with environment variables such as:
+
+```text
+FERRUS_AGENT_ID=executor:codex:<runtime-id>
+FERRUS_TASK_ID=t-005
+FERRUS_RUN_ID=r-...
+```
+
+The agent process should inherit these variables when it starts the configured stdio MCP server, allowing
+`ferrus serve` to resolve task/resource/tool context deterministically without needing per-worker MCP config entries.
+
+This must be verified for each backend (`claude-code`, `codex`, `qwen`). If a backend does not pass environment
+variables through to stdio MCP servers, Ferrus needs a backend-specific fallback that still avoids writing many
+static MCP registrations where possible.
+
+Migration behavior:
+
+- `ferrus doctor` should warn when MCP configs still contain indexed legacy server names.
+- `ferrus migrate` should rewrite old indexed registrations to the role-only names.
+- If many legacy registrations exist, migration should collapse them to the two canonical role registrations.
+- Migration should preserve the selected backend command/model/settings where possible and report conflicts when
+  multiple legacy entries disagree.
 
 ## Proposed MCP Tool
 
@@ -192,6 +236,11 @@ Recovery is SQLite-first:
 
 ## What Remains
 
+- Replace indexed MCP server registrations with role-only registrations.
+- Add runtime identity propagation through environment variables for `agent_id`, `task_id`, and `run_id`.
+- Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
+- Add `ferrus doctor` warnings for legacy indexed MCP registrations.
+- Add `ferrus migrate` conversion from indexed registrations to role-only registrations.
 - Harden multi-executor scheduling beyond the initial post-`/run` launch path.
 - Add worktree isolation via `runs.workspace_path`.
 - Add final integration/review policy for parallel outputs.
@@ -286,10 +335,18 @@ Depends on: m3.0
 
 Run concurrent executors in isolated workspaces using `runs.workspace_path`.
 
+### [ ] #3.1a Role-only MCP registration and runtime identity
+
+ID: m3.1a
+Depends on: m3.0
+
+Replace indexed MCP registrations with role-only registrations and pass concrete `agent_id`, `task_id`, and `run_id`
+through runtime context rather than static MCP config.
+
 ### [ ] #3.2 Parallel review and integration
 
 ID: m3.2
-Depends on: m3.1
+Depends on: m3.1, m3.1a
 
 Review each task independently and add a supervisor-driven integration step for accepted parallel outputs.
 
@@ -307,10 +364,11 @@ active questions, active consultations, and active task identity.
 - Future `/run` implementation can use this spec as the source of intended behavior.
 - Milestones are parseable by ferrus and include stable IDs and dependency metadata.
 - The document preserves the Markdown vs SQLite boundary as an explicit architectural constraint.
+- MCP config identity is documented as role capability, while task/run/agent identity is runtime context.
+- `doctor` and `migrate` expectations for legacy indexed MCP registrations are documented.
 
 ## Risks and Open Questions
 
-- The exact configured parallelism source still needs to be chosen.
 - Worktree isolation may force earlier changes to executor launch paths than expected.
 - The final integration policy needs concrete rules for conflicts, ownership, and partial failures.
 - `STATE.json` cutover should wait until dashboard, ask-human, consultations, and recovery are all DB-backed.
