@@ -88,6 +88,7 @@ The project id is stable and opaque. Project name is metadata only because names
 - `ferrus serve` should prefer runtime environment identity over static CLI/config identity, while retaining a fallback for manually started agents.
 - MCP resource `ferrus://task/<task-id>` is supported for numbered task artifacts.
 - MCP resource `ferrus://task_template` returns the task template.
+- MCP resource `ferrus://runtime_context` returns the agent id, inherited Ferrus env vars, and resolved SQLite task context visible to the MCP server.
 - A new MCP tool should enqueue task artifacts without entering the old single active task state.
 
 ## MCP Registration and Runtime Identity
@@ -235,6 +236,7 @@ Recovery is SQLite-first:
 - `/run` scheduler starts queued tasks with executor sessions up to `limits.max_parallel_tasks`.
 - Role-only MCP registrations for `ferrus-executor` and `ferrus-supervisor`.
 - Runtime identity propagation through `FERRUS_AGENT_ID`, `FERRUS_TASK_ID`, and `FERRUS_RUN_ID` for HQ-managed headless sessions.
+- MCP resource `ferrus://runtime_context` for deterministic runtime identity diagnostics from inside the agent-started MCP server.
 - `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 - Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.

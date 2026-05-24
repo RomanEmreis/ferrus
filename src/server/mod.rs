@@ -163,6 +163,7 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
     app.add_resource("ferrus://consult_request", "Consult Request");
     app.add_resource("ferrus://consult_response", "Consult Response");
     app.add_resource("ferrus://state", "State");
+    app.add_resource("ferrus://runtime_context", "Runtime Context");
     app.map_resource(
         "ferrus://task/{task_id}",
         "ferrus-task",

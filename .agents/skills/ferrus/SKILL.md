@@ -134,6 +134,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
+| `ferrus://runtime_context` | Agent id, inherited Ferrus env vars, and resolved SQLite task context as JSON |
 
 ## MCP prompts
 
