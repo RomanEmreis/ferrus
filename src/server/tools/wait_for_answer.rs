@@ -58,12 +58,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let start = Instant::now();
 
     loop {
-        let answer_context = if use_legacy_state {
-            None
-        } else {
-            runtime_context.as_ref()
-        };
-        match read_answer(answer_context).await {
+        match read_answer(use_legacy_state, runtime_context.as_ref()).await {
             Ok(ans) if !ans.trim().is_empty() => {
                 let resumed = if use_legacy_state {
                     // Answer is available — restore paused state and return it.
@@ -79,6 +74,11 @@ async fn run(agent_id: &str) -> Result<String> {
                     store::write_state(&state).await?;
                     store::clear_answer().await?;
                     store::clear_question().await?;
+                    if let Some(context) = runtime_context.as_ref() {
+                        let _ = project::restore_task_from_human_answer(&context.task_id).await?;
+                        store::clear_answer_for_run_dir(&context.run_dir).await?;
+                        store::clear_question_for_run_dir(&context.run_dir).await?;
+                    }
                     format!("{resumed:?}")
                 } else if let Some(context) = runtime_context.as_ref() {
                     let restored =
@@ -128,9 +128,15 @@ async fn ensure_scoped_answer_waiter(
     ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
 }
 
-async fn read_answer(context: Option<&RuntimeTaskContext>) -> Result<String> {
+async fn read_answer(
+    use_legacy_state: bool,
+    context: Option<&RuntimeTaskContext>,
+) -> Result<String> {
     if let Some(context) = context {
-        return store::read_answer_for_run_dir(&context.run_dir).await;
+        let scoped = store::read_answer_for_run_dir(&context.run_dir).await?;
+        if !use_legacy_state || !scoped.trim().is_empty() {
+            return Ok(scoped);
+        }
     }
     store::read_answer().await
 }
@@ -225,6 +231,59 @@ mod tests {
         assert_eq!(task.paused_status, None);
         assert_eq!(
             store::read_answer_for_run_dir(".ferrus/runs/t-007")
+                .await
+                .unwrap(),
+            ""
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_answer_restores_active_task_database_mirror_from_scoped_answer() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = crate::state::machine::StateData {
+            state: TaskState::AwaitingHuman,
+            paused_state: Some(TaskState::Addressing),
+            awaiting_human_by: Some("executor:codex:1".to_string()),
+            claimed_by: Some("executor:codex:1".to_string()),
+            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
+            ..Default::default()
+        };
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "addressing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
+        crate::project::record_task_human_question_requested("t-001", "addressing")
+            .await
+            .unwrap();
+        store::write_answer_for_run_dir(".ferrus/runs/t-001", "Use the stable path.")
+            .await
+            .unwrap();
+
+        let response = run("executor:codex:1").await.unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["status"], "answered");
+        assert_eq!(response["answer"], "Use the stable path.");
+        assert_eq!(response["resumed_state"], "Addressing");
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Addressing);
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "addressing");
+        assert_eq!(task.paused_status, None);
+        assert_eq!(
+            store::read_answer_for_run_dir(".ferrus/runs/t-001")
                 .await
                 .unwrap(),
             ""

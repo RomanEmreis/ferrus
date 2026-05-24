@@ -55,6 +55,13 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
         let paused = state.ask_human()?;
         state.awaiting_human_by = Some(agent_id.to_string());
         store::write_state(&state).await?;
+        if let Some(context) = runtime_context.as_ref() {
+            project::record_task_human_question_requested(
+                &context.task_id,
+                project::task_status_for_state(&paused),
+            )
+            .await?;
+        }
         format!("{paused:?}")
     } else if let Some(context) = runtime_context.as_ref() {
         project::record_task_human_question_requested(&context.task_id, &context.status).await?;
@@ -241,6 +248,46 @@ mod tests {
         assert_eq!(task.status, "awaiting_human");
         assert_eq!(task.paused_status.as_deref(), Some("executing"));
         assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn ask_human_mirrors_active_task_to_database_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = StateData {
+            state: TaskState::Addressing,
+            claimed_by: Some("executor:codex:1".to_string()),
+            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
+            ..Default::default()
+        };
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "addressing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
+
+        run("executor:codex:1", "Which path should I take?".to_string())
+            .await
+            .unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::AwaitingHuman);
+        assert_eq!(state.paused_state, Some(TaskState::Addressing));
+        assert_eq!(state.awaiting_human_by.as_deref(), Some("executor:codex:1"));
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "awaiting_human");
+        assert_eq!(task.paused_status.as_deref(), Some("addressing"));
+        assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:1"));
 
         teardown(previous);
     }

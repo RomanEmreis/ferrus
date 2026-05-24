@@ -115,7 +115,7 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
     match state.reject(config.limits.max_review_cycles) {
         Ok(()) => {
             store::write_state(&state).await?;
-            project::record_current_task_status_best_effort("addressing").await;
+            mirror_review_state(runtime_context.as_ref(), &state).await?;
             project::record_runtime_event_best_effort(
                 runtime_context
                     .as_ref()
@@ -142,7 +142,7 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
         }
         Err(TransitionError::ReviewLimitExceeded { cycles }) => {
             store::write_state(&state).await?;
-            project::record_current_task_status_best_effort("failed").await;
+            mirror_review_state(runtime_context.as_ref(), &state).await?;
             project::record_runtime_event_best_effort(
                 runtime_context
                     .as_ref()
@@ -165,6 +165,28 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
         }
         Err(e) => anyhow::bail!(e),
     }
+}
+
+async fn mirror_review_state(
+    context: Option<&RuntimeTaskContext>,
+    state: &crate::state::machine::StateData,
+) -> Result<()> {
+    if let Some(context) = context {
+        project::mirror_task_review_state(
+            &context.task_id,
+            project::task_status_for_state(&state.state),
+            state.review_cycles,
+            state.check_retries,
+            state.failure_reason.as_deref(),
+        )
+        .await?;
+    } else {
+        project::record_current_task_status_best_effort(project::task_status_for_state(
+            &state.state,
+        ))
+        .await;
+    }
+    Ok(())
 }
 
 async fn write_review(
@@ -266,6 +288,47 @@ mod tests {
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "addressing");
         assert_eq!(task.review_cycles, 1);
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.claimed_by, None);
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn reject_mirrors_active_state_counters_to_database_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = StateData {
+            state: TaskState::Reviewing,
+            review_cycles: 1,
+            check_retries: 4,
+            ..StateData::default()
+        };
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "supervisor:codex:1", 60)
+            .await
+            .unwrap();
+
+        run("supervisor:codex:1", "fix this".to_string())
+            .await
+            .unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Addressing);
+        assert_eq!(state.review_cycles, 2);
+        assert_eq!(state.check_retries, 0);
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "addressing");
+        assert_eq!(task.review_cycles, 2);
         assert_eq!(task.check_retries, 0);
         assert_eq!(task.claimed_by, None);
 

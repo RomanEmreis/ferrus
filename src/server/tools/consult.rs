@@ -58,6 +58,13 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
     let paused = if use_legacy_state {
         let paused = state.consult()?;
         store::write_state(&state).await?;
+        if let Some(context) = runtime_context.as_ref() {
+            project::record_task_consultation_requested(
+                &context.task_id,
+                project::task_status_for_state(&paused),
+            )
+            .await?;
+        }
         format!("{paused:?}")
     } else if let Some(context) = runtime_context.as_ref() {
         project::record_task_consultation_requested(&context.task_id, &context.status).await?;
@@ -230,6 +237,42 @@ mod tests {
         assert_eq!(task.status, "consultation");
         assert_eq!(task.paused_status.as_deref(), Some("executing"));
         assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn consult_mirrors_active_task_to_database_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        let mut state = StateData {
+            state: TaskState::Executing,
+            ..StateData::default()
+        };
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
+        let request = "## Problem\nNeed design input.\n\n## What I tried\nCompared options.\n\n## Options (if any)\n- A\n\n## Question\nWhich option?\n";
+
+        run("executor:codex:1", request.to_string()).await.unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Consultation);
+        assert_eq!(state.paused_state, Some(TaskState::Executing));
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "consultation");
+        assert_eq!(task.paused_status.as_deref(), Some("executing"));
+        assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:1"));
 
         teardown(previous);
     }

@@ -83,6 +83,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
         write_submission_patch(runtime_context.as_ref()).await?;
         if use_legacy_state {
             store::write_state(&state).await?;
+            mirror_check_state(runtime_context.as_ref(), &state).await?;
         }
         record_task_status(runtime_context.as_ref(), "reviewing").await;
         project::record_runtime_event_best_effort(
@@ -121,6 +122,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
             write_submission_patch(runtime_context.as_ref()).await?;
             if use_legacy_state {
                 store::write_state(&state).await?;
+                mirror_check_state(runtime_context.as_ref(), &state).await?;
             }
             record_task_status(runtime_context.as_ref(), "reviewing").await;
             project::record_runtime_event_best_effort(
@@ -191,6 +193,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
             match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
                 Ok(()) => {
                     store::write_state(&state).await?;
+                    mirror_check_state(runtime_context.as_ref(), &state).await?;
                     project::record_runtime_event_best_effort(
                         None,
                         "submit_check_failed",
@@ -211,6 +214,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
                 }
                 Err(TransitionError::CheckLimitExceeded { retries }) => {
                     store::write_state(&state).await?;
+                    mirror_check_state(runtime_context.as_ref(), &state).await?;
                     record_task_status(runtime_context.as_ref(), "failed").await;
                     project::record_runtime_event_best_effort(
                         runtime_context
@@ -327,6 +331,22 @@ async fn record_task_status(context: Option<&RuntimeTaskContext>, status: &str) 
     }
 }
 
+async fn mirror_check_state(
+    context: Option<&RuntimeTaskContext>,
+    state: &crate::state::machine::StateData,
+) -> Result<()> {
+    if let Some(context) = context {
+        project::mirror_task_check_state(
+            &context.task_id,
+            project::task_status_for_state(&state.state),
+            state.check_retries,
+            state.failure_reason.as_deref(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 fn should_use_legacy_state(
     state: &crate::state::machine::StateData,
     context: Option<&RuntimeTaskContext>,
@@ -397,6 +417,69 @@ mod tests {
                 .unwrap(),
             "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n"
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn submit_pass_mirrors_active_state_counters_to_database_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut state = StateData {
+            state: TaskState::Executing,
+            check_retries: 1,
+            failure_reason: Some("fmt failed".to_string()),
+            claimed_by: Some("executor:codex:1".to_string()),
+            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
+            last_heartbeat: Some(Utc::now()),
+            ..StateData::default()
+        };
+        state.set_active_task_artifacts(
+            "t-001".to_string(),
+            ".ferrus/tasks/t-001.md".to_string(),
+            ".ferrus/runs/t-001".to_string(),
+        );
+        store::write_state(&state).await.unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
+            .await
+            .unwrap();
+        crate::project::record_task_check_failed("t-001", "fmt failed", 2)
+            .await
+            .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
+
+        run(
+            Some("executor:codex:1"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.state, TaskState::Reviewing);
+        assert_eq!(state.check_retries, 0);
+        assert_eq!(state.failure_reason, None);
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.failure_reason, None);
+        assert_eq!(task.claimed_by, None);
 
         teardown(previous);
     }

@@ -983,6 +983,66 @@ pub async fn mirror_task_check_state(
     .await?
 }
 
+pub async fn mirror_task_review_state(
+    task_id: &str,
+    status: &str,
+    review_cycles: u32,
+    check_retries: u32,
+    failure_reason: Option<&str>,
+) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let status = status.to_string();
+    let failure_reason = failure_reason.map(str::to_string);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        if clears_task_lease_for_status(&status) {
+            connection.execute(
+                r#"
+                UPDATE tasks
+                SET status = ?1, review_cycles = ?2, check_retries = ?3, failure_reason = ?4,
+                    claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
+                WHERE id = ?5
+                "#,
+                params![
+                    status,
+                    review_cycles,
+                    check_retries,
+                    failure_reason,
+                    task_id
+                ],
+            )?;
+        } else {
+            connection.execute(
+                r#"
+                UPDATE tasks
+                SET status = ?1, review_cycles = ?2, check_retries = ?3, failure_reason = ?4
+                WHERE id = ?5
+                "#,
+                params![
+                    status,
+                    review_cycles,
+                    check_retries,
+                    failure_reason,
+                    task_id
+                ],
+            )?;
+        }
+        insert_event(
+            &connection,
+            None,
+            "task_review_state_mirrored",
+            &serde_json::json!({
+                "task_id": task_id,
+                "status": status,
+                "review_cycles": review_cycles,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
 pub async fn record_task_integration_failed(
     task_id: &str,
     run_id: Option<&str>,
