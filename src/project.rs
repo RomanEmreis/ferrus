@@ -1248,9 +1248,38 @@ pub async fn claim_ready_task_by_id(
     agent_id: &str,
     ttl_secs: u64,
 ) -> Result<ReadyTaskClaim> {
+    claim_task_by_id_with_statuses(
+        task_id,
+        agent_id,
+        ttl_secs,
+        &["pending", "executing", "addressing"],
+        true,
+    )
+    .await
+}
+
+pub async fn claim_review_task_by_id(
+    task_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> Result<ReadyTaskClaim> {
+    claim_task_by_id_with_statuses(task_id, agent_id, ttl_secs, &["reviewing"], false).await
+}
+
+async fn claim_task_by_id_with_statuses(
+    task_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+    allowed_statuses: &[&str],
+    promote_pending: bool,
+) -> Result<ReadyTaskClaim> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
     let agent_id = agent_id.to_string();
+    let allowed_statuses = allowed_statuses
+        .iter()
+        .map(|status| status.to_string())
+        .collect::<Vec<_>>();
     tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
         let mut connection = open_runtime_database(&database_path)?;
         let transaction = connection.transaction()?;
@@ -1260,15 +1289,12 @@ pub async fn claim_ready_task_by_id(
             return Ok(ReadyTaskClaim::NoAvailable);
         };
 
-        if !matches!(
-            candidate.status.as_str(),
-            "pending" | "executing" | "addressing"
-        ) {
+        if !allowed_statuses.iter().any(|status| status == &candidate.status) {
             transaction.commit()?;
             return Ok(ReadyTaskClaim::NoAvailable);
         }
 
-        if candidate.status == "pending" {
+        if promote_pending && candidate.status == "pending" {
             transaction.execute(
                 "UPDATE tasks SET status = 'executing', paused_status = NULL WHERE id = ?1 AND status = 'pending'",
                 [&candidate.id],
@@ -3425,6 +3451,47 @@ mod tests {
         let reviewing = tasks.iter().find(|task| task.id == "t-003").unwrap();
         assert_eq!(executing.claimed_by, None);
         assert_eq!(reviewing.claimed_by.as_deref(), Some("supervisor:codex:1"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn sqlite_claim_review_task_by_id_does_not_steal_another_review() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "reviewing")
+            .await
+            .unwrap();
+        record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
+            .await
+            .unwrap();
+
+        let missing = claim_review_task_by_id("t-999", "supervisor:codex:t-999", 60)
+            .await
+            .unwrap();
+        assert!(matches!(missing, ReadyTaskClaim::NoAvailable));
+
+        let claim = claim_review_task_by_id("t-003", "supervisor:codex:t-003", 60)
+            .await
+            .unwrap();
+        match claim {
+            ReadyTaskClaim::Claimed(task) => {
+                assert_eq!(task.task_id, "t-003");
+                assert_eq!(task.task_path, ".ferrus/tasks/t-003.md");
+                assert_eq!(task.status, "reviewing");
+                assert_eq!(task.claimed_by, "supervisor:codex:t-003");
+            }
+            _ => panic!("expected targeted reviewing task to be claimed"),
+        }
+
+        let tasks = list_tasks().await.unwrap();
+        let other = tasks.iter().find(|task| task.id == "t-002").unwrap();
+        let targeted = tasks.iter().find(|task| task.id == "t-003").unwrap();
+        assert_eq!(other.claimed_by, None);
+        assert_eq!(
+            targeted.claimed_by.as_deref(),
+            Some("supervisor:codex:t-003")
+        );
 
         teardown(previous);
     }

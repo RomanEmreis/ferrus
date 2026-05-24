@@ -423,6 +423,23 @@ pub async fn spawn_headless_supervisor(
     prompt: &str,
     debug: bool,
 ) -> Result<HeadlessHandle> {
+    spawn_headless_supervisor_with_env(
+        agent,
+        name,
+        prompt,
+        debug,
+        vec![(ENV_AGENT_ID, name.to_string())],
+    )
+    .await
+}
+
+pub async fn spawn_headless_supervisor_with_env(
+    agent: &dyn SupervisorAgent,
+    name: &str,
+    prompt: &str,
+    debug: bool,
+    env: Vec<(&'static str, String)>,
+) -> Result<HeadlessHandle> {
     let command = agent
         .spawn(AgentRunMode::Headless { prompt })
         .with_context(|| {
@@ -439,7 +456,7 @@ pub async fn spawn_headless_supervisor(
         name,
         prompt,
         debug,
-        env: vec![(ENV_AGENT_ID, name.to_string())],
+        env,
         workspace: None,
     })
     .await

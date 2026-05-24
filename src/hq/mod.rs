@@ -16,6 +16,7 @@ use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::platform;
+use crate::project::TaskRecord;
 use crate::specs::{self, MilestoneReadiness, SelectedMilestone, SelectedMilestoneState};
 use crate::state::{
     agents,
@@ -87,8 +88,16 @@ pub async fn run(debug: bool) -> Result<()> {
     ));
 
     let mut tui_finished = false;
+    let mut scheduler_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    scheduler_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     let loop_result: Result<()> = loop {
         tokio::select! {
+            _ = scheduler_tick.tick() => {
+                if let Err(err) = ctx.reconcile_runtime_schedule().await {
+                    tracing::debug!(error = ?err, "skipped runtime schedule reconciliation");
+                }
+            }
             changed = ctx.state_rx.changed() => {
                 if changed.is_ok() {
                     let snap = ctx.state_rx.borrow_and_update().clone();
@@ -852,6 +861,36 @@ impl HqContext {
         Ok(())
     }
 
+    async fn spawn_headless_supervisor_for_task(
+        &mut self,
+        name: &str,
+        prompt: &str,
+        task_id: &str,
+    ) -> Result<()> {
+        if !self.prepare_headless_slot(name).await {
+            return Ok(());
+        }
+
+        let agent = std::sync::Arc::clone(
+            self.supervisor
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
+        );
+        let handle = agent_manager::spawn_headless_supervisor_with_env(
+            agent.as_ref(),
+            name,
+            prompt,
+            self.debug,
+            vec![
+                (ENV_AGENT_ID, name.to_string()),
+                (ENV_TASK_ID, task_id.to_string()),
+            ],
+        )
+        .await?;
+        self.store_headless_handle(name, handle);
+        Ok(())
+    }
+
     async fn spawn_headless_executor(&mut self, name: &str, prompt: &str) -> Result<()> {
         self.spawn_headless_executor_with_index(name, prompt, DEFAULT_AGENT_INDEX)
             .await
@@ -885,6 +924,44 @@ impl HqContext {
         .await?;
         self.store_headless_handle(name, handle);
         Ok(())
+    }
+
+    async fn reconcile_runtime_schedule(&mut self) -> Result<()> {
+        self.reap_exited_headless().await;
+
+        let state = store::read_state().await?;
+        if !matches!(state.state, TaskState::Idle | TaskState::Complete) {
+            return Ok(());
+        }
+
+        let _ = crate::project::recover_runtime_state().await;
+        let tasks = crate::project::list_tasks().await?;
+        if !tasks
+            .iter()
+            .any(|task| matches!(task.status.as_str(), "pending" | "reviewing"))
+        {
+            return Ok(());
+        }
+
+        self.ensure_hq_config().await?;
+        let config = Config::load().await?;
+        let max_parallel = config.limits.max_parallel_tasks.max(1);
+        self.schedule_reviewing_tasks(&tasks, max_parallel).await?;
+        self.schedule_queued_tasks_from(tasks, max_parallel, false)
+            .await?;
+        Ok(())
+    }
+
+    async fn reap_exited_headless(&mut self) {
+        let exited = self
+            .headless
+            .iter()
+            .filter(|(_, handle)| !handle.is_alive())
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        for name in exited {
+            self.reap_headless(&name).await;
+        }
     }
 
     async fn spawn_headless_executor_for_task(
@@ -1467,6 +1544,88 @@ impl HqContext {
         let config = Config::load().await?;
         let max_parallel = config.limits.max_parallel_tasks.max(1);
         let tasks = crate::project::list_tasks().await?;
+        self.schedule_queued_tasks_from(tasks, max_parallel, true)
+            .await
+    }
+
+    async fn schedule_reviewing_tasks(
+        &mut self,
+        tasks: &[TaskRecord],
+        max_parallel: usize,
+    ) -> Result<usize> {
+        let reviewing_count = tasks
+            .iter()
+            .filter(|task| task.status == "reviewing")
+            .count();
+        if reviewing_count == 0 {
+            return Ok(0);
+        }
+
+        let running = self.running_supervisor_count();
+        let slots = max_parallel.saturating_sub(running);
+        if slots == 0 {
+            return Ok(0);
+        }
+
+        let now = chrono::Utc::now();
+        let prompt = agent_manager::reviewer_prompt();
+        let mut spawned = 0usize;
+        let mut started_task_ids = Vec::new();
+        let mut spawn_error = None;
+        let review_tasks = tasks
+            .iter()
+            .filter(|task| task.status == "reviewing")
+            .filter(|task| !task_has_active_external_claim(task, now))
+            .take(slots)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for task in &review_tasks {
+            let name = self.supervisor_agent_id_for_task(&task.id)?;
+            if self
+                .headless
+                .get(&name)
+                .is_some_and(agent_manager::HeadlessHandle::is_alive)
+            {
+                continue;
+            }
+
+            match self
+                .spawn_headless_supervisor_for_task(&name, prompt, &task.id)
+                .await
+            {
+                Ok(()) => {
+                    spawned += 1;
+                    started_task_ids.push(task.id.clone());
+                }
+                Err(err) => {
+                    spawn_error = Some(err);
+                    break;
+                }
+            }
+        }
+
+        if spawned > 0 {
+            let task_ids = started_task_ids.join(", ");
+            self.display.info(format!(
+                "Started reviewer session(s) for {} task(s): {task_ids}",
+                started_task_ids.len()
+            ));
+        }
+        if let Some(err) = spawn_error {
+            self.display.error(format!(
+                "Could not start more reviewer sessions after starting {spawned} task(s): {err}",
+            ));
+        }
+        Ok(spawned)
+    }
+
+    async fn schedule_queued_tasks_from(
+        &mut self,
+        tasks: Vec<TaskRecord>,
+        max_parallel: usize,
+        report_waiting: bool,
+    ) -> Result<usize> {
         let pending_count = tasks.iter().filter(|task| task.status == "pending").count();
         if pending_count == 0 {
             return Ok(0);
@@ -1475,9 +1634,11 @@ impl HqContext {
         let running = self.running_executor_count();
         let slots = max_parallel.saturating_sub(running);
         if slots == 0 {
-            self.display.info(format!(
-                "{pending_count} queued task(s) waiting; executor parallelism limit is {max_parallel}."
-            ));
+            if report_waiting {
+                self.display.info(format!(
+                    "{pending_count} queued task(s) waiting; executor parallelism limit is {max_parallel}."
+                ));
+            }
             return Ok(0);
         }
 
@@ -1543,12 +1704,32 @@ impl HqContext {
             .count()
     }
 
+    fn running_supervisor_count(&self) -> usize {
+        self.headless
+            .iter()
+            .filter(|(name, handle)| name.starts_with(ROLE_SUPERVISOR) && handle.is_alive())
+            .count()
+    }
+
     fn executor_agent_id_for_task(&self, task_id: &str) -> Result<String> {
         let executor = self
             .executor
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?;
         Ok(format!("{}:{}:{}", ROLE_EXECUTOR, executor.name(), task_id))
+    }
+
+    fn supervisor_agent_id_for_task(&self, task_id: &str) -> Result<String> {
+        let supervisor = self
+            .supervisor
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?;
+        Ok(format!(
+            "{}:{}:{}",
+            ROLE_SUPERVISOR,
+            supervisor.name(),
+            task_id
+        ))
     }
 
     async fn selected_milestone_for_task(
@@ -2148,6 +2329,16 @@ async fn git_is_work_tree(path: &Path) -> bool {
         .output()
         .await;
     matches!(output, Ok(output) if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
+}
+
+fn task_has_active_external_claim(task: &TaskRecord, now: chrono::DateTime<chrono::Utc>) -> bool {
+    if task.claimed_by.is_none() {
+        return false;
+    }
+    task.lease_until
+        .as_deref()
+        .and_then(|lease_until| chrono::DateTime::parse_from_rfc3339(lease_until).ok())
+        .is_some_and(|lease_until| lease_until.with_timezone(&chrono::Utc) > now)
 }
 
 #[allow(dead_code)]
