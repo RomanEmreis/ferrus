@@ -245,14 +245,13 @@ Recovery is SQLite-first:
 - Failed canonical patch application during approval is recorded as `INTEGRATION_ERROR.md`, mirrored into SQLite `failure_reason` and runtime events, and returned by `/review_pending` so the reviewer can reject with concrete conflict details.
 - HQ periodically reconciles SQLite runtime work: reaps exited headless handles, starts reviewers for reviewing DB tasks, and fills freed executor slots with pending DB tasks.
 - Review workers launched for DB tasks receive `FERRUS_TASK_ID` and claim that exact task instead of racing for the next available review.
+- Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
-- Add multi-task ask-human queue handling.
 - Connect dashboard panels to real queued/running/reviewing task and run state.
-- Pass task id and agent id deterministically into agent MCP runtime context.
 
 ## Milestones
 

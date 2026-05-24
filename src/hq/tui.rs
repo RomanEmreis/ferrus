@@ -754,7 +754,21 @@ async fn refresh_dashboard_snapshot(app: &mut App, force: bool) -> bool {
         changed = true;
     }
 
-    let next_question = if app.status.task_state == "AwaitingHuman" {
+    let next_question = if let Ok(questions) = crate::project::list_human_questions().await
+        && let Some(question) = questions.first()
+    {
+        let prefix = if questions.len() > 1 {
+            format!("[{} queued] {}: ", questions.len(), question.task_id)
+        } else {
+            format!("{}: ", question.task_id)
+        };
+        let body = if question.question.is_empty() {
+            "Type your answer and press Enter.".to_string()
+        } else {
+            question.question.clone()
+        };
+        Some(format!("{prefix}{body}"))
+    } else if app.status.task_state == "AwaitingHuman" {
         store::read_question()
             .await
             .ok()
@@ -1504,7 +1518,7 @@ fn activity_area_lines(app: &App, width: usize, max_lines: usize) -> Vec<Dashboa
     }
 
     let mut lines = Vec::new();
-    if app.status.task_state == "AwaitingHuman" {
+    if app.question.is_some() {
         lines.push(DashboardLine::new(StyledLine::plain("", Color::DarkGrey)));
         lines.extend(question_lines(app, width));
     } else if let Some(error) = app.last_error.as_deref() {

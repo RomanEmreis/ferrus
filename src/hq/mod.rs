@@ -202,8 +202,7 @@ async fn load_agent_version_from_version_command(command: std::process::Command)
 async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
     // When state is AwaitingHuman, non-command input is treated as the human's answer.
     if !line.starts_with('/') {
-        let state = store::read_state().await?;
-        if state.state == TaskState::AwaitingHuman {
+        if ctx.has_pending_human_question().await? {
             return ctx.answer(line.to_string()).await;
         }
         anyhow::bail!("Commands must start with '/' — try /status, /task, /quit");
@@ -2034,10 +2033,7 @@ impl HqContext {
         }
         let state = store::read_state().await?;
         if state.state != TaskState::AwaitingHuman {
-            anyhow::bail!(
-                "State is {:?} — not currently waiting for an answer.",
-                state.state
-            );
+            return self.answer_scoped_human_question(response).await;
         }
 
         // Write ANSWER.md. If the agent is alive and blocking on /wait_for_answer,
@@ -2078,6 +2074,53 @@ impl HqContext {
                 };
                 self.display.info(format!(
                     "Agent is not running. State restored to {resumed:?}. {relaunch_hint}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    async fn has_pending_human_question(&self) -> Result<bool> {
+        let state = store::read_state().await?;
+        if state.state == TaskState::AwaitingHuman {
+            return Ok(true);
+        }
+        Ok(!crate::project::list_human_questions().await?.is_empty())
+    }
+
+    async fn answer_scoped_human_question(&mut self, response: String) -> Result<()> {
+        let Some(question) = crate::project::list_human_questions()
+            .await?
+            .into_iter()
+            .next()
+        else {
+            anyhow::bail!("No task is currently waiting for a human answer.");
+        };
+
+        store::write_answer_for_run_dir(&question.run_dir, &response).await?;
+        self.display.info(format!(
+            "Answer recorded for {}. Waiting for agent to resume…",
+            question.task_id
+        ));
+
+        let task = crate::project::list_tasks()
+            .await?
+            .into_iter()
+            .find(|task| task.id == question.task_id);
+        let agent_alive = task
+            .as_ref()
+            .and_then(|task| task.claimed_by.as_deref())
+            .and_then(|agent_id| self.headless.get(agent_id))
+            .is_some_and(agent_manager::HeadlessHandle::is_alive);
+
+        if !agent_alive {
+            let restored =
+                crate::project::restore_task_from_human_answer(&question.task_id).await?;
+            if let crate::project::TaskHumanAnswerRestore::Restored { status } = restored {
+                store::clear_question_for_run_dir(&question.run_dir).await?;
+                self.display.info(format!(
+                    "Agent is not running. Task {} restored to {status}. Use /resume or wait for HQ scheduling to relaunch it.",
+                    question.task_id
                 ));
             }
         }
@@ -2779,6 +2822,64 @@ mod tests {
         assert_eq!(state.state, Consultation);
         assert!(state.awaiting_human_by.is_none());
         assert_eq!(store::read_answer().await.unwrap(), "Use the simpler path");
+
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn plain_input_answers_first_scoped_human_question() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/runs/t-007")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        store::write_state(&StateData::default()).await.unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::record_task_human_question_requested("t-007", "executing")
+            .await
+            .unwrap();
+        store::write_question_for_run_dir(".ferrus/runs/t-007", "Need human input")
+            .await
+            .unwrap();
+
+        let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
+        let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
+
+        dispatch("Use option A", &mut ctx).await.unwrap();
+
+        assert_eq!(
+            store::read_answer_for_run_dir(".ferrus/runs/t-007")
+                .await
+                .unwrap(),
+            "Use option A"
+        );
+        assert_eq!(
+            store::read_question_for_run_dir(".ferrus/runs/t-007")
+                .await
+                .unwrap(),
+            ""
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "executing");
 
         std::env::set_current_dir(previous).unwrap();
     }

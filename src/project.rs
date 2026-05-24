@@ -128,6 +128,14 @@ pub struct TaskRecord {
     pub failure_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HumanQuestion {
+    pub task_id: String,
+    pub task_path: String,
+    pub run_dir: String,
+    pub question: String,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RuntimeTaskContext {
@@ -700,6 +708,29 @@ pub async fn list_tasks() -> Result<Vec<TaskRecord>> {
         Ok(tasks)
     })
     .await?
+}
+
+pub async fn list_human_questions() -> Result<Vec<HumanQuestion>> {
+    let tasks = list_tasks().await?;
+    let mut questions = Vec::new();
+    for task in tasks
+        .into_iter()
+        .filter(|task| task.status == "awaiting_human")
+    {
+        let run_dir = run_dir_for_task(&task.id);
+        let question = crate::state::store::read_question_for_run_dir(&run_dir)
+            .await
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        questions.push(HumanQuestion {
+            task_id: task.id,
+            task_path: task.path,
+            run_dir,
+            question,
+        });
+    }
+    Ok(questions)
 }
 
 #[allow(dead_code)]
@@ -3492,6 +3523,34 @@ mod tests {
             targeted.claimed_by.as_deref(),
             Some("supervisor:codex:t-003")
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn list_human_questions_reads_scoped_awaiting_human_tasks() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        record_task_human_question_requested("t-002", "executing")
+            .await
+            .unwrap();
+        crate::state::store::write_question_for_run_dir(
+            ".ferrus/runs/t-002",
+            "Which option should I use?",
+        )
+        .await
+        .unwrap();
+
+        let questions = list_human_questions().await.unwrap();
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].task_id, "t-002");
+        assert_eq!(questions[0].task_path, ".ferrus/tasks/t-002.md");
+        assert_eq!(questions[0].run_dir, ".ferrus/runs/t-002");
+        assert_eq!(questions[0].question, "Which option should I use?");
 
         teardown(previous);
     }

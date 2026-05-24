@@ -266,7 +266,6 @@ pub async fn write_question_for_run_dir(run_dir: &str, content: &str) -> Result<
     write_path(&run_file(run_dir, "QUESTION.md"), content).await
 }
 
-#[cfg(test)]
 pub async fn read_question_for_run_dir(run_dir: &str) -> Result<String> {
     read_path(&run_file(run_dir, "QUESTION.md")).await
 }
@@ -298,7 +297,6 @@ pub async fn read_answer_for_run_dir(run_dir: &str) -> Result<String> {
     read_path(&run_file(run_dir, "ANSWER.md")).await
 }
 
-#[cfg(test)]
 pub async fn write_answer_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
     write_path(&run_file(run_dir, "ANSWER.md"), content).await
 }
