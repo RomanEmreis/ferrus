@@ -140,8 +140,8 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 
 | Prompt | Description |
 |---|---|
-| `executor-context` | State + task + review notes bundled for the Executor |
-| `supervisor-review` | State + task + submission notes bundled for the Supervisor |
+| `executor-context` | Scoped state + task + review notes bundled for the Executor |
+| `supervisor-review` | Scoped state + task + submission notes bundled for the Supervisor |
 
 ## ferrus.toml
 

@@ -238,6 +238,7 @@ Recovery is SQLite-first:
 - Runtime identity propagation through `FERRUS_AGENT_ID`, `FERRUS_TASK_ID`, and `FERRUS_RUN_ID` for HQ-managed headless sessions.
 - MCP resource `ferrus://runtime_context` for deterministic runtime identity diagnostics from inside the agent-started MCP server.
 - MCP `/status` is scoped by runtime agent id and includes the agent's SQLite task context when one exists.
+- MCP prompts `executor-context` and `supervisor-review` are scoped by runtime agent id and prefer numbered task/run artifacts over legacy mirrors when a SQLite task context exists.
 - `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 - Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.

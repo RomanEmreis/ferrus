@@ -178,10 +178,22 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
     }
 
     // Prompts
-    app.map_prompt("executor-context", prompts::executor_context)
+    {
+        let id = agent_id.clone();
+        app.map_prompt("executor-context", move || {
+            let id = id.clone();
+            async move { prompts::executor_context_for_agent(Some(id.as_str())).await }
+        })
         .with_description("Executor task context: state, task, and review notes");
-    app.map_prompt("supervisor-review", prompts::supervisor_review)
+    }
+    {
+        let id = agent_id.clone();
+        app.map_prompt("supervisor-review", move || {
+            let id = id.clone();
+            async move { prompts::supervisor_review_for_agent(Some(id.as_str())).await }
+        })
         .with_description("Supervisor review context: state, task, and submission notes");
+    }
 
     // Shared tools (always registered regardless of role)
     {
