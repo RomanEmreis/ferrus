@@ -1,6 +1,6 @@
 use anyhow::Result;
 use neva::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing::info;
 
@@ -49,6 +49,7 @@ async fn run(agent_id: &str) -> Result<String> {
         apply_approved_patch(context).await?;
         project::record_task_status_best_effort(&context.task_id, &context.task_path, "complete")
             .await;
+        cleanup_approved_workspace_best_effort(context).await;
     }
     project::record_runtime_event_best_effort(
         runtime_context
@@ -94,6 +95,72 @@ async fn apply_approved_patch(context: &RuntimeTaskContext) -> Result<()> {
         );
     }
     Ok(())
+}
+
+async fn cleanup_approved_workspace_best_effort(context: &RuntimeTaskContext) {
+    if let Err(err) = cleanup_approved_workspace(context).await {
+        tracing::warn!(
+            error = ?err,
+            task_id = context.task_id,
+            workspace_path = context.workspace_path.as_deref(),
+            "failed to remove approved task worktree"
+        );
+    }
+}
+
+async fn cleanup_approved_workspace(context: &RuntimeTaskContext) -> Result<bool> {
+    let Some(workspace_path) = context
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(false);
+    };
+    if !tokio::fs::try_exists(&workspace_path).await? {
+        return Ok(false);
+    }
+
+    let local_ref_content =
+        tokio::fs::read_to_string(store::resolve_project_path(".ferrus/project.toml")).await?;
+    let local_ref: project::LocalProjectRef = toml::from_str(&local_ref_content)?;
+    let managed_root = PathBuf::from(local_ref.data_dir).join("worktrees");
+    let canonical_workspace = tokio::fs::canonicalize(&workspace_path)
+        .await
+        .unwrap_or(workspace_path);
+    let canonical_managed_root = tokio::fs::canonicalize(&managed_root)
+        .await
+        .unwrap_or(managed_root);
+    if !is_managed_workspace_path(&canonical_workspace, &canonical_managed_root) {
+        return Ok(false);
+    }
+
+    let project_root = std::env::current_dir()?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&project_root)
+        .args(["worktree", "remove", "--force"])
+        .arg(&canonical_workspace)
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "Failed to remove approved task worktree at {}: {}",
+            canonical_workspace.display(),
+            if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(true)
+}
+
+fn is_managed_workspace_path(path: &Path, managed_root: &Path) -> bool {
+    path.starts_with(managed_root) && path != managed_root
 }
 
 fn should_use_legacy_state(
@@ -163,7 +230,6 @@ mod tests {
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
-
         run("supervisor:codex:7").await.unwrap();
 
         let state = store::read_state().await.unwrap();
@@ -230,11 +296,112 @@ mod tests {
         teardown(previous);
     }
 
+    #[tokio::test]
+    async fn approve_removes_managed_worktree_after_completion() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        if !git(dir.path(), ["init"]).success() {
+            teardown(previous);
+            return;
+        }
+        tokio::fs::write("file.txt", "base\n").await.unwrap();
+        assert!(git(dir.path(), ["add", "file.txt"]).success());
+        assert!(
+            git(
+                dir.path(),
+                [
+                    "-c",
+                    "user.email=ferrus@example.invalid",
+                    "-c",
+                    "user.name=Ferrus",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+            )
+            .success()
+        );
+
+        let workspace_path = dir
+            .path()
+            .join(".ferrus/projects/test-project/worktrees/t-007");
+        assert!(
+            git_path(
+                dir.path(),
+                ["worktree", "add", "--detach"],
+                &workspace_path,
+                ["HEAD"],
+            )
+            .success()
+        );
+        assert!(workspace_path.is_dir());
+
+        store::write_state(&StateData::default()).await.unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        let run_record = crate::project::record_run_started_with_workspace(
+            "supervisor-run-t-007",
+            "supervisor",
+            "supervisor:codex:7",
+            std::process::id(),
+            workspace_path.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+        let attached = crate::project::attach_running_run_to_task(
+            "supervisor:codex:7",
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+        )
+        .await
+        .unwrap();
+        assert_eq!(attached.as_deref(), Some(run_record.id.as_str()));
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+        let context = crate::project::runtime_task_context_for_agent("supervisor:codex:7")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            context.workspace_path.as_deref(),
+            Some(workspace_path.to_string_lossy().as_ref())
+        );
+
+        run("supervisor:codex:7").await.unwrap();
+
+        assert!(!workspace_path.exists());
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "complete");
+
+        teardown(previous);
+    }
+
     fn git<const N: usize>(cwd: &std::path::Path, args: [&str; N]) -> std::process::ExitStatus {
         std::process::Command::new("git")
             .arg("-C")
             .arg(cwd)
             .args(args)
+            .status()
+            .unwrap()
+    }
+
+    fn git_path<const N: usize, const M: usize>(
+        cwd: &std::path::Path,
+        before: [&str; N],
+        path: &std::path::Path,
+        after: [&str; M],
+    ) -> std::process::ExitStatus {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(before)
+            .arg(path)
+            .args(after)
             .status()
             .unwrap()
     }
