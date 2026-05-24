@@ -341,7 +341,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 |---|---|---|
 | `ask_human` | Executing, Addressing, Consultation, Reviewing | Last-resort human fallback. Write question to QUESTION.md; moves to AwaitingHuman. Call `/wait_for_answer` immediately after. |
 | `wait_for_answer` | AwaitingHuman | Block until the human answers; restores previous state and returns the answer |
-| `status` | any | Print current state and counters |
+| `status` | any | Print current state, counters, and scoped SQLite task context when called by an active agent |
 | `reset` | Failed | Return to Idle |
 | `heartbeat` | any claimed | Renew lease; returns `{"status":"renewed"}` or `{"status":"error","code":"..."}` |
 

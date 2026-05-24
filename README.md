@@ -198,6 +198,8 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 | `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
 
+The `status` tool includes scoped SQLite task context when called by a running agent with a resolved runtime identity.
+
 ### `ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor <agent>] [--executor-model <model>]`
 
 Writes agent config files so they automatically load `ferrus serve` as a tool server, and adds only the selected agents' local files to `.gitignore`. At least one of `--supervisor` or `--executor` is required; each model flag requires the matching role flag. Supported agents:
