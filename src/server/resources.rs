@@ -29,22 +29,21 @@ pub async fn read_for_agent(
             "text/markdown",
             store::read_task_template().await.map_err(to_err)?,
         ),
-        "review" => ("text/markdown", store::read_review().await.map_err(to_err)?),
+        "review" => (
+            "text/markdown",
+            read_review_for_agent(agent_id).await.map_err(to_err)?,
+        ),
         "submission" => (
             "text/markdown",
-            store::read_submission().await.map_err(to_err)?,
+            read_submission_for_agent(agent_id).await.map_err(to_err)?,
         ),
         "question" => (
             "text/markdown",
-            tokio::fs::read_to_string(store::resolve_project_path(".ferrus/QUESTION.md"))
-                .await
-                .unwrap_or_default(),
+            read_question_for_agent(agent_id).await.map_err(to_err)?,
         ),
         "answer" => (
             "text/markdown",
-            tokio::fs::read_to_string(store::resolve_project_path(".ferrus/ANSWER.md"))
-                .await
-                .unwrap_or_default(),
+            read_answer_for_agent(agent_id).await.map_err(to_err)?,
         ),
         "consult_template" => (
             "text/markdown",
@@ -93,6 +92,52 @@ pub async fn read_for_agent(
     Ok(ReadResourceResult::from(
         TextResourceContents::new(uri, content).with_mime(mime),
     ))
+}
+
+async fn read_review_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+    {
+        return store::read_review_for_run_dir(&context.run_dir).await;
+    }
+    store::read_review().await
+}
+
+async fn read_submission_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+    {
+        return store::read_submission_for_run_dir(&context.run_dir).await;
+    }
+    store::read_submission().await
+}
+
+async fn read_question_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+        && let Ok(contents) = store::read_question_for_run_dir(&context.run_dir).await
+    {
+        return Ok(contents);
+    }
+    Ok(
+        tokio::fs::read_to_string(store::resolve_project_path(".ferrus/QUESTION.md"))
+            .await
+            .unwrap_or_default(),
+    )
+}
+
+async fn read_answer_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+        && let Ok(contents) = store::read_answer_for_run_dir(&context.run_dir).await
+    {
+        return Ok(contents);
+    }
+    Ok(
+        tokio::fs::read_to_string(store::resolve_project_path(".ferrus/ANSWER.md"))
+            .await
+            .unwrap_or_default(),
+    )
 }
 
 async fn read_consult_request_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -278,6 +323,69 @@ mod tests {
             .unwrap();
 
         assert_eq!(text(result), "assigned task");
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn run_artifact_resources_prefer_agent_runtime_context() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(".ferrus/REVIEW.md", "legacy review")
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/SUBMISSION.md", "legacy submission")
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/QUESTION.md", "legacy question")
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/ANSWER.md", "legacy answer")
+            .await
+            .unwrap();
+        store::write_review_for_run_dir(".ferrus/runs/t-007", "scoped review")
+            .await
+            .unwrap();
+        store::write_submission_for_run_dir(".ferrus/runs/t-007", "scoped submission")
+            .await
+            .unwrap();
+        store::write_question_for_run_dir(".ferrus/runs/t-007", "scoped question")
+            .await
+            .unwrap();
+        store::write_answer_for_run_dir(".ferrus/runs/t-007", "scoped answer")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "awaiting_human")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        for (resource, expected) in [
+            ("review", "scoped review"),
+            ("submission", "scoped submission"),
+            ("question", "scoped question"),
+            ("answer", "scoped answer"),
+        ] {
+            let result = read_for_agent(Some("executor:codex:7"), resource.to_string())
+                .await
+                .unwrap();
+            assert_eq!(text(result), expected);
+        }
+
         teardown(previous);
     }
 

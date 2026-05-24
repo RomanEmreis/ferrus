@@ -352,14 +352,14 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://task` | Current task description (compatibility/current context) |
 | `ferrus://task/<task-id>` | Numbered task artifact, for example `.ferrus/tasks/t-001.md` |
 | `ferrus://task_template` | Task drafting template (`TASK.md`) |
-| `ferrus://review` | Supervisor rejection notes (`REVIEW.md`) |
-| `ferrus://submission` | Executor submission notes (`SUBMISSION.md`) |
-| `ferrus://question` | Pending human question (`QUESTION.md`) |
+| `ferrus://review` | Scoped Supervisor rejection notes (`REVIEW.md`) |
+| `ferrus://submission` | Scoped Executor submission notes (`SUBMISSION.md`) |
+| `ferrus://question` | Scoped pending human question (`QUESTION.md`) |
 | `ferrus://answer` | Human answer (`ANSWER.md`) |
 | `ferrus://consult_template` | Consultation request template (`CONSULT_TEMPLATE.md`) |
 | `ferrus://spec_template` | Feature specification template (`SPEC_TEMPLATE.md`) |
-| `ferrus://consult_request` | Pending supervisor consultation request (`CONSULT_REQUEST.md`) |
-| `ferrus://consult_response` | Supervisor consultation response (`CONSULT_RESPONSE.md`) |
+| `ferrus://consult_request` | Scoped pending supervisor consultation request (`CONSULT_REQUEST.md`) |
+| `ferrus://consult_response` | Scoped Supervisor consultation response (`CONSULT_RESPONSE.md`) |
 | `ferrus://state` | Current task state as JSON (`STATE.json`) |
 | `ferrus://runtime_context` | Agent id, inherited Ferrus env vars, and resolved SQLite task context as JSON |
 
