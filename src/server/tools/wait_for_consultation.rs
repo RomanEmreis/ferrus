@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::info;
 
-use crate::{config::Config, project, state::store};
+use crate::{agent_id::ENV_TASK_ID, config::Config, project, state::store};
 
 use super::tool_err;
 
@@ -22,9 +22,14 @@ async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let timeout = Duration::from_secs(config.limits.wait_timeout_secs);
     let start = Instant::now();
+    let target_task_id = runtime_task_id();
 
     loop {
-        if let Some(context) = project::attach_running_run_to_next_consultation(agent_id).await? {
+        let context = match target_task_id.as_deref() {
+            Some(task_id) => project::attach_running_run_to_consultation(task_id, agent_id).await?,
+            None => project::attach_running_run_to_next_consultation(agent_id).await?,
+        };
+        if let Some(context) = context {
             let task = store::read_task_at(&context.task_path).await?;
             let consult_request = store::read_consult_request_for_run_dir(&context.run_dir).await?;
             let review = store::read_review_for_run_dir(&context.run_dir)
@@ -63,6 +68,13 @@ async fn run(agent_id: &str) -> Result<String> {
 
         sleep(Duration::from_millis(500)).await;
     }
+}
+
+fn runtime_task_id() -> Option<String> {
+    std::env::var(ENV_TASK_ID)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]

@@ -2123,6 +2123,101 @@ pub async fn attach_running_run_to_next_consultation(
     .await?
 }
 
+pub async fn attach_running_run_to_consultation(
+    task_id: &str,
+    agent_id: &str,
+) -> Result<Option<RuntimeTaskContext>> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<RuntimeTaskContext>> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(run_id) = latest_active_run_for_agent(&transaction, &agent_id)? else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+
+        if let Some(context) = consultation_context_for_run(&transaction, &run_id)? {
+            transaction.commit()?;
+            return Ok((context.task_id == task_id).then_some(context));
+        }
+
+        let candidate = transaction
+            .query_row(
+                r#"
+                SELECT id, path, status, paused_status,
+                       check_retries, review_cycles, failure_reason
+                FROM tasks
+                WHERE id = ?1
+                  AND status = 'consultation'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM runs
+                      WHERE runs.task_id = tasks.id
+                        AND runs.role = 'supervisor'
+                        AND runs.status IN ('running', 'checking', 'reviewing')
+                  )
+                LIMIT 1
+                "#,
+                [&task_id],
+                |row| {
+                    Ok(RuntimeTaskContext {
+                        task_id: row.get(0)?,
+                        task_path: row.get(1)?,
+                        run_dir: String::new(),
+                        status: row.get(2)?,
+                        paused_status: row.get(3)?,
+                        check_retries: row.get::<_, i64>(4)? as u32,
+                        review_cycles: row.get::<_, i64>(5)? as u32,
+                        failure_reason: row.get(6)?,
+                        run_id: Some(run_id.clone()),
+                        workspace_path: None,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(mut context) = candidate else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+
+        context.run_dir = run_dir_for_task(&context.task_id);
+        let attached = transaction.execute(
+            r#"
+            UPDATE runs
+            SET task_id = ?1, updated_at = ?2
+            WHERE id = ?3
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM runs active_runs
+                  WHERE active_runs.task_id = ?1
+                    AND active_runs.role = 'supervisor'
+                    AND active_runs.status IN ('running', 'checking', 'reviewing')
+                    AND active_runs.id <> ?3
+              )
+            "#,
+            params![context.task_id, timestamp(), run_id],
+        )?;
+        if attached == 0 {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        insert_event_in_transaction(
+            &transaction,
+            Some(&run_id),
+            "run_consultation_attached",
+            &serde_json::json!({
+                "agent": agent_id,
+                "task_id": context.task_id,
+            }),
+        )?;
+        transaction.commit()?;
+        Ok(Some(context))
+    })
+    .await?
+}
+
 pub async fn record_run_finished(run_id: &str, exit_code: i32) -> Result<()> {
     let database_path = current_database_path().await?;
     let run_id = run_id.to_string();
@@ -4116,6 +4211,53 @@ mod tests {
         let first = runs.iter().find(|run| run.id == first_run.id).unwrap();
         let second = runs.iter().find(|run| run.id == second_run.id).unwrap();
         assert_eq!(first.task_id, "t-007");
+        assert_eq!(second.task_id, "t-001");
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn targeted_consultation_attachment_does_not_steal_another_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        record_task_status("t-008", ".ferrus/tasks/t-008.md", "executing")
+            .await
+            .unwrap();
+        record_task_consultation_requested("t-007", "executing")
+            .await
+            .unwrap();
+        record_task_consultation_requested("t-008", "executing")
+            .await
+            .unwrap();
+        let first_run =
+            record_run_started("supervisor", "supervisor:codex:t-008", std::process::id())
+                .await
+                .unwrap();
+        let second_run =
+            record_run_started("supervisor", "supervisor:codex:t-009", std::process::id())
+                .await
+                .unwrap();
+
+        let first = attach_running_run_to_consultation("t-008", "supervisor:codex:t-008")
+            .await
+            .unwrap();
+        let second = attach_running_run_to_consultation("t-009", "supervisor:codex:t-009")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first.as_ref().map(|context| context.task_id.as_str()),
+            Some("t-008")
+        );
+        assert!(second.is_none());
+
+        let runs = list_runs(10).await.unwrap();
+        let first = runs.iter().find(|run| run.id == first_run.id).unwrap();
+        let second = runs.iter().find(|run| run.id == second_run.id).unwrap();
+        assert_eq!(first.task_id, "t-008");
         assert_eq!(second.task_id, "t-001");
 
         teardown(previous);

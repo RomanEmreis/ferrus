@@ -247,6 +247,7 @@ Recovery is SQLite-first:
 - Failed canonical patch application during approval is recorded as `INTEGRATION_ERROR.md`, mirrored into SQLite `failure_reason` and runtime events, and returned by `/review_pending` so the reviewer can reject with concrete conflict details.
 - HQ periodically reconciles SQLite runtime work: reaps exited headless handles, starts reviewers for reviewing DB tasks, and fills freed executor slots with pending DB tasks.
 - Review workers launched for DB tasks receive `FERRUS_TASK_ID` and claim that exact task instead of racing for the next available review.
+- Consultation workers launched for DB tasks receive `FERRUS_TASK_ID` and attach to that exact consultation instead of racing for the next available consultation.
 - Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
 - Dashboard runtime activity shows pending/running/reviewing/awaiting-human task rows before recent run rows.
 

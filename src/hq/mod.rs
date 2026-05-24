@@ -935,16 +935,20 @@ impl HqContext {
 
         let _ = crate::project::recover_runtime_state().await;
         let tasks = crate::project::list_tasks().await?;
-        if !tasks
-            .iter()
-            .any(|task| matches!(task.status.as_str(), "pending" | "reviewing"))
-        {
+        if !tasks.iter().any(|task| {
+            matches!(
+                task.status.as_str(),
+                "pending" | "reviewing" | "consultation"
+            )
+        }) {
             return Ok(());
         }
 
         self.ensure_hq_config().await?;
         let config = Config::load().await?;
         let max_parallel = config.limits.max_parallel_tasks.max(1);
+        self.schedule_consultation_tasks(&tasks, max_parallel)
+            .await?;
         self.schedule_reviewing_tasks(&tasks, max_parallel).await?;
         self.schedule_queued_tasks_from(tasks, max_parallel, false)
             .await?;
@@ -1614,6 +1618,76 @@ impl HqContext {
         if let Some(err) = spawn_error {
             self.display.error(format!(
                 "Could not start more reviewer sessions after starting {spawned} task(s): {err}",
+            ));
+        }
+        Ok(spawned)
+    }
+
+    async fn schedule_consultation_tasks(
+        &mut self,
+        tasks: &[TaskRecord],
+        max_parallel: usize,
+    ) -> Result<usize> {
+        let consultation_count = tasks
+            .iter()
+            .filter(|task| task.status == "consultation")
+            .count();
+        if consultation_count == 0 {
+            return Ok(0);
+        }
+
+        let running = self.running_supervisor_count();
+        let slots = max_parallel.saturating_sub(running);
+        if slots == 0 {
+            return Ok(0);
+        }
+
+        let prompt = agent_manager::consultant_prompt();
+        let mut spawned = 0usize;
+        let mut started_task_ids = Vec::new();
+        let mut spawn_error = None;
+        let consultation_tasks = tasks
+            .iter()
+            .filter(|task| task.status == "consultation")
+            .take(slots)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for task in &consultation_tasks {
+            let name = self.supervisor_agent_id_for_task(&task.id)?;
+            if self
+                .headless
+                .get(&name)
+                .is_some_and(agent_manager::HeadlessHandle::is_alive)
+            {
+                continue;
+            }
+
+            match self
+                .spawn_headless_supervisor_for_task(&name, prompt, &task.id)
+                .await
+            {
+                Ok(()) => {
+                    spawned += 1;
+                    started_task_ids.push(task.id.clone());
+                }
+                Err(err) => {
+                    spawn_error = Some(err);
+                    break;
+                }
+            }
+        }
+
+        if spawned > 0 {
+            let task_ids = started_task_ids.join(", ");
+            self.display.info(format!(
+                "Started consultation supervisor session(s) for {} task(s): {task_ids}",
+                started_task_ids.len()
+            ));
+        }
+        if let Some(err) = spawn_error {
+            self.display.error(format!(
+                "Could not start more consultation supervisor sessions after starting {spawned} task(s): {err}",
             ));
         }
         Ok(spawned)
