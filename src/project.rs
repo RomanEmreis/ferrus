@@ -940,6 +940,49 @@ pub async fn record_task_check_passed(task_id: &str) -> Result<()> {
     .await?
 }
 
+pub async fn mirror_task_check_state(
+    task_id: &str,
+    status: &str,
+    check_retries: u32,
+    failure_reason: Option<&str>,
+) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let status = status.to_string();
+    let failure_reason = failure_reason.map(str::to_string);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        if clears_task_lease_for_status(&status) {
+            connection.execute(
+                r#"
+                UPDATE tasks
+                SET status = ?1, check_retries = ?2, failure_reason = ?3,
+                    claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
+                WHERE id = ?4
+                "#,
+                params![status, check_retries, failure_reason, task_id],
+            )?;
+        } else {
+            connection.execute(
+                "UPDATE tasks SET status = ?1, check_retries = ?2, failure_reason = ?3 WHERE id = ?4",
+                params![status, check_retries, failure_reason, task_id],
+            )?;
+        }
+        insert_event(
+            &connection,
+            None,
+            "task_check_state_mirrored",
+            &serde_json::json!({
+                "task_id": task_id,
+                "status": status,
+                "check_retries": check_retries,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
 pub async fn record_task_integration_failed(
     task_id: &str,
     run_id: Option<&str>,
@@ -3783,6 +3826,31 @@ mod tests {
                 .unwrap_or_default()
                 .contains("Last failure:\ntests failed")
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn mirrored_check_state_can_fail_task_and_clear_lease() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
+            .await
+            .unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
+
+        mirror_task_check_state("t-001", "failed", 2, Some("tests failed"))
+            .await
+            .unwrap();
+
+        let tasks = list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "failed");
+        assert_eq!(task.check_retries, 2);
+        assert_eq!(task.failure_reason.as_deref(), Some("tests failed"));
+        assert_eq!(task.claimed_by, None);
 
         teardown(previous);
     }

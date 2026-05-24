@@ -240,6 +240,7 @@ Recovery is SQLite-first:
 - MCP `/status` is scoped by runtime agent id and includes the agent's SQLite task context when one exists.
 - MCP prompts `executor-context` and `supervisor-review` are scoped by runtime agent id and prefer numbered task/run artifacts over legacy mirrors when a SQLite task context exists.
 - MCP resources for task run artifacts (`review`, `submission`, `question`, `answer`) are scoped by runtime agent id and prefer `.ferrus/runs/<task-id>/` files over legacy mirrors.
+- Active-task `/check` transitions mirror check retry/failure state into SQLite so DB task rows do not lag behind `STATE.json`.
 - `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 - Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.
