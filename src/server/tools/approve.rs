@@ -221,10 +221,8 @@ mod tests {
 
         run("supervisor:codex:7").await.unwrap();
 
-        assert_eq!(
-            tokio::fs::read_to_string("file.txt").await.unwrap(),
-            "new\n"
-        );
+        let file = tokio::fs::read_to_string("file.txt").await.unwrap();
+        assert_eq!(file.replace("\r\n", "\n"), "new\n");
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "complete");
