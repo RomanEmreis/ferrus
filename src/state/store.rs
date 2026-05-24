@@ -204,6 +204,14 @@ pub async fn write_patch_for_run_dir(run_dir: &str, content: &str) -> Result<()>
     write_path(&run_file(run_dir, "PATCH.diff"), content).await
 }
 
+pub async fn read_integration_error_for_run_dir(run_dir: &str) -> Result<String> {
+    read_path_or_empty(&run_file(run_dir, "INTEGRATION_ERROR.md")).await
+}
+
+pub async fn write_integration_error_for_run_dir(run_dir: &str, content: &str) -> Result<()> {
+    write_path(&run_file(run_dir, "INTEGRATION_ERROR.md"), content).await
+}
+
 /// Write a full check log to `.ferrus/logs/check_{attempt}_{ts}.txt`.
 /// Creates the logs directory if it doesn't exist. Returns the file path.
 pub async fn write_check_log(attempt: u32, ts: u64, content: &str) -> Result<PathBuf> {

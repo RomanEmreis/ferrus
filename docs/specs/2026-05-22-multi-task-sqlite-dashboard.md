@@ -242,12 +242,12 @@ Recovery is SQLite-first:
 - Isolated executor submissions persist `PATCH.diff`; review context exposes the patch; approval applies the patch to the canonical workspace before marking the task complete.
 - Worktrees are reused while a task is still active/addressing and removed after successful approval when the path is inside the managed project worktrees directory.
 - `ferrus recover --worktrees` previews or removes orphaned managed worktrees while preserving worktrees owned by active task rows or active run rows.
+- Failed canonical patch application during approval is recorded as `INTEGRATION_ERROR.md`, mirrored into SQLite `failure_reason` and runtime events, and returned by `/review_pending` so the reviewer can reject with concrete conflict details.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
 - Harden multi-executor scheduling beyond the initial post-`/run` launch path.
-- Improve integration conflict UX and recovery for rejected/failed patch application.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
 - Add multi-task ask-human queue handling.
 - Connect dashboard panels to real queued/running/reviewing task and run state.

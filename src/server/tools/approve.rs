@@ -83,7 +83,7 @@ async fn apply_approved_patch(context: &RuntimeTaskContext) -> Result<()> {
         .await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        anyhow::bail!(
+        let reason = format!(
             "Cannot approve task {} because its patch could not be applied to {}: {}",
             context.task_id,
             project_root.display(),
@@ -93,8 +93,28 @@ async fn apply_approved_patch(context: &RuntimeTaskContext) -> Result<()> {
                 stderr
             }
         );
+        write_integration_error(context, &reason).await?;
+        project::record_task_integration_failed_best_effort(
+            &context.task_id,
+            context.run_id.as_deref(),
+            &reason,
+        )
+        .await;
+        anyhow::bail!(
+            "{reason}\n\nIntegration error was saved to {}/INTEGRATION_ERROR.md. \
+             Reject this review with the conflict details so an Executor can address it.",
+            context.run_dir
+        );
     }
     Ok(())
+}
+
+async fn write_integration_error(context: &RuntimeTaskContext, reason: &str) -> Result<()> {
+    let content = format!(
+        "# Integration Error\n\nTask: {}\n\n{}\n\nSuggested next step: call `/reject` with these conflict details so the Executor can rebase or adjust the patch.\n",
+        context.task_id, reason
+    );
+    store::write_integration_error_for_run_dir(&context.run_dir, &content).await
 }
 
 async fn cleanup_approved_workspace_best_effort(context: &RuntimeTaskContext) {
@@ -292,6 +312,72 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "complete");
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn approve_patch_conflict_records_recoverable_integration_error() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        if !git(dir.path(), ["init"]).success() {
+            teardown(previous);
+            return;
+        }
+        tokio::fs::write("file.txt", "old\n").await.unwrap();
+        assert!(git(dir.path(), ["add", "file.txt"]).success());
+        assert!(
+            git(
+                dir.path(),
+                [
+                    "-c",
+                    "user.email=ferrus@example.invalid",
+                    "-c",
+                    "user.name=Ferrus",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+            )
+            .success()
+        );
+        tokio::fs::write("file.txt", "new\n").await.unwrap();
+        let patch = git_output(dir.path(), ["diff", "--binary", "HEAD", "--", "file.txt"]);
+        tokio::fs::write("file.txt", "conflicting local change\n")
+            .await
+            .unwrap();
+        assert!(!patch.trim().is_empty());
+
+        store::write_state(&StateData::default()).await.unwrap();
+        store::write_patch_for_run_dir(".ferrus/runs/t-007", &patch)
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let error = run("supervisor:codex:7").await.unwrap_err().to_string();
+
+        assert!(error.contains("INTEGRATION_ERROR.md"));
+        assert!(error.contains("Reject this review"));
+        let integration_error = store::read_integration_error_for_run_dir(".ferrus/runs/t-007")
+            .await
+            .unwrap();
+        assert!(integration_error.contains("Cannot approve task t-007"));
+        assert!(integration_error.contains("Suggested next step"));
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert!(
+            task.failure_reason
+                .as_deref()
+                .is_some_and(|reason| { reason.contains("patch could not be applied") })
+        );
 
         teardown(previous);
     }

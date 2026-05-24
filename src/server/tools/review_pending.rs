@@ -39,7 +39,8 @@ async fn run(agent_id: &str) -> Result<String> {
     }
     ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
 
-    let (task, submission, review, patch) = read_review_context(runtime_context.as_ref()).await?;
+    let (task, submission, review, patch, integration_error) =
+        read_review_context(runtime_context.as_ref()).await?;
 
     let mut response = format!("## Task\n\n{task}\n");
 
@@ -60,6 +61,14 @@ async fn run(agent_id: &str) -> Result<String> {
             response.push('\n');
         }
         response.push_str("```\n");
+    }
+
+    if !integration_error.trim().is_empty() {
+        response.push_str("\n## Integration Error\n\n");
+        response.push_str(&integration_error);
+        if !integration_error.ends_with('\n') {
+            response.push('\n');
+        }
     }
 
     let review_cycles = runtime_context
@@ -85,13 +94,14 @@ async fn run(agent_id: &str) -> Result<String> {
 
 async fn read_review_context(
     context: Option<&RuntimeTaskContext>,
-) -> Result<(String, String, String, String)> {
+) -> Result<(String, String, String, String, String)> {
     if let Some(context) = context {
         return Ok((
             store::read_task_at(&context.task_path).await?,
             store::read_submission_for_run_dir(&context.run_dir).await?,
             store::read_review_for_run_dir(&context.run_dir).await?,
             store::read_patch_for_run_dir(&context.run_dir).await?,
+            store::read_integration_error_for_run_dir(&context.run_dir).await?,
         ));
     }
 
@@ -99,6 +109,7 @@ async fn read_review_context(
         store::read_task().await?,
         store::read_submission().await?,
         store::read_review().await?,
+        String::new(),
         String::new(),
     ))
 }
@@ -171,6 +182,34 @@ mod tests {
         assert!(response.contains("## Implementation Patch"));
         assert!(response.contains("```diff"));
         assert!(response.contains("diff --git a/file.txt b/file.txt"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn review_pending_includes_scoped_integration_error() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        tokio::fs::write(".ferrus/tasks/t-007.md", "task body")
+            .await
+            .unwrap();
+        store::write_integration_error_for_run_dir(
+            ".ferrus/runs/t-007",
+            "# Integration Error\n\npatch failed\n",
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let response = run("supervisor:codex:7").await.unwrap();
+
+        assert!(response.contains("## Integration Error"));
+        assert!(response.contains("patch failed"));
 
         teardown(previous);
     }

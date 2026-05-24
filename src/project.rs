@@ -909,6 +909,45 @@ pub async fn record_task_check_passed(task_id: &str) -> Result<()> {
     .await?
 }
 
+pub async fn record_task_integration_failed(
+    task_id: &str,
+    run_id: Option<&str>,
+    failure_reason: &str,
+) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    let run_id = run_id.map(str::to_string);
+    let failure_reason = failure_reason.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        connection.execute(
+            "UPDATE tasks SET failure_reason = ?1 WHERE id = ?2",
+            params![failure_reason, task_id],
+        )?;
+        insert_event(
+            &connection,
+            run_id.as_deref(),
+            "task_integration_failed",
+            &serde_json::json!({
+                "task_id": task_id,
+                "failure_reason": failure_reason,
+            }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn record_task_integration_failed_best_effort(
+    task_id: &str,
+    run_id: Option<&str>,
+    failure_reason: &str,
+) {
+    if let Err(err) = record_task_integration_failed(task_id, run_id, failure_reason).await {
+        warn!(error = ?err, task_id, "failed to mirror task integration failure into ferrus.db");
+    }
+}
+
 pub async fn record_task_check_failed(
     task_id: &str,
     failure_reason: &str,
