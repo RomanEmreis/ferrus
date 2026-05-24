@@ -246,12 +246,12 @@ Recovery is SQLite-first:
 - HQ periodically reconciles SQLite runtime work: reaps exited headless handles, starts reviewers for reviewing DB tasks, and fills freed executor slots with pending DB tasks.
 - Review workers launched for DB tasks receive `FERRUS_TASK_ID` and claim that exact task instead of racing for the next available review.
 - Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
+- Dashboard runtime activity shows pending/running/reviewing/awaiting-human task rows before recent run rows.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
 - Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
-- Connect dashboard panels to real queued/running/reviewing task and run state.
 
 ## Milestones
 

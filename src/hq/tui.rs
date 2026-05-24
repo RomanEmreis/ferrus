@@ -1542,6 +1542,8 @@ fn activity_area_lines(app: &App, width: usize, max_lines: usize) -> Vec<Dashboa
     activity.reverse();
 
     if activity.is_empty() {
+        lines.extend(runtime_task_activity_lines(app, width, remaining));
+        let remaining = max_lines.saturating_sub(lines.len());
         lines.extend(app.runtime_runs.iter().take(remaining).map(|run| {
             DashboardLine::new(StyledLine::plain(
                 truncate_to_width(
@@ -1577,6 +1579,47 @@ fn activity_area_lines(app: &App, width: usize, max_lines: usize) -> Vec<Dashboa
 
     lines.truncate(max_lines);
     lines
+}
+
+fn runtime_task_activity_lines(app: &App, width: usize, max_lines: usize) -> Vec<DashboardLine> {
+    app.runtime_tasks
+        .iter()
+        .filter(|task| dashboard_task_status(task.status.as_str()))
+        .take(max_lines)
+        .map(|task| {
+            DashboardLine::new(StyledLine::plain(
+                truncate_to_width(&runtime_task_activity_text(task), width),
+                task_activity_color(task.status.as_str()),
+            ))
+        })
+        .collect()
+}
+
+fn runtime_task_activity_text(task: &TaskRecord) -> String {
+    let detail = task
+        .claimed_by
+        .as_deref()
+        .or(task.milestone_id.as_deref())
+        .or(task.spec_path.as_deref())
+        .unwrap_or(task.path.as_str());
+    format!("  {:<7} {:<14} {}", task.id, task.status, detail)
+}
+
+fn dashboard_task_status(status: &str) -> bool {
+    matches!(
+        status,
+        "pending" | "executing" | "addressing" | "reviewing" | "consultation" | "awaiting_human"
+    )
+}
+
+fn task_activity_color(status: &str) -> Color {
+    match status {
+        "pending" => Color::Yellow,
+        "awaiting_human" => Color::Magenta,
+        "reviewing" | "consultation" => Color::Cyan,
+        "executing" | "addressing" => Color::Green,
+        _ => Color::Grey,
+    }
 }
 
 fn push_activity_gap(lines: &mut Vec<DashboardLine>) {
@@ -3052,6 +3095,80 @@ mod tui_tests {
             .position(|line| line.contains("status output"))
             .unwrap();
         assert_eq!(rendered[activity_idx - 1], "");
+    }
+
+    #[test]
+    fn runtime_activity_shows_tasks_before_recent_runs() {
+        let mut app = App::new();
+        app.runtime_tasks = vec![
+            TaskRecord {
+                id: "t-005".into(),
+                path: ".ferrus/tasks/t-005.md".into(),
+                spec_path: Some("docs/specs/example.md".into()),
+                milestone_id: Some("m1.0".into()),
+                status: "pending".into(),
+                paused_status: None,
+                claimed_by: None,
+                lease_until: None,
+                last_heartbeat: None,
+                check_retries: 0,
+                review_cycles: 0,
+                failure_reason: None,
+            },
+            TaskRecord {
+                id: "t-006".into(),
+                path: ".ferrus/tasks/t-006.md".into(),
+                spec_path: None,
+                milestone_id: None,
+                status: "reviewing".into(),
+                paused_status: None,
+                claimed_by: Some("supervisor:codex:t-006".into()),
+                lease_until: None,
+                last_heartbeat: None,
+                check_retries: 0,
+                review_cycles: 0,
+                failure_reason: None,
+            },
+        ];
+        app.runtime_runs = vec![RunRecord {
+            id: "run-1".into(),
+            task_id: "t-006".into(),
+            role: "supervisor".into(),
+            agent: "supervisor:codex:t-006".into(),
+            status: "running".into(),
+            started_at: "2026-05-24T10:00:00Z".into(),
+            updated_at: "2026-05-24T10:00:01Z".into(),
+            pid: Some(123),
+            workspace_path: "/tmp/work".into(),
+        }];
+
+        let rendered = activity_area_lines(&app, 120, 10)
+            .into_iter()
+            .map(|line| {
+                line.line
+                    .segments
+                    .into_iter()
+                    .map(|segment| segment.text)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let pending_idx = rendered
+            .iter()
+            .position(|line| line.contains("t-005") && line.contains("pending"))
+            .unwrap();
+        let reviewing_idx = rendered
+            .iter()
+            .position(|line| line.contains("t-006") && line.contains("reviewing"))
+            .unwrap();
+        let run_idx = rendered
+            .iter()
+            .position(|line| line.contains("supervisor") && line.contains("running"))
+            .unwrap();
+
+        assert!(pending_idx < run_idx);
+        assert!(reviewing_idx < run_idx);
+        assert!(rendered[pending_idx].contains("m1.0"));
+        assert!(rendered[reviewing_idx].contains("supervisor:codex:t-006"));
     }
 
     #[test]
