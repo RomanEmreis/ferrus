@@ -65,6 +65,9 @@ enum Commands {
         /// Show pending recovery work without mutating ferrus.db or STATE.json
         #[arg(long)]
         dry_run: bool,
+        /// Also remove managed task worktrees that no active task or active run still owns
+        #[arg(long)]
+        worktrees: bool,
     },
     /// Inspect globally registered ferrus projects
     Projects {
@@ -119,7 +122,9 @@ impl Cli {
             }
             Some(Commands::Doctor) => commands::doctor::run().await,
             Some(Commands::Migrate) => commands::migrate::run().await,
-            Some(Commands::Recover { dry_run }) => commands::recover::run(dry_run).await,
+            Some(Commands::Recover { dry_run, worktrees }) => {
+                commands::recover::run(dry_run, worktrees).await
+            }
             Some(Commands::Projects { command }) => commands::projects::run(command).await,
             Some(Commands::Tasks { command }) => commands::tasks::run(command).await,
             Some(Commands::Runs { command }) => commands::runs::run(command).await,

@@ -2161,6 +2161,126 @@ pub async fn preview_runtime_recovery() -> Result<RuntimeRecovery> {
     preview_runtime_recovery_from(&database_path).await
 }
 
+pub async fn preview_orphaned_worktrees() -> Result<usize> {
+    Ok(orphaned_worktrees().await?.len())
+}
+
+pub async fn recover_orphaned_worktrees() -> Result<usize> {
+    let registration = touch_current_project().await?;
+    let project_root = PathBuf::from(&registration.metadata.workspace_dir);
+    let worktrees = orphaned_worktrees_for(&registration).await?;
+    let mut removed = 0usize;
+    for worktree in worktrees {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&project_root)
+            .args(["worktree", "remove", "--force"])
+            .arg(&worktree)
+            .output()
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to run git worktree remove for {}",
+                    worktree.display()
+                )
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!(
+                "Failed to remove orphaned worktree at {}: {}",
+                worktree.display(),
+                if stderr.is_empty() {
+                    output.status.to_string()
+                } else {
+                    stderr
+                }
+            );
+        }
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+async fn orphaned_worktrees() -> Result<Vec<PathBuf>> {
+    let registration = touch_current_project().await?;
+    orphaned_worktrees_for(&registration).await
+}
+
+async fn orphaned_worktrees_for(registration: &ProjectRegistration) -> Result<Vec<PathBuf>> {
+    let worktrees_dir = registration.data_dir.join("worktrees");
+    if !tokio::fs::try_exists(&worktrees_dir).await? {
+        return Ok(Vec::new());
+    }
+
+    let protected_task_ids = protected_worktree_task_ids(&registration.database_path).await?;
+    let protected_paths = protected_worktree_paths(&registration.database_path).await?;
+    let mut entries = tokio::fs::read_dir(&worktrees_dir)
+        .await
+        .with_context(|| format!("Failed to read {}", worktrees_dir.display()))?;
+    let mut orphaned = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let task_id = entry.file_name().to_string_lossy().to_string();
+        let canonical_path = tokio::fs::canonicalize(&path)
+            .await
+            .unwrap_or_else(|_| path.clone());
+        if protected_task_ids.contains(&task_id) || protected_paths.contains(&canonical_path) {
+            continue;
+        }
+        orphaned.push(path);
+    }
+    orphaned.sort();
+    Ok(orphaned)
+}
+
+async fn protected_worktree_task_ids(
+    database_path: &Path,
+) -> Result<std::collections::HashSet<String>> {
+    let database_path = database_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<std::collections::HashSet<String>> {
+        let connection = open_runtime_database(&database_path)?;
+        let mut statement = connection.prepare(
+            "SELECT id FROM tasks WHERE status NOT IN ('idle', 'reset', 'complete', 'failed')",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut task_ids = std::collections::HashSet::new();
+        for row in rows {
+            task_ids.insert(row?);
+        }
+        Ok(task_ids)
+    })
+    .await?
+}
+
+async fn protected_worktree_paths(
+    database_path: &Path,
+) -> Result<std::collections::HashSet<PathBuf>> {
+    let database_path = database_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<std::collections::HashSet<PathBuf>> {
+        let connection = open_runtime_database(&database_path)?;
+        let mut statement = connection.prepare(
+            "SELECT workspace_path, pid FROM runs WHERE status IN ('running', 'checking', 'reviewing')",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })?;
+        let mut paths = std::collections::HashSet::new();
+        for row in rows {
+            let (workspace_path, pid) = row?;
+            if pid.is_none_or(|pid| !process_is_alive(pid as u32)) {
+                continue;
+            }
+            let path = PathBuf::from(workspace_path);
+            paths.insert(std::fs::canonicalize(&path).unwrap_or(path));
+        }
+        Ok(paths)
+    })
+    .await?
+}
+
 async fn preview_runtime_recovery_from(database_path: &Path) -> Result<RuntimeRecovery> {
     Ok(RuntimeRecovery {
         interrupted_runs: preview_interrupted_runs(database_path).await?,
@@ -3580,6 +3700,72 @@ mod tests {
                 .iter()
                 .any(|event| { event.event_type == "state_lease_mirror_cleared" })
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn preview_orphaned_worktrees_ignores_active_tasks_and_runs() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup_project().await;
+        let workspace = dir.path();
+        let worktrees_dir = workspace.join(".ferrus/projects/test-project/worktrees");
+        tokio::fs::create_dir_all(worktrees_dir.join("t-active"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(worktrees_dir.join("t-run"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(worktrees_dir.join("t-orphan"))
+            .await
+            .unwrap();
+
+        record_task_status("t-active", ".ferrus/tasks/t-active.md", "addressing")
+            .await
+            .unwrap();
+        let run = record_run_started_with_workspace(
+            "executor-run-t-run",
+            "executor",
+            "executor:codex:t-run",
+            std::process::id(),
+            path_string(&worktrees_dir.join("t-run")),
+        )
+        .await
+        .unwrap();
+        record_task_status("t-run", ".ferrus/tasks/t-run.md", "complete")
+            .await
+            .unwrap();
+        let attached =
+            attach_running_run_to_task("executor:codex:t-run", "t-run", ".ferrus/tasks/t-run.md")
+                .await
+                .unwrap();
+        assert_eq!(attached.as_deref(), Some(run.id.as_str()));
+
+        let registration = ProjectRegistration {
+            local_ref: LocalProjectRef {
+                project_id: "test-project".to_string(),
+                name: "test".to_string(),
+                data_dir: path_string(&workspace.join(".ferrus/projects/test-project")),
+            },
+            metadata: ProjectMetadata {
+                id: "test-project".to_string(),
+                name: "test".to_string(),
+                workspace_dir: path_string(workspace),
+                ferrus_dir: path_string(&workspace.join(".ferrus")),
+                vcs: None,
+                origin_repo: None,
+                default_branch: None,
+                current_head: None,
+                created_at: "2026-05-16T10:00:00Z".to_string(),
+                last_opened_at: "2026-05-16T10:00:00Z".to_string(),
+                version: PROJECT_VERSION,
+            },
+            data_dir: workspace.join(".ferrus/projects/test-project"),
+            database_path: workspace.join(".ferrus/projects/test-project/ferrus.db"),
+        };
+        let orphaned = orphaned_worktrees_for(&registration).await.unwrap();
+
+        assert_eq!(orphaned, vec![worktrees_dir.join("t-orphan")]);
 
         teardown(previous);
     }

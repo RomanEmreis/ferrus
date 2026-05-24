@@ -279,6 +279,7 @@ ferrus doctor                                   # verify project metadata, artif
 ferrus projects list                            # inspect ~/.ferrus project registry
 ferrus recover                                  # recover interrupted runs and stale leases
 ferrus recover --dry-run                        # preview recovery without mutating runtime state
+ferrus recover --worktrees                      # remove orphaned managed task worktrees
 ferrus tasks list                               # inspect SQLite task runtime rows
 ferrus runs list                                # inspect SQLite run attempts
 ferrus events list                              # inspect SQLite runtime events
