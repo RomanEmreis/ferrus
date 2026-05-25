@@ -8,7 +8,10 @@ use crate::{
     agent_id::ENV_PROJECT_ROOT,
     config::Config,
     project::{self, RuntimeTaskContext, TaskCheckFailure},
-    state::{machine::TaskState, machine::TransitionError, store},
+    state::{
+        machine::{StateData, TaskState, TransitionError},
+        store,
+    },
 };
 
 use super::{
@@ -50,40 +53,52 @@ pub async fn handler_for_agent(agent_id: &str, content: String) -> Result<String
 
 async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_context(agent_id).await;
+    let mut state = store::read_state().await.ok();
 
-    if !matches!(state.state, TaskState::Executing | TaskState::Addressing)
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("executing" | "addressing")
-        )
-    {
+    let context_is_working = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("executing" | "addressing")
+    );
+    let state_is_working = state
+        .as_ref()
+        .is_some_and(|state| matches!(state.state, TaskState::Executing | TaskState::Addressing));
+    if !context_is_working && !state_is_working {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
         anyhow::bail!(
-            "Cannot submit from state {:?}. Submit is only valid from Executing or Addressing after the implementation is ready.",
-            state.state
+            "Cannot submit from state {current_state}. Submit is only valid from Executing or Addressing after the implementation is ready.",
         );
     }
     if let Some(agent_id) = agent_id {
-        ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+        let state_for_lease = state.get_or_insert_with(StateData::default);
+        ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
     }
-    let use_legacy_state = should_use_legacy_state(&state, runtime_context.as_ref());
+    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
 
     if config.checks.commands.is_empty() {
         info!("No check commands configured; treating final check gate as pass");
         if use_legacy_state {
+            let state = state.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("Cannot submit legacy state: STATE.json is missing")
+            })?;
             state.check_passed()?;
             state.submit()?;
         } else if let Some(context) = runtime_context.as_ref() {
             project::record_task_check_passed(&context.task_id).await?;
         }
-        write_submission(&state, runtime_context.as_ref(), &content).await?;
+        write_submission(state.as_ref(), runtime_context.as_ref(), &content).await?;
         write_submission_patch(runtime_context.as_ref()).await?;
         if use_legacy_state {
-            store::write_state(&state).await?;
-            mirror_check_state(runtime_context.as_ref(), &state).await?;
+            let state = state.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Cannot submit legacy state: STATE.json is missing")
+            })?;
+            store::write_state(state).await?;
+            mirror_check_state(runtime_context.as_ref(), state).await?;
         }
         record_task_status(runtime_context.as_ref(), "reviewing").await;
         project::record_runtime_event_best_effort(
@@ -103,7 +118,10 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
 
     info!("Running final check gate before review submission");
     let attempt = if use_legacy_state {
-        state.check_retries + 1
+        state
+            .as_ref()
+            .map(|state| state.check_retries + 1)
+            .unwrap_or(1)
     } else {
         runtime_context
             .as_ref()
@@ -113,16 +131,22 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     match check_gate::run(&config, attempt).await? {
         CheckGateResult::Passed => {
             if use_legacy_state {
+                let state = state.as_mut().ok_or_else(|| {
+                    anyhow::anyhow!("Cannot submit legacy state: STATE.json is missing")
+                })?;
                 state.check_passed()?;
                 state.submit()?;
             } else if let Some(context) = runtime_context.as_ref() {
                 project::record_task_check_passed(&context.task_id).await?;
             }
-            write_submission(&state, runtime_context.as_ref(), &content).await?;
+            write_submission(state.as_ref(), runtime_context.as_ref(), &content).await?;
             write_submission_patch(runtime_context.as_ref()).await?;
             if use_legacy_state {
-                store::write_state(&state).await?;
-                mirror_check_state(runtime_context.as_ref(), &state).await?;
+                let state = state.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("Cannot submit legacy state: STATE.json is missing")
+                })?;
+                store::write_state(state).await?;
+                mirror_check_state(runtime_context.as_ref(), state).await?;
             }
             record_task_status(runtime_context.as_ref(), "reviewing").await;
             project::record_runtime_event_best_effort(
@@ -190,10 +214,13 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
                     }
                 };
             }
+            let state = state.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("Cannot submit legacy state: STATE.json is missing")
+            })?;
             match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
                 Ok(()) => {
-                    store::write_state(&state).await?;
-                    mirror_check_state(runtime_context.as_ref(), &state).await?;
+                    store::write_state(state).await?;
+                    mirror_check_state(runtime_context.as_ref(), state).await?;
                     project::record_runtime_event_best_effort(
                         None,
                         "submit_check_failed",
@@ -213,8 +240,8 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
                     ))
                 }
                 Err(TransitionError::CheckLimitExceeded { retries }) => {
-                    store::write_state(&state).await?;
-                    mirror_check_state(runtime_context.as_ref(), &state).await?;
+                    store::write_state(state).await?;
+                    mirror_check_state(runtime_context.as_ref(), state).await?;
                     record_task_status(runtime_context.as_ref(), "failed").await;
                     project::record_runtime_event_best_effort(
                         runtime_context
@@ -246,13 +273,15 @@ async fn runtime_context(agent_id: Option<&str>) -> Option<RuntimeTaskContext> {
 }
 
 async fn write_submission(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     content: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_submission_for_run_dir(&context.run_dir, content).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if let Some(state) = state
+            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        {
             store::write_submission_for_state(state, content).await?;
         }
         return Ok(());
@@ -348,12 +377,14 @@ async fn mirror_check_state(
 }
 
 fn should_use_legacy_state(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -542,6 +573,57 @@ mod tests {
         let state = store::read_state().await.unwrap();
         assert_eq!(state.state, TaskState::Executing);
         assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn submit_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::record_task_check_failed("t-007", "fmt failed", 2)
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run(
+            Some("executor:codex:7"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(store::read_state().await.is_err());
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-007/SUBMISSION.md")
+                .await
+                .unwrap(),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n"
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.failure_reason, None);
+        assert_eq!(task.claimed_by, None);
 
         teardown(previous);
     }

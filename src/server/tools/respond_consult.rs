@@ -4,7 +4,10 @@ use tracing::info;
 
 use crate::{
     project::{self, RuntimeTaskContext},
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::{runtime_task_context_for_agent_best_effort, tool_err};
@@ -31,7 +34,7 @@ async fn run(agent_id: Option<&str>, response: String) -> Result<String> {
         anyhow::bail!("Consultation response cannot be empty.");
     }
 
-    let state = store::read_state().await?;
+    let state = store::read_state().await.ok();
     let runtime_context = match agent_id {
         Some(agent_id) => runtime_task_context_for_agent_best_effort(agent_id)
             .await
@@ -51,33 +54,40 @@ async fn run(agent_id: Option<&str>, response: String) -> Result<String> {
         None => None,
     };
 
-    if state.state != TaskState::Consultation
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("consultation")
-        )
-    {
+    let context_is_consultation = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("consultation")
+    );
+    let state_is_consultation = state
+        .as_ref()
+        .is_some_and(|state| state.state == TaskState::Consultation);
+    if !context_is_consultation && !state_is_consultation {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
         anyhow::bail!(
-            "Cannot respond to consultation from state {:?}. /respond_consult is only valid in Consultation state.",
-            state.state
+            "Cannot respond to consultation from state {current_state}. /respond_consult is only valid in Consultation state.",
         );
     }
 
-    write_consult_response(&state, runtime_context.as_ref(), &response).await?;
+    write_consult_response(state.as_ref(), runtime_context.as_ref(), &response).await?;
     info!("Consultation response recorded");
     Ok("Consultation response recorded in `.ferrus/CONSULT_RESPONSE.md`.".to_string())
 }
 
 async fn write_consult_response(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     response: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_consult_response_for_run_dir(&context.run_dir, response).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if let Some(state) = state
+            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        {
             store::write_consult_response(response).await?;
         }
         return Ok(());
@@ -161,6 +171,41 @@ mod tests {
                 .await
                 .unwrap_or_default(),
             ""
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn respond_consult_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+        crate::project::record_task_consultation_requested("t-007", "executing")
+            .await
+            .unwrap();
+        crate::project::record_run_started("supervisor", "supervisor:codex:1", std::process::id())
+            .await
+            .unwrap();
+        crate::project::attach_running_run_to_next_consultation("supervisor:codex:1")
+            .await
+            .unwrap();
+
+        run(Some("supervisor:codex:1"), "Use option A.".to_string())
+            .await
+            .unwrap();
+
+        assert!(store::read_state().await.is_err());
+        assert_eq!(
+            store::read_consult_response_for_run_dir(".ferrus/runs/t-007")
+                .await
+                .unwrap(),
+            "Use option A."
         );
 
         teardown(previous);

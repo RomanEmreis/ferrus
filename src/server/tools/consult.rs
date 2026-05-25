@@ -4,7 +4,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext},
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
@@ -33,31 +36,40 @@ pub async fn handler_for_agent(
 
 async fn run(agent_id: &str, question: String) -> Result<String> {
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    if !matches!(state.state, TaskState::Executing | TaskState::Addressing)
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("executing" | "addressing")
-        )
-    {
+    let mut state = store::read_state().await.ok();
+    let context_is_working = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("executing" | "addressing")
+    );
+    let state_is_working = state
+        .as_ref()
+        .is_some_and(|state| matches!(state.state, TaskState::Executing | TaskState::Addressing));
+    if !context_is_working && !state_is_working {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
         anyhow::bail!(
-            "Cannot consult from state {:?}. Consultation is only available while executing work.",
-            state.state
+            "Cannot consult from state {current_state}. Consultation is only available while executing work.",
         );
     }
-    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+    let state_for_lease = state.get_or_insert_with(StateData::default);
+    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
 
     validate_consult_request(&question)?;
 
-    write_consult_request(&state, runtime_context.as_ref(), &question).await?;
-    clear_consult_response(&state, runtime_context.as_ref()).await?;
-    let use_legacy_state = should_use_legacy_state(&state, runtime_context.as_ref());
+    write_consult_request(state.as_ref(), runtime_context.as_ref(), &question).await?;
+    clear_consult_response(state.as_ref(), runtime_context.as_ref()).await?;
+    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
     let paused = if use_legacy_state {
+        let state = state
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Cannot consult legacy state: STATE.json is missing"))?;
         let paused = state.consult()?;
-        store::write_state(&state).await?;
+        store::write_state(state).await?;
         if let Some(context) = runtime_context.as_ref() {
             project::record_task_consultation_requested(
                 &context.task_id,
@@ -83,13 +95,15 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
 }
 
 async fn write_consult_request(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     question: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_consult_request_for_run_dir(&context.run_dir, question).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if let Some(state) = state
+            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        {
             store::write_consult_request(question).await?;
         }
         return Ok(());
@@ -98,12 +112,14 @@ async fn write_consult_request(
 }
 
 async fn clear_consult_response(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> Result<()> {
     if let Some(context) = context {
         store::clear_consult_response_for_run_dir(&context.run_dir).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if let Some(state) = state
+            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        {
             store::clear_consult_response().await?;
         }
         return Ok(());
@@ -138,12 +154,14 @@ fn validate_consult_request(question: &str) -> Result<()> {
 }
 
 fn should_use_legacy_state(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -232,6 +250,36 @@ mod tests {
         let state = store::read_state().await.unwrap();
         assert_eq!(state.state, TaskState::Executing);
         assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "consultation");
+        assert_eq!(task.paused_status.as_deref(), Some("executing"));
+        assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn consult_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+        let request = "## Problem\nNeed design input.\n\n## What I tried\nCompared options.\n\n## Options (if any)\n- A\n\n## Question\nWhich option?\n";
+
+        run("executor:codex:7", request.to_string()).await.unwrap();
+
+        assert!(store::read_state().await.is_err());
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-007/CONSULT_REQUEST.md")
+                .await
+                .unwrap(),
+            request
+        );
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "consultation");

@@ -7,7 +7,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext, TaskConsultRestore},
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::{
@@ -28,26 +31,35 @@ async fn run(agent_id: &str) -> Result<String> {
     let timeout = Duration::from_secs(config.limits.wait_timeout_secs);
     let start = Instant::now();
 
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    if state.state != TaskState::Consultation
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("consultation")
-        )
-    {
+    let mut state = store::read_state().await.ok();
+    let context_is_consultation = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("consultation")
+    );
+    let state_is_consultation = state
+        .as_ref()
+        .is_some_and(|state| state.state == TaskState::Consultation);
+    if !context_is_consultation && !state_is_consultation {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
         anyhow::bail!(
-            "Cannot wait for consultation from state {:?}. Call /consult first.",
-            state.state
+            "Cannot wait for consultation from state {current_state}. Call /consult first.",
         );
     }
-    let use_legacy_state = should_use_legacy_state(&state, runtime_context.as_ref());
+    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
     if use_legacy_state {
-        ensure_lease_identity(&state, agent_id)?;
+        let state = state.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Cannot wait for legacy consultation: STATE.json is missing")
+        })?;
+        ensure_lease_identity(state, agent_id)?;
     } else {
-        ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+        let state_for_lease = state.get_or_insert_with(StateData::default);
+        ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
     }
 
     loop {
@@ -120,12 +132,14 @@ async fn read_consult_response(
 }
 
 fn should_use_legacy_state(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -219,6 +233,36 @@ mod tests {
                 .unwrap(),
             ""
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_consult_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "addressing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+        crate::project::record_task_consultation_requested("t-007", "addressing")
+            .await
+            .unwrap();
+        store::write_consult_response_for_run_dir(".ferrus/runs/t-007", "answer\n")
+            .await
+            .unwrap();
+
+        let response = run("executor:codex:7").await.unwrap();
+
+        assert_eq!(response, "answer");
+        assert!(store::read_state().await.is_err());
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "addressing");
+        assert_eq!(task.paused_status, None);
+        assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));
 
         teardown(previous);
     }

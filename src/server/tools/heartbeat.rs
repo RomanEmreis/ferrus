@@ -42,7 +42,7 @@ async fn run(agent_id: &str) -> Result<String> {
     })
     .await??;
 
-    let mut state = store::read_state().await?;
+    let mut state = store::read_state().await.ok();
 
     let db_renewal = match project::renew_claimed_task_lease(agent_id, ttl_secs).await {
         Ok(LeaseRenewal::NotClaimed) => project::renew_current_task_lease(agent_id, ttl_secs).await,
@@ -56,11 +56,13 @@ async fn run(agent_id: &str) -> Result<String> {
             claimed_by,
             lease_until,
         }) => {
-            if state.active_task_id.as_deref() == Some(task_id.as_str()) {
+            if let Some(state) = state.as_mut()
+                && state.active_task_id.as_deref() == Some(task_id.as_str())
+            {
                 state.claimed_by = Some(claimed_by.clone());
                 state.lease_until = Some(lease_until);
                 state.last_heartbeat = Some(chrono::Utc::now());
-                store::write_state(&state).await?;
+                store::write_state(state).await?;
             }
             drop(lock_file);
 
@@ -110,6 +112,15 @@ async fn run(agent_id: &str) -> Result<String> {
     }
 
     // State fallback is only for the compatibility state-machine mirror.
+    let Some(mut state) = state else {
+        drop(lock_file);
+        return Ok(json!({
+            "status": "error",
+            "code": "not_claimed",
+            "message": "No active lease exists"
+        })
+        .to_string());
+    };
     if !LEASABLE_STATES.contains(&state.state) {
         drop(lock_file);
         return Ok(json!({
@@ -165,4 +176,68 @@ async fn run(agent_id: &str) -> Result<String> {
         "lease_until": renewed_until,
     })
     .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
+        std::fs::write(dir.path().join(".ferrus/STATE.lock"), "").unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 1\n\n[lease]\nttl_secs = 60\n",
+        )
+        .await
+        .unwrap();
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn heartbeat_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let response: serde_json::Value =
+            serde_json::from_str(&run("executor:codex:7").await.unwrap()).unwrap();
+
+        assert_eq!(response["status"], "renewed");
+        assert_eq!(response["task_id"], "t-007");
+        assert!(store::read_state().await.is_err());
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));
+        assert!(task.lease_until.is_some());
+        assert!(task.last_heartbeat.is_some());
+
+        teardown(previous);
+    }
 }

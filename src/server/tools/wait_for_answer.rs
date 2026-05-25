@@ -8,7 +8,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext, TaskHumanAnswerRestore},
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::{
@@ -29,19 +32,27 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 }
 
 async fn run(agent_id: &str) -> Result<String> {
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let use_legacy_state = should_use_legacy_state(&state, runtime_context.as_ref());
-    if use_legacy_state && state.state != TaskState::AwaitingHuman {
-        anyhow::bail!(
-            "Cannot wait for answer from state {:?}; expected AwaitingHuman",
-            state.state
-        );
+    let mut state = store::read_state().await.ok();
+    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
+    if use_legacy_state {
+        let state = state.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Cannot wait for legacy answer: STATE.json is missing")
+        })?;
+        if state.state != TaskState::AwaitingHuman {
+            anyhow::bail!(
+                "Cannot wait for answer from state {:?}; expected AwaitingHuman",
+                state.state
+            );
+        }
     }
 
     let config = Config::load().await?;
     if use_legacy_state {
-        ensure_answer_waiter(&state, agent_id)?;
+        let state = state.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Cannot wait for legacy answer: STATE.json is missing")
+        })?;
+        ensure_answer_waiter(state, agent_id)?;
     } else if let Some(context) = runtime_context.as_ref() {
         if context.status != "awaiting_human" {
             anyhow::bail!(
@@ -117,7 +128,7 @@ async fn run(agent_id: &str) -> Result<String> {
 }
 
 async fn ensure_scoped_answer_waiter(
-    state: &mut crate::state::machine::StateData,
+    state: &mut Option<StateData>,
     context: &RuntimeTaskContext,
     agent_id: &str,
     ttl_secs: u64,
@@ -128,6 +139,7 @@ async fn ensure_scoped_answer_waiter(
         }
         anyhow::bail!("Cannot wait for answer: question was asked by {owner}, not {agent_id}");
     }
+    let state = state.get_or_insert_with(StateData::default);
     ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
 }
 
@@ -145,12 +157,14 @@ async fn read_answer(
 }
 
 fn should_use_legacy_state(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -241,6 +255,48 @@ mod tests {
                 .await
                 .unwrap(),
             ""
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_answer_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+        crate::project::record_task_human_question_requested(
+            "t-007",
+            "executing",
+            "executor:codex:7",
+        )
+        .await
+        .unwrap();
+        store::write_answer_for_run_dir(".ferrus/runs/t-007", "Use the stable path.")
+            .await
+            .unwrap();
+
+        let response = run("executor:codex:7").await.unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["status"], "answered");
+        assert_eq!(response["answer"], "Use the stable path.");
+        assert_eq!(response["resumed_state"], "executing");
+        assert!(store::read_state().await.is_err());
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "executing");
+        assert_eq!(task.paused_status, None);
+        assert_eq!(
+            crate::project::task_human_question_owner("t-007")
+                .await
+                .unwrap(),
+            None
         );
 
         teardown(previous);

@@ -37,8 +37,8 @@ pub async fn handler_for_agent(
 
 async fn run(agent_id: &str, question: String) -> Result<String> {
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
+    let mut state = store::read_state().await.ok();
     ensure_can_ask_human(
         &mut state,
         runtime_context.as_ref(),
@@ -47,14 +47,17 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
     )
     .await?;
 
-    write_question(&state, runtime_context.as_ref(), &question).await?;
-    clear_answer(&state, runtime_context.as_ref()).await?;
+    write_question(state.as_ref(), runtime_context.as_ref(), &question).await?;
+    clear_answer(state.as_ref(), runtime_context.as_ref()).await?;
 
-    let use_legacy_state = should_use_legacy_state(&state, runtime_context.as_ref());
+    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
     let paused = if use_legacy_state {
+        let state = state.as_mut().ok_or_else(|| {
+            anyhow::anyhow!("Cannot ask human for legacy state: STATE.json is missing")
+        })?;
         let paused = state.ask_human()?;
         state.awaiting_human_by = Some(agent_id.to_string());
-        store::write_state(&state).await?;
+        store::write_state(state).await?;
         if let Some(context) = runtime_context.as_ref() {
             project::record_task_human_question_requested(
                 &context.task_id,
@@ -82,38 +85,47 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
 }
 
 async fn ensure_can_ask_human(
-    state: &mut StateData,
+    state: &mut Option<StateData>,
     context: Option<&RuntimeTaskContext>,
     agent_id: &str,
     ttl_secs: u64,
 ) -> Result<()> {
-    if !can_ask_from_state_or_context(state, context) {
+    if !can_ask_from_state_or_context(state.as_ref(), context) {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
         anyhow::bail!(
-            "Cannot ask human from state {:?}. /ask_human is only available while active work is in progress.",
-            state.state
+            "Cannot ask human from state {current_state}. /ask_human is only available while active work is in progress.",
         );
     }
-    if can_supervisor_ask_during_consultation(state, context, agent_id) {
+    if can_supervisor_ask_during_consultation(state.as_ref(), context, agent_id) {
         return Ok(());
     }
+    let state = state.get_or_insert_with(StateData::default);
     ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
 }
 
-fn can_ask_from_state_or_context(state: &StateData, context: Option<&RuntimeTaskContext>) -> bool {
-    matches!(
-        state.state,
-        TaskState::Executing
-            | TaskState::Addressing
-            | TaskState::Consultation
-            | TaskState::Reviewing
-    ) || matches!(
+fn can_ask_from_state_or_context(
+    state: Option<&StateData>,
+    context: Option<&RuntimeTaskContext>,
+) -> bool {
+    state.is_some_and(|state| {
+        matches!(
+            state.state,
+            TaskState::Executing
+                | TaskState::Addressing
+                | TaskState::Consultation
+                | TaskState::Reviewing
+        )
+    }) || matches!(
         context.map(|context| context.status.as_str()),
         Some("executing" | "addressing" | "consultation" | "reviewing")
     )
 }
 
 fn can_supervisor_ask_during_consultation(
-    state: &StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     agent_id: &str,
 ) -> bool {
@@ -121,7 +133,7 @@ fn can_supervisor_ask_during_consultation(
         return false;
     }
     if should_use_legacy_state(state, context) {
-        return state.state == TaskState::Consultation;
+        return state.is_some_and(|state| state.state == TaskState::Consultation);
     }
     matches!(
         context.map(|context| context.status.as_str()),
@@ -130,13 +142,15 @@ fn can_supervisor_ask_during_consultation(
 }
 
 async fn write_question(
-    state: &StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     question: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_question_for_run_dir(&context.run_dir, question).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if let Some(state) = state
+            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        {
             store::write_question(question).await?;
         }
         return Ok(());
@@ -144,10 +158,15 @@ async fn write_question(
     store::write_question(question).await
 }
 
-async fn clear_answer(state: &StateData, context: Option<&RuntimeTaskContext>) -> Result<()> {
+async fn clear_answer(
+    state: Option<&StateData>,
+    context: Option<&RuntimeTaskContext>,
+) -> Result<()> {
     if let Some(context) = context {
         store::clear_answer_for_run_dir(&context.run_dir).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if let Some(state) = state
+            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        {
             store::clear_answer().await?;
         }
         return Ok(());
@@ -155,10 +174,15 @@ async fn clear_answer(state: &StateData, context: Option<&RuntimeTaskContext>) -
     store::clear_answer().await
 }
 
-fn should_use_legacy_state(state: &StateData, context: Option<&RuntimeTaskContext>) -> bool {
+fn should_use_legacy_state(
+    state: Option<&StateData>,
+    context: Option<&RuntimeTaskContext>,
+) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -250,6 +274,43 @@ mod tests {
         assert_eq!(task.status, "awaiting_human");
         assert_eq!(task.paused_status.as_deref(), Some("executing"));
         assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn ask_human_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run("executor:codex:7", "Which path should I take?".to_string())
+            .await
+            .unwrap();
+
+        assert!(store::read_state().await.is_err());
+        assert_eq!(
+            store::read_question_for_run_dir(".ferrus/runs/t-007")
+                .await
+                .unwrap(),
+            "Which path should I take?"
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "awaiting_human");
+        assert_eq!(task.paused_status.as_deref(), Some("executing"));
+        assert_eq!(
+            crate::project::task_human_question_owner("t-007")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("executor:codex:7")
+        );
 
         teardown(previous);
     }
