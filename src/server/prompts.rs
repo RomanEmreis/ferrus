@@ -10,18 +10,12 @@ fn to_err(e: impl std::fmt::Display) -> Error {
 }
 
 pub async fn executor_context_for_agent(agent_id: Option<&str>) -> Result<GetPromptResult, Error> {
-    let state = store::read_state().await.map_err(to_err)?;
     let runtime_context = runtime_context(agent_id).await.map_err(to_err)?;
+    let state = store::read_state().await.ok();
     let task = read_task(runtime_context.as_ref()).await.map_err(to_err)?;
 
     let mut sections = vec![
-        state_section(
-            "State",
-            &format!("{:?}", state.state),
-            state.check_retries,
-            state.review_cycles,
-            runtime_context.as_ref(),
-        ),
+        state_section("State", state.as_ref(), runtime_context.as_ref()).map_err(to_err)?,
         format!("## Task\n\n{task}"),
     ];
 
@@ -38,18 +32,12 @@ pub async fn executor_context_for_agent(agent_id: Option<&str>) -> Result<GetPro
 }
 
 pub async fn supervisor_review_for_agent(agent_id: Option<&str>) -> Result<GetPromptResult, Error> {
-    let state = store::read_state().await.map_err(to_err)?;
     let runtime_context = runtime_context(agent_id).await.map_err(to_err)?;
+    let state = store::read_state().await.ok();
     let task = read_task(runtime_context.as_ref()).await.map_err(to_err)?;
 
     let mut sections = vec![
-        state_section(
-            "State",
-            &format!("{:?}", state.state),
-            state.check_retries,
-            state.review_cycles,
-            runtime_context.as_ref(),
-        ),
+        state_section("State", state.as_ref(), runtime_context.as_ref()).map_err(to_err)?,
         format!("## Task\n\n{task}"),
     ];
 
@@ -95,13 +83,28 @@ async fn read_submission(context: Option<&RuntimeTaskContext>) -> anyhow::Result
 
 fn state_section(
     title: &str,
-    state: &str,
-    check_retries: u32,
-    review_cycles: u32,
+    state: Option<&crate::state::machine::StateData>,
     context: Option<&RuntimeTaskContext>,
-) -> String {
+) -> anyhow::Result<String> {
+    let (state_label, check_retries, review_cycles) = if let Some(context) = context {
+        (
+            context.status.clone(),
+            context.check_retries,
+            context.review_cycles,
+        )
+    } else if let Some(state) = state {
+        (
+            format!("{:?}", state.state),
+            state.check_retries,
+            state.review_cycles,
+        )
+    } else {
+        anyhow::bail!(
+            "Cannot build prompt state: no SQLite runtime task context and STATE.json is unavailable"
+        );
+    };
     let mut lines = vec![format!(
-        "## {title}\n\nCurrent state: **{state}** | Check retries: {check_retries} | Review cycles: {review_cycles}"
+        "## {title}\n\nCurrent state: **{state_label}** | Check retries: {check_retries} | Review cycles: {review_cycles}"
     )];
     if let Some(context) = context {
         lines.push(format!(
@@ -115,7 +118,7 @@ fn state_section(
             lines.push(format!("Workspace: `{workspace_path}`"));
         }
     }
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -188,6 +191,7 @@ mod tests {
 
         assert!(text.contains("scoped task"));
         assert!(text.contains("scoped review"));
+        assert!(text.contains("Current state: **addressing**"));
         assert!(text.contains("Agent task: **t-007**"));
         assert!(!text.contains("legacy task"));
         teardown(previous);
@@ -221,8 +225,37 @@ mod tests {
 
         assert!(text.contains("review task"));
         assert!(text.contains("scoped submission"));
+        assert!(text.contains("Current state: **reviewing**"));
         assert!(text.contains("Agent task: **t-007**"));
         assert!(!text.contains("legacy task"));
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn executor_prompt_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/tasks/t-007.md", "scoped task")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let text = prompt_text(
+            executor_context_for_agent(Some("executor:codex:7"))
+                .await
+                .unwrap(),
+        );
+
+        assert!(text.contains("Current state: **executing**"));
+        assert!(text.contains("scoped task"));
         teardown(previous);
     }
 }

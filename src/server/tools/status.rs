@@ -13,20 +13,44 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 }
 
 async fn run(agent_id: Option<&str>) -> Result<String> {
-    let state = store::read_state().await?;
+    let context = match agent_id {
+        Some(agent_id) => project::runtime_task_context_for_agent(agent_id).await?,
+        None => None,
+    };
+    let state = store::read_state().await.ok();
 
-    let mut lines = vec![
-        format!("**State:** {:?}", state.state),
-        format!("**Check retries:** {}", state.check_retries),
-        format!("**Review cycles:** {}", state.review_cycles),
-    ];
+    let mut lines = if let Some(context) = context.as_ref() {
+        vec![
+            format!("**State:** {}", context.status),
+            format!("**Check retries:** {}", context.check_retries),
+            format!("**Review cycles:** {}", context.review_cycles),
+        ]
+    } else if let Some(state) = state.as_ref() {
+        vec![
+            format!("**State:** {:?}", state.state),
+            format!("**Check retries:** {}", state.check_retries),
+            format!("**Review cycles:** {}", state.review_cycles),
+        ]
+    } else {
+        anyhow::bail!(
+            "Cannot read status: no SQLite runtime task context and STATE.json is unavailable"
+        );
+    };
 
-    if let Some(reason) = &state.failure_reason {
+    if let Some(reason) = context
+        .as_ref()
+        .and_then(|context| context.failure_reason.as_ref())
+        .or_else(|| {
+            state
+                .as_ref()
+                .and_then(|state| state.failure_reason.as_ref())
+        })
+    {
         lines.push(format!("**Failure reason:** {reason}"));
     }
 
     if let Some(agent_id) = agent_id
-        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+        && let Some(context) = context
     {
         lines.push(String::new());
         lines.push(format!("**Agent:** {agent_id}"));
@@ -95,11 +119,32 @@ mod tests {
 
         let output = run(Some("executor:codex:7")).await.unwrap();
 
-        assert!(output.contains("**State:** Idle"));
+        assert!(output.contains("**State:** executing"));
         assert!(output.contains("**Agent:** executor:codex:7"));
         assert!(output.contains("**Task:** t-007"));
         assert!(output.contains("**Task status:** executing"));
         assert!(output.contains("**Task path:** .ferrus/tasks/t-007.md"));
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn status_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "addressing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let output = run(Some("executor:codex:7")).await.unwrap();
+
+        assert!(output.contains("**State:** addressing"));
+        assert!(output.contains("**Task:** t-007"));
         teardown(previous);
     }
 }
