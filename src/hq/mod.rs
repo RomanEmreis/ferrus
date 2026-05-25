@@ -2926,9 +2926,13 @@ mod tests {
         crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
             .await
             .unwrap();
-        crate::project::record_task_human_question_requested("t-007", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_human_question_requested(
+            "t-007",
+            "executing",
+            "executor:codex:7",
+        )
+        .await
+        .unwrap();
         store::write_question_for_run_dir(".ferrus/runs/t-007", "Need human input")
             .await
             .unwrap();

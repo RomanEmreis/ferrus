@@ -1276,15 +1276,21 @@ pub async fn restore_task_from_consultation(task_id: &str) -> Result<TaskConsult
 pub async fn record_task_human_question_requested(
     task_id: &str,
     paused_status: &str,
+    awaiting_human_by: &str,
 ) -> Result<()> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
     let paused_status = paused_status.to_string();
+    let awaiting_human_by = awaiting_human_by.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
         connection.execute(
-            "UPDATE tasks SET status = 'awaiting_human', paused_status = ?1 WHERE id = ?2",
-            params![paused_status, task_id],
+            r#"
+            UPDATE tasks
+            SET status = 'awaiting_human', paused_status = ?1, awaiting_human_by = ?2
+            WHERE id = ?3
+            "#,
+            params![paused_status, awaiting_human_by, task_id],
         )?;
         insert_event(
             &connection,
@@ -1293,9 +1299,28 @@ pub async fn record_task_human_question_requested(
             &serde_json::json!({
                 "task_id": task_id,
                 "paused_status": paused_status,
+                "awaiting_human_by": awaiting_human_by,
             }),
         )?;
         Ok(())
+    })
+    .await?
+}
+
+pub async fn task_human_question_owner(task_id: &str) -> Result<Option<String>> {
+    let database_path = current_database_path().await?;
+    let task_id = task_id.to_string();
+    tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+        let connection = open_runtime_database(&database_path)?;
+        let owner = connection
+            .query_row(
+                "SELECT awaiting_human_by FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(owner)
     })
     .await?
 }
@@ -1323,7 +1348,11 @@ pub async fn restore_task_from_human_answer(task_id: &str) -> Result<TaskHumanAn
         }
         let resumed_status = paused_status.unwrap_or_else(|| "executing".to_string());
         transaction.execute(
-            "UPDATE tasks SET status = ?1, paused_status = NULL WHERE id = ?2",
+            r#"
+            UPDATE tasks
+            SET status = ?1, paused_status = NULL, awaiting_human_by = NULL
+            WHERE id = ?2
+            "#,
             params![resumed_status, task_id],
         )?;
         insert_event_in_transaction(
@@ -2725,6 +2754,7 @@ async fn validate_database_schema(path: &Path) -> Result<bool> {
             "check_retries",
             "review_cycles",
             "failure_reason",
+            "awaiting_human_by",
         ] {
             if !column_exists(&connection, "tasks", column)? {
                 return Ok(false);
@@ -2849,7 +2879,8 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             last_heartbeat TEXT,
             check_retries INTEGER NOT NULL DEFAULT 0,
             review_cycles INTEGER NOT NULL DEFAULT 0,
-            failure_reason TEXT
+            failure_reason TEXT,
+            awaiting_human_by TEXT
         );
 
         CREATE TABLE IF NOT EXISTS runs (
@@ -2894,6 +2925,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     ensure_column(connection, "tasks", "failure_reason", "TEXT")?;
+    ensure_column(connection, "tasks", "awaiting_human_by", "TEXT")?;
     Ok(())
 }
 
@@ -3732,7 +3764,7 @@ mod tests {
         record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
             .await
             .unwrap();
-        record_task_human_question_requested("t-002", "executing")
+        record_task_human_question_requested("t-002", "executing", "executor:codex:2")
             .await
             .unwrap();
         crate::state::store::write_question_for_run_dir(

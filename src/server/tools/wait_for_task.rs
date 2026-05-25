@@ -63,7 +63,7 @@ async fn run(agent_id: &str) -> Result<String> {
             .await;
             let task = store::read_task_at(&claim.task_path).await?;
             let run_dir = run_dir_for_task(&claim.task_id);
-            let review = store::read_review_for_run_dir(&run_dir).await?;
+            let review = read_review_for_claim(&claim, &run_dir).await?;
 
             info!(agent_id, task_id = claim.task_id, "Executor claimed task");
             let response = json!({
@@ -199,6 +199,18 @@ fn run_dir_for_task(task_id: &str) -> String {
     format!(".ferrus/runs/{task_id}")
 }
 
+async fn read_review_for_claim(claim: &TaskLease, run_dir: &str) -> Result<String> {
+    let scoped_review = store::read_review_for_run_dir(run_dir).await?;
+    if !scoped_review.trim().is_empty() || !is_legacy_state_fallback_claim(claim) {
+        return Ok(scoped_review);
+    }
+    store::read_review().await
+}
+
+fn is_legacy_state_fallback_claim(claim: &TaskLease) -> bool {
+    claim.task_id == "current" && claim.task_path == ".ferrus/TASK.md"
+}
+
 fn state_name_for_task_status(status: &str) -> &'static str {
     match status {
         "addressing" => "Addressing",
@@ -294,6 +306,44 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-002").unwrap();
         assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:2"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_task_fallback_reads_legacy_review_notes() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 1\n\n[lease]\nttl_secs = 60\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
+        tokio::fs::write(".ferrus/TASK.md", "legacy task")
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/REVIEW.md", "fix the legacy issue")
+            .await
+            .unwrap();
+        store::write_state(&StateData {
+            state: TaskState::Addressing,
+            ..StateData::default()
+        })
+        .await
+        .unwrap();
+
+        let response: serde_json::Value =
+            serde_json::from_str(&run("executor:codex:1").await.unwrap()).unwrap();
+
+        assert_eq!(response["status"], "claimed");
+        assert_eq!(response["task_id"], "current");
+        assert_eq!(response["task_path"], ".ferrus/TASK.md");
+        assert_eq!(response["review"], "fix the legacy issue");
 
         teardown(previous);
     }

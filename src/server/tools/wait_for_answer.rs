@@ -122,8 +122,11 @@ async fn ensure_scoped_answer_waiter(
     agent_id: &str,
     ttl_secs: u64,
 ) -> Result<()> {
-    if context.status == "awaiting_human" && agent_id.starts_with("supervisor:") {
-        return Ok(());
+    if let Some(owner) = project::task_human_question_owner(&context.task_id).await? {
+        if owner == agent_id {
+            return Ok(());
+        }
+        anyhow::bail!("Cannot wait for answer: question was asked by {owner}, not {agent_id}");
     }
     ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
 }
@@ -210,9 +213,13 @@ mod tests {
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
-        crate::project::record_task_human_question_requested("t-007", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_human_question_requested(
+            "t-007",
+            "executing",
+            "executor:codex:7",
+        )
+        .await
+        .unwrap();
         store::write_answer_for_run_dir(".ferrus/runs/t-007", "Use the stable path.")
             .await
             .unwrap();
@@ -263,9 +270,13 @@ mod tests {
         crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
             .await
             .unwrap();
-        crate::project::record_task_human_question_requested("t-001", "addressing")
-            .await
-            .unwrap();
+        crate::project::record_task_human_question_requested(
+            "t-001",
+            "addressing",
+            "executor:codex:1",
+        )
+        .await
+        .unwrap();
         store::write_answer_for_run_dir(".ferrus/runs/t-001", "Use the stable path.")
             .await
             .unwrap();
@@ -287,6 +298,50 @@ mod tests {
                 .await
                 .unwrap(),
             ""
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_answer_rejects_scoped_agent_that_did_not_ask_question() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        store::write_state(&crate::state::machine::StateData::default())
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "consultation")
+            .await
+            .unwrap();
+        crate::project::record_run_started("supervisor", "supervisor:codex:7", std::process::id())
+            .await
+            .unwrap();
+        crate::project::attach_running_run_to_task(
+            "supervisor:codex:7",
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_human_question_requested(
+            "t-007",
+            "consultation",
+            "supervisor:codex:1",
+        )
+        .await
+        .unwrap();
+        store::write_answer_for_run_dir(".ferrus/runs/t-007", "Use the stable path.")
+            .await
+            .unwrap();
+
+        let error = run("supervisor:codex:7").await.unwrap_err().to_string();
+
+        assert!(error.contains("question was asked by supervisor:codex:1"));
+        assert_eq!(
+            store::read_answer_for_run_dir(".ferrus/runs/t-007")
+                .await
+                .unwrap(),
+            "Use the stable path."
         );
 
         teardown(previous);

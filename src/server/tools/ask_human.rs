@@ -59,12 +59,14 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
             project::record_task_human_question_requested(
                 &context.task_id,
                 project::task_status_for_state(&paused),
+                agent_id,
             )
             .await?;
         }
         format!("{paused:?}")
     } else if let Some(context) = runtime_context.as_ref() {
-        project::record_task_human_question_requested(&context.task_id, &context.status).await?;
+        project::record_task_human_question_requested(&context.task_id, &context.status, agent_id)
+            .await?;
         context.status.clone()
     } else {
         anyhow::bail!("Cannot ask human without runtime task context");
