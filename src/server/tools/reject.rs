@@ -6,7 +6,7 @@ use crate::{
     config::Config,
     project::{self, RuntimeTaskContext, TaskReviewRejection},
     state::{
-        machine::{TaskState, TransitionError},
+        machine::{StateData, TaskState, TransitionError},
         store,
     },
 };
@@ -33,27 +33,31 @@ pub async fn handler_for_agent(agent_id: &str, notes: String) -> Result<String, 
 
 async fn run(agent_id: &str, notes: String) -> Result<String> {
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
+    let mut state = store::read_state().await.ok();
 
-    if state.state != TaskState::Reviewing
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("reviewing")
-        )
-    {
-        anyhow::bail!(
-            "Cannot reject from state {:?}. Call /review_pending first.",
-            state.state
-        );
+    let context_is_reviewing = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("reviewing")
+    );
+    let state_is_reviewing = state
+        .as_ref()
+        .is_some_and(|state| state.state == TaskState::Reviewing);
+    if !context_is_reviewing && !state_is_reviewing {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
+        anyhow::bail!("Cannot reject from state {current_state}. Call /review_pending first.");
     }
-    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+    let state_for_lease = state.get_or_insert_with(StateData::default);
+    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
 
-    write_review(&state, runtime_context.as_ref(), &notes).await?;
+    write_review(state.as_ref(), runtime_context.as_ref(), &notes).await?;
 
-    if !should_use_legacy_state(&state, runtime_context.as_ref())
+    if !should_use_legacy_state(state.as_ref(), runtime_context.as_ref())
         && let Some(context) = runtime_context.as_ref()
     {
         return match project::record_task_review_rejected(
@@ -112,10 +116,13 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
         };
     }
 
+    let state = state
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("Cannot reject legacy state: STATE.json is missing"))?;
     match state.reject(config.limits.max_review_cycles) {
         Ok(()) => {
-            store::write_state(&state).await?;
-            mirror_review_state(runtime_context.as_ref(), &state).await?;
+            store::write_state(state).await?;
+            mirror_review_state(runtime_context.as_ref(), state).await?;
             project::record_runtime_event_best_effort(
                 runtime_context
                     .as_ref()
@@ -141,8 +148,8 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
             ))
         }
         Err(TransitionError::ReviewLimitExceeded { cycles }) => {
-            store::write_state(&state).await?;
-            mirror_review_state(runtime_context.as_ref(), &state).await?;
+            store::write_state(state).await?;
+            mirror_review_state(runtime_context.as_ref(), state).await?;
             project::record_runtime_event_best_effort(
                 runtime_context
                     .as_ref()
@@ -190,13 +197,15 @@ async fn mirror_review_state(
 }
 
 async fn write_review(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     notes: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_review_for_run_dir(&context.run_dir, notes).await?;
-        if state.active_task_id.as_deref() == Some(context.task_id.as_str()) {
+        if state
+            .is_some_and(|state| state.active_task_id.as_deref() == Some(context.task_id.as_str()))
+        {
             store::write_review(notes).await?;
         }
         return Ok(());
@@ -205,12 +214,14 @@ async fn write_review(
 }
 
 fn should_use_legacy_state(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -289,6 +300,39 @@ mod tests {
         assert_eq!(task.status, "addressing");
         assert_eq!(task.review_cycles, 1);
         assert_eq!(task.check_retries, 0);
+        assert_eq!(task.claimed_by, None);
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn reject_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap_or(());
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run("supervisor:codex:7", "fix this".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-007/REVIEW.md")
+                .await
+                .unwrap(),
+            "fix this"
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "addressing");
+        assert_eq!(task.review_cycles, 1);
         assert_eq!(task.claimed_by, None);
 
         teardown(previous);

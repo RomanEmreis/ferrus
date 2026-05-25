@@ -1403,7 +1403,13 @@ pub async fn claim_task(
 
 #[allow(dead_code)]
 pub async fn claim_next_ready_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
-    claim_next_task_with_statuses(agent_id, ttl_secs, &["executing", "addressing"]).await
+    claim_next_task_with_statuses(
+        agent_id,
+        ttl_secs,
+        &["pending", "executing", "addressing"],
+        true,
+    )
+    .await
 }
 
 pub async fn claim_ready_task_by_id(
@@ -1452,29 +1458,16 @@ async fn claim_task_by_id_with_statuses(
             return Ok(ReadyTaskClaim::NoAvailable);
         };
 
-        if !allowed_statuses.iter().any(|status| status == &candidate.status) {
+        if !allowed_statuses
+            .iter()
+            .any(|status| status == &candidate.status)
+        {
             transaction.commit()?;
             return Ok(ReadyTaskClaim::NoAvailable);
         }
 
         if promote_pending && candidate.status == "pending" {
-            transaction.execute(
-                "UPDATE tasks SET status = 'executing', paused_status = NULL WHERE id = ?1 AND status = 'pending'",
-                [&candidate.id],
-            )?;
-            insert_event_in_transaction(
-                &transaction,
-                None,
-                "task_scheduled",
-                &serde_json::json!({
-                    "task_id": candidate.id,
-                    "previous_status": candidate.status,
-                    "status": "executing",
-                    "scheduled_at": timestamp(),
-                }),
-            )?;
-            candidate.status = "executing".to_string();
-            candidate.paused_status = None;
+            promote_pending_task_in_transaction(&transaction, &mut candidate)?;
         }
 
         let lease_until = parse_lease_until(candidate.lease_until.as_deref());
@@ -1520,13 +1513,14 @@ async fn claim_task_by_id_with_statuses(
 }
 
 pub async fn claim_next_review_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
-    claim_next_task_with_statuses(agent_id, ttl_secs, &["reviewing"]).await
+    claim_next_task_with_statuses(agent_id, ttl_secs, &["reviewing"], false).await
 }
 
 async fn claim_next_task_with_statuses(
     agent_id: &str,
     ttl_secs: u64,
     statuses: &[&str],
+    promote_pending: bool,
 ) -> Result<ReadyTaskClaim> {
     let database_path = current_database_path().await?;
     let agent_id = agent_id.to_string();
@@ -1538,14 +1532,17 @@ async fn claim_next_task_with_statuses(
         let mut connection = open_runtime_database(&database_path)?;
         let transaction = connection.transaction()?;
         let now = Utc::now();
-        let candidates = task_candidates_by_status(&transaction, &statuses)?;
+        let mut candidates = task_candidates_by_status(&transaction, &statuses)?;
 
-        for candidate in &candidates {
+        for candidate in &mut candidates {
             let lease_until = parse_lease_until(candidate.lease_until.as_deref());
             let lease_active = lease_until
                 .as_ref()
                 .is_some_and(|lease_until| now < *lease_until);
             if lease_active && candidate.claimed_by.as_deref() == Some(agent_id.as_str()) {
+                if promote_pending && candidate.status == "pending" {
+                    promote_pending_task_in_transaction(&transaction, candidate)?;
+                }
                 transaction.commit()?;
                 return Ok(ReadyTaskClaim::AlreadyClaimed(TaskLease {
                     task_id: candidate.id.clone(),
@@ -1561,13 +1558,17 @@ async fn claim_next_task_with_statuses(
             }
         }
 
-        for candidate in candidates {
+        for mut candidate in candidates {
             let lease_until = parse_lease_until(candidate.lease_until.as_deref());
             let lease_active = lease_until
                 .as_ref()
                 .is_some_and(|lease_until| now < *lease_until);
             if lease_active {
                 continue;
+            }
+
+            if promote_pending && candidate.status == "pending" {
+                promote_pending_task_in_transaction(&transaction, &mut candidate)?;
             }
 
             let lease_until = now
@@ -1591,6 +1592,30 @@ async fn claim_next_task_with_statuses(
         Ok(ReadyTaskClaim::NoAvailable)
     })
     .await?
+}
+
+fn promote_pending_task_in_transaction(
+    transaction: &Transaction<'_>,
+    candidate: &mut ReadyTaskCandidate,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE tasks SET status = 'executing', paused_status = NULL WHERE id = ?1 AND status = 'pending'",
+        [&candidate.id],
+    )?;
+    insert_event_in_transaction(
+        transaction,
+        None,
+        "task_scheduled",
+        &serde_json::json!({
+            "task_id": candidate.id,
+            "previous_status": candidate.status,
+            "status": "executing",
+            "scheduled_at": timestamp(),
+        }),
+    )?;
+    candidate.status = "executing".to_string();
+    candidate.paused_status = None;
+    Ok(())
 }
 
 async fn claim_task_in_database(

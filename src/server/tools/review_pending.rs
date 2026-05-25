@@ -5,7 +5,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::RuntimeTaskContext,
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
@@ -20,24 +23,30 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 
 async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
+    let mut state = store::read_state().await.ok();
 
-    if state.state != TaskState::Reviewing
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("reviewing")
-        )
-    {
+    let context_is_reviewing = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("reviewing")
+    );
+    let state_is_reviewing = state
+        .as_ref()
+        .is_some_and(|state| state.state == TaskState::Reviewing);
+    if !context_is_reviewing && !state_is_reviewing {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
         anyhow::bail!(
-            "No submission pending review. Current state: {:?}. \
+            "No submission pending review. Current state: {current_state}. \
              Wait for the Executor to call /submit.",
-            state.state
         );
     }
-    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+    let state_for_lease = state.get_or_insert_with(StateData::default);
+    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
 
     let (task, submission, review, patch, integration_error) =
         read_review_context(runtime_context.as_ref()).await?;
@@ -74,11 +83,13 @@ async fn run(agent_id: &str) -> Result<String> {
     let review_cycles = runtime_context
         .as_ref()
         .map(|context| context.review_cycles)
-        .unwrap_or(state.review_cycles);
+        .or_else(|| state.as_ref().map(|state| state.review_cycles))
+        .unwrap_or_default();
     let check_retries = runtime_context
         .as_ref()
         .map(|context| context.check_retries)
-        .unwrap_or(state.check_retries);
+        .or_else(|| state.as_ref().map(|state| state.check_retries))
+        .unwrap_or_default();
 
     response.push_str(&format!(
         "\n---\nReview cycles used: {}/{}  \nCheck retries used: {}/{}",
@@ -210,6 +221,36 @@ mod tests {
 
         assert!(response.contains("## Integration Error"));
         assert!(response.contains("patch failed"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn review_pending_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/tasks/t-007.md", "task body")
+            .await
+            .unwrap();
+        store::write_submission_for_run_dir(".ferrus/runs/t-007", "submission")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let response = run("supervisor:codex:7").await.unwrap();
+
+        assert!(response.contains("## Task"));
+        assert!(response.contains("task body"));
+        assert!(response.contains("submission"));
+        assert!(response.contains("Review cycles used: 0/3"));
 
         teardown(previous);
     }

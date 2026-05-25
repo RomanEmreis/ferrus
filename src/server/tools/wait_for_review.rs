@@ -10,7 +10,10 @@ use crate::{
     agent_id::ENV_TASK_ID,
     config::Config,
     project::{self, ReadyTaskClaim, TaskLease},
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::tool_err;
@@ -43,7 +46,9 @@ async fn run(agent_id: &str) -> Result<String> {
             })
             .await??;
 
-            let mut state = store::read_state().await?;
+            let mut state = store::read_state()
+                .await
+                .unwrap_or_else(|_| StateData::default());
             let claim = claim_review_task(agent_id, ttl_secs, &mut state).await?;
 
             drop(lock_file);
@@ -87,11 +92,15 @@ async fn run(agent_id: &str) -> Result<String> {
         }
 
         if start.elapsed() >= timeout {
-            let state = store::read_state().await?;
-            info!("wait_for_review timed out, state: {:?}", state.state);
+            let state = store::read_state().await.ok();
+            let state_label = state
+                .as_ref()
+                .map(|state| format!("{:?}", state.state))
+                .unwrap_or_else(|| "unavailable".to_string());
+            info!("wait_for_review timed out, state: {state_label}");
             let response = json!({
                 "status": "timeout",
-                "state": format!("{:?}", state.state),
+                "state": state_label,
             });
             return Ok(response.to_string());
         }
@@ -270,6 +279,33 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-003").unwrap();
         assert_eq!(task.claimed_by.as_deref(), Some("supervisor:codex:1"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_review_claims_database_task_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/tasks/t-003.md", "review task")
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/runs/t-003/SUBMISSION.md", "submission")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
+            .await
+            .unwrap();
+
+        let response: serde_json::Value =
+            serde_json::from_str(&run("supervisor:codex:3").await.unwrap()).unwrap();
+
+        assert_eq!(response["status"], "claimed");
+        assert_eq!(response["task_id"], "t-003");
+        assert_eq!(response["submission"], "submission");
 
         teardown(previous);
     }

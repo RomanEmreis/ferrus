@@ -10,7 +10,10 @@ use crate::{
     agent_id::ENV_TASK_ID,
     config::Config,
     project::{self, ReadyTaskClaim, TaskLease},
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::tool_err;
@@ -47,7 +50,9 @@ async fn run(agent_id: &str) -> Result<String> {
             })
             .await??;
 
-            let mut state = store::read_state().await?;
+            let mut state = store::read_state()
+                .await
+                .unwrap_or_else(|_| StateData::default());
             let claim = claim_ready_task(agent_id, ttl_secs, &mut state).await?;
 
             drop(lock_file);
@@ -83,11 +88,15 @@ async fn run(agent_id: &str) -> Result<String> {
         }
 
         if start.elapsed() >= timeout {
-            let state = store::read_state().await?;
-            info!("wait_for_task timed out, state: {:?}", state.state);
+            let state = store::read_state().await.ok();
+            let state_label = state
+                .as_ref()
+                .map(|state| format!("{:?}", state.state))
+                .unwrap_or_else(|| "unavailable".to_string());
+            info!("wait_for_task timed out, state: {state_label}");
             let response = json!({
                 "status": "timeout",
-                "state": format!("{:?}", state.state),
+                "state": state_label,
             });
             return Ok(response.to_string());
         }
@@ -306,6 +315,30 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-002").unwrap();
         assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:2"));
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn wait_for_task_claims_database_task_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap_or(());
+        tokio::fs::write(".ferrus/tasks/t-002.md", "queued task")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-002", ".ferrus/tasks/t-002.md", "pending")
+            .await
+            .unwrap();
+
+        let response: serde_json::Value =
+            serde_json::from_str(&run("executor:codex:2").await.unwrap()).unwrap();
+
+        assert_eq!(response["status"], "claimed");
+        assert_eq!(response["task_id"], "t-002");
+        assert_eq!(response["task"], "queued task");
 
         teardown(previous);
     }

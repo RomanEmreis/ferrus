@@ -8,7 +8,10 @@ use crate::{
     config::Config,
     project::{self, RuntimeTaskContext},
     specs,
-    state::{machine::TaskState, store},
+    state::{
+        machine::{StateData, TaskState},
+        store,
+    },
 };
 
 use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
@@ -22,28 +25,35 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 
 async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
+    let mut state = store::read_state().await.ok();
 
-    if state.state != TaskState::Reviewing
-        && !matches!(
-            runtime_context
-                .as_ref()
-                .map(|context| context.status.as_str()),
-            Some("reviewing")
-        )
-    {
-        anyhow::bail!(
-            "Cannot approve from state {:?}. Call /review_pending first.",
-            state.state
-        );
+    let context_is_reviewing = matches!(
+        runtime_context
+            .as_ref()
+            .map(|context| context.status.as_str()),
+        Some("reviewing")
+    );
+    let state_is_reviewing = state
+        .as_ref()
+        .is_some_and(|state| state.state == TaskState::Reviewing);
+    if !context_is_reviewing && !state_is_reviewing {
+        let current_state = state
+            .as_ref()
+            .map(|state| format!("{:?}", state.state))
+            .unwrap_or_else(|| "unavailable".to_string());
+        anyhow::bail!("Cannot approve from state {current_state}. Call /review_pending first.");
     }
-    ensure_lease_owner_or_reclaim(&mut state, agent_id, config.lease.ttl_secs).await?;
+    let state_for_lease = state.get_or_insert_with(StateData::default);
+    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
 
-    if should_use_legacy_state(&state, runtime_context.as_ref()) {
-        specs::complete_task_milestone_and_advance(&mut state).await?;
+    if should_use_legacy_state(state.as_ref(), runtime_context.as_ref()) {
+        let state = state
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Cannot approve legacy state: STATE.json is missing"))?;
+        specs::complete_task_milestone_and_advance(state).await?;
         state.approve()?;
-        store::write_state(&state).await?;
+        store::write_state(state).await?;
         project::record_current_task_status_best_effort("complete").await;
     } else if let Some(context) = runtime_context.as_ref() {
         apply_approved_patch(context).await?;
@@ -184,12 +194,14 @@ fn is_managed_workspace_path(path: &Path, managed_root: &Path) -> bool {
 }
 
 fn should_use_legacy_state(
-    state: &crate::state::machine::StateData,
+    state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> bool {
     context.is_none()
-        || context.is_some_and(|context| {
-            state.active_task_id.as_deref() == Some(context.task_id.as_str())
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
         })
 }
 
@@ -254,6 +266,30 @@ mod tests {
 
         let state = store::read_state().await.unwrap();
         assert_eq!(state.state, TaskState::Executing);
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "complete");
+        assert_eq!(task.claimed_by, None);
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn approve_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap_or(());
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run("supervisor:codex:7").await.unwrap();
+
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "complete");

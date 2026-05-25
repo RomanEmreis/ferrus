@@ -240,6 +240,7 @@ Recovery is SQLite-first:
 - MCP `/status` is scoped by runtime agent id and includes the agent's SQLite task context when one exists.
 - MCP prompts `executor-context` and `supervisor-review` are scoped by runtime agent id and prefer numbered task/run artifacts over legacy mirrors when a SQLite task context exists.
 - MCP `/status` and scoped prompts are DB-first for agents with SQLite runtime context and no longer require `STATE.json` in that path.
+- MCP `/wait_for_task`, `/wait_for_review`, `/review_pending`, `/approve`, and `/reject` are DB-first for agents with SQLite runtime context and no longer require `STATE.json` in that path.
 - MCP resources for task run artifacts (`review`, `submission`, `question`, `answer`) are scoped by runtime agent id and prefer `.ferrus/runs/<task-id>/` files over legacy mirrors.
 - Active-task `/check`, `/submit` final-gate, and `/reject` review transitions mirror retry/failure/cycle state into SQLite so DB task rows do not lag behind `STATE.json`.
 - Active-task `/consult`, `/wait_for_consult`, `/ask_human`, and `/wait_for_answer` mirror pause/restore state into SQLite and support scoped run artifacts with legacy fallback.
