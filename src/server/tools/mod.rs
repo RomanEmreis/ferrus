@@ -100,6 +100,18 @@ pub(super) async fn runtime_task_context_for_agent_best_effort(
     }
 }
 
+pub(super) fn uses_legacy_state_context(
+    state: Option<&StateData>,
+    context: Option<&RuntimeTaskContext>,
+) -> bool {
+    context.is_none()
+        || state.is_some_and(|state| {
+            context.is_some_and(|context| {
+                state.active_task_id.as_deref() == Some(context.task_id.as_str())
+            })
+        })
+}
+
 async fn reclaim_state_active_task_lease(
     state: &mut StateData,
     agent_id: &str,

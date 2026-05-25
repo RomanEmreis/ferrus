@@ -14,7 +14,10 @@ use crate::{
     },
 };
 
-use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
+use super::{
+    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
+    uses_legacy_state_context,
+};
 
 pub const DESCRIPTION: &str = "Approve the current submission. Transitions state Reviewing → Complete. \
      Must be called after /review_pending.";
@@ -47,7 +50,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let state_for_lease = state.get_or_insert_with(StateData::default);
     ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
 
-    if should_use_legacy_state(state.as_ref(), runtime_context.as_ref()) {
+    if uses_legacy_state_context(state.as_ref(), runtime_context.as_ref()) {
         let state = state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Cannot approve legacy state: STATE.json is missing"))?;
@@ -191,18 +194,6 @@ async fn cleanup_approved_workspace(context: &RuntimeTaskContext) -> Result<bool
 
 fn is_managed_workspace_path(path: &Path, managed_root: &Path) -> bool {
     path.starts_with(managed_root) && path != managed_root
-}
-
-fn should_use_legacy_state(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    context.is_none()
-        || state.is_some_and(|state| {
-            context.is_some_and(|context| {
-                state.active_task_id.as_deref() == Some(context.task_id.as_str())
-            })
-        })
 }
 
 #[cfg(test)]

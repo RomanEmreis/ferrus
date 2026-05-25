@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     ensure_answer_waiter, ensure_lease_owner_or_reclaim,
-    runtime_task_context_for_agent_best_effort, tool_err,
+    runtime_task_context_for_agent_best_effort, tool_err, uses_legacy_state_context,
 };
 
 pub const DESCRIPTION: &str = "Block until the human provides an answer to the question you asked via /ask_human. \
@@ -34,7 +34,7 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 async fn run(agent_id: &str) -> Result<String> {
     let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
     let mut state = store::read_state().await.ok();
-    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
+    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
     if use_legacy_state {
         let state = state.as_ref().ok_or_else(|| {
             anyhow::anyhow!("Cannot wait for legacy answer: STATE.json is missing")
@@ -154,18 +154,6 @@ async fn read_answer(
         }
     }
     store::read_answer().await
-}
-
-fn should_use_legacy_state(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    context.is_none()
-        || state.is_some_and(|state| {
-            context.is_some_and(|context| {
-                state.active_task_id.as_deref() == Some(context.task_id.as_str())
-            })
-        })
 }
 
 #[cfg(test)]

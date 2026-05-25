@@ -10,7 +10,10 @@ use crate::{
     },
 };
 
-use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
+use super::{
+    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
+    uses_legacy_state_context,
+};
 
 pub const DESCRIPTION: &str = "Ask the human a question. \
      Writes the question to QUESTION.md, transitions state to AwaitingHuman, \
@@ -50,7 +53,7 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
     write_question(state.as_ref(), runtime_context.as_ref(), &question).await?;
     clear_answer(state.as_ref(), runtime_context.as_ref()).await?;
 
-    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
+    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
     let paused = if use_legacy_state {
         let state = state.as_mut().ok_or_else(|| {
             anyhow::anyhow!("Cannot ask human for legacy state: STATE.json is missing")
@@ -132,7 +135,7 @@ fn can_supervisor_ask_during_consultation(
     if !is_supervisor(agent_id) {
         return false;
     }
-    if should_use_legacy_state(state, context) {
+    if uses_legacy_state_context(state, context) {
         return state.is_some_and(|state| state.state == TaskState::Consultation);
     }
     matches!(
@@ -172,18 +175,6 @@ async fn clear_answer(
         return Ok(());
     }
     store::clear_answer().await
-}
-
-fn should_use_legacy_state(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    context.is_none()
-        || state.is_some_and(|state| {
-            context.is_some_and(|context| {
-                state.active_task_id.as_deref() == Some(context.task_id.as_str())
-            })
-        })
 }
 
 fn is_supervisor(agent_id: &str) -> bool {

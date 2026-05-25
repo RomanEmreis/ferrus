@@ -258,11 +258,14 @@ Recovery is SQLite-first:
 - Consultation workers launched for DB tasks receive `FERRUS_TASK_ID` and attach to that exact consultation instead of racing for the next available consultation.
 - Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
 - Dashboard runtime activity shows pending/running/reviewing/awaiting-human task rows before recent run rows.
+- Shared MCP helpers now distinguish legacy active `STATE.json` context from scoped SQLite runtime context consistently across DB-first tools.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Move remaining runtime state out of `STATE.json` once SQLite can fully replace it.
+- Decide the final home for non-runtime UI selection fields currently stored in `STATE.json`, especially selected spec and selected milestone.
+- Convert or retire legacy single-active-task tools that still intentionally depend on `STATE.json`: `/create_task`, `/create_spec`, `/reset`, and legacy `/answer`.
+- Remove compatibility `STATE.json` mirrors once the old single-task path is either migrated to SQLite or explicitly kept as a compatibility layer.
 
 ## Milestones
 

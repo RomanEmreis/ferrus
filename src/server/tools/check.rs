@@ -13,7 +13,7 @@ use crate::{
 
 use super::{
     check_gate::{self, CheckGateResult},
-    ensure_lease_owner_or_reclaim, tool_err,
+    ensure_lease_owner_or_reclaim, tool_err, uses_legacy_state_context,
 };
 
 pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, etc.) against the current \
@@ -61,7 +61,7 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
         let state_for_lease = state.get_or_insert_with(StateData::default);
         ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
     }
-    let use_legacy_state = should_use_legacy_state(state.as_ref(), runtime_context.as_ref());
+    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
 
     if config.checks.commands.is_empty() {
         if use_legacy_state {
@@ -259,18 +259,6 @@ async fn mirror_check_state(
         .await?;
     }
     Ok(())
-}
-
-fn should_use_legacy_state(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    context.is_none()
-        || state.is_some_and(|state| {
-            context.is_some_and(|context| {
-                state.active_task_id.as_deref() == Some(context.task_id.as_str())
-            })
-        })
 }
 
 fn work_state_label(state: Option<&StateData>, context: Option<&RuntimeTaskContext>) -> String {

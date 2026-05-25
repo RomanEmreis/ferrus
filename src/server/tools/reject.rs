@@ -11,7 +11,10 @@ use crate::{
     },
 };
 
-use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
+use super::{
+    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
+    uses_legacy_state_context,
+};
 
 pub const DESCRIPTION: &str = "Reject the current submission with review notes. Writes notes to REVIEW.md and \
      transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
@@ -57,7 +60,7 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
 
     write_review(state.as_ref(), runtime_context.as_ref(), &notes).await?;
 
-    if !should_use_legacy_state(state.as_ref(), runtime_context.as_ref())
+    if !uses_legacy_state_context(state.as_ref(), runtime_context.as_ref())
         && let Some(context) = runtime_context.as_ref()
     {
         return match project::record_task_review_rejected(
@@ -211,18 +214,6 @@ async fn write_review(
         return Ok(());
     }
     store::write_review(notes).await
-}
-
-fn should_use_legacy_state(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    context.is_none()
-        || state.is_some_and(|state| {
-            context.is_some_and(|context| {
-                state.active_task_id.as_deref() == Some(context.task_id.as_str())
-            })
-        })
 }
 
 #[cfg(test)]
