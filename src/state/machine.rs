@@ -149,6 +149,7 @@ impl StateData {
         self.pending_task_milestone = milestone;
     }
 
+    #[allow(dead_code)]
     pub fn clear_selected_spec_and_milestone(&mut self) {
         self.selected_spec = None;
         self.selected_milestone = None;

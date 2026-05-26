@@ -419,7 +419,7 @@ stale `STATE.json` lease mirrors are cleared.
 | File | Contents |
 |---|---|
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
-| `STATE.json` | Compatibility state snapshot, mirrored lease fields, counters, schema version, timestamp, PID, selected spec/milestone IDs |
+| `STATE.json` | Compatibility state snapshot, mirrored lease fields, counters, schema version, timestamp, PID |
 | `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Task drafting template |
 | `REVIEW.md` | Compatibility mirror of active review notes |
@@ -432,7 +432,6 @@ stale `STATE.json` lease mirrors are cleared.
 | `CONSULT_RESPONSE.md` | Compatibility mirror of the supervisor consultation response |
 | `tasks/` | Task descriptions such as `tasks/t-001.md`; active task files are cleared on reset |
 | `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and consultation files; active run files are cleared on reset |
-| `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
 | `logs/check_<n>_<ts>.txt` | Full check output |
 
 ### `~/.ferrus/projects/<project-id>/`
@@ -440,7 +439,7 @@ stale `STATE.json` lease mirrors are cleared.
 | File | Contents |
 |---|---|
 | `project.toml` | Project id, name, workspace path, git metadata, timestamps, version |
-| `ferrus.db` | SQLite database with `tasks` lease fields plus mirrored `runs` and `events` runtime records |
+| `ferrus.db` | SQLite database with `tasks`, `runs`, `events`, leases, and `project_runtime_state` |
 | `logs/` | Machine-local logs that should not be committed |
 "#;
 
@@ -528,7 +527,6 @@ async fn create_ferrus_dir() -> Result<()> {
         "ANSWER.md",
         "CONSULT_REQUEST.md",
         "CONSULT_RESPONSE.md",
-        "LAST_SPEC_PATH",
     ] {
         let path = dir.join(filename);
         if !path.exists() {

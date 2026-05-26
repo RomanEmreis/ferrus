@@ -253,6 +253,7 @@ Recovery is SQLite-first:
 - Worktrees are reused while a task is still active/addressing and removed after successful approval when the path is inside the managed project worktrees directory.
 - `ferrus recover --worktrees` previews or removes orphaned managed worktrees while preserving worktrees owned by active task rows or active run rows.
 - Failed canonical patch application during approval is recorded as `INTEGRATION_ERROR.md`, mirrored into SQLite `failure_reason` and runtime events, and returned by `/review_pending` so the reviewer can reject with concrete conflict details.
+- HQ active spec and `/create_spec` handoff metadata are stored in the explicit single-row `ferrus.db` `project_runtime_state` table. Milestone execution is derived from spec readiness plus `tasks.spec_path`/`tasks.milestone_id`; there is no global selected milestone in canonical runtime state.
 - HQ periodically reconciles SQLite runtime work: reaps exited headless handles, starts reviewers for reviewing DB tasks, and fills freed executor slots with pending DB tasks.
 - Review workers launched for DB tasks receive `FERRUS_TASK_ID` and claim that exact task instead of racing for the next available review.
 - Consultation workers launched for DB tasks receive `FERRUS_TASK_ID` and attach to that exact consultation instead of racing for the next available consultation.
@@ -263,8 +264,7 @@ Recovery is SQLite-first:
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Decide the final home for non-runtime UI selection fields currently stored in `STATE.json`, especially selected spec and selected milestone.
-- Convert or retire legacy single-active-task tools that still intentionally depend on `STATE.json`: `/create_task`, `/create_spec`, `/reset`, and legacy `/answer`.
+- Convert or retire legacy single-active-task tools that still intentionally depend on `STATE.json`: `/create_task`, `/reset`, and legacy `/answer`.
 - Remove compatibility `STATE.json` mirrors once the old single-task path is either migrated to SQLite or explicitly kept as a compatibility layer.
 
 ## Milestones

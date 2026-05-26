@@ -112,6 +112,11 @@ pub struct TaskArtifact {
     pub run_dir: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectSelection {
+    pub selected_spec: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
     pub id: String,
@@ -837,6 +842,103 @@ pub async fn list_events(limit: usize, run_id: Option<String>) -> Result<Vec<Eve
     .await?
 }
 
+pub async fn read_project_selection() -> Result<ProjectSelection> {
+    let database_path = match current_database_path().await {
+        Ok(path) => path,
+        Err(db_err) => {
+            return match read_legacy_selection().await {
+                Ok(selection) => Ok(selection),
+                Err(legacy_err) => Err(db_err).with_context(|| {
+                    format!("legacy STATE.json selection is unavailable: {legacy_err}")
+                }),
+            };
+        }
+    };
+
+    let selection = tokio::task::spawn_blocking(move || -> Result<ProjectSelection> {
+        let connection = open_runtime_database(&database_path)?;
+        read_project_selection_from_database(&connection)
+    })
+    .await??;
+
+    if selection.selected_spec.is_none()
+        && let Ok(legacy) = read_legacy_selection().await
+        && legacy.selected_spec.is_some()
+    {
+        return Ok(legacy);
+    }
+
+    Ok(selection)
+}
+
+pub async fn write_project_selection(selection: &ProjectSelection) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let selection_for_db = selection.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        write_project_selection_to_database(&connection, &selection_for_db)?;
+        insert_event(
+            &connection,
+            None,
+            "project_selection_changed",
+            &serde_json::json!({
+                "selected_spec": selection_for_db.selected_spec,
+            }),
+        )?;
+        Ok(())
+    })
+    .await??;
+
+    if let Ok(mut state) = crate::state::store::read_state().await {
+        state.selected_spec = selection.selected_spec.clone();
+        state.selected_milestone = None;
+        if let Err(err) = crate::state::store::write_state(&state).await {
+            warn!(
+                error = ?err,
+                "failed to mirror project selection into compatibility STATE.json"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn read_last_spec_path() -> Result<Option<String>> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<Option<String>> {
+        let connection = open_runtime_database(&database_path)?;
+        read_last_spec_path_from_database(&connection)
+    })
+    .await?
+}
+
+pub async fn write_last_spec_path(path: &str) -> Result<()> {
+    let database_path = current_database_path().await?;
+    let path = path.to_string();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        write_last_spec_path_to_database(&connection, Some(&path))?;
+        insert_event(
+            &connection,
+            None,
+            "spec_created",
+            &serde_json::json!({ "path": path }),
+        )?;
+        Ok(())
+    })
+    .await?
+}
+
+pub async fn clear_last_spec_path() -> Result<()> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let connection = open_runtime_database(&database_path)?;
+        write_last_spec_path_to_database(&connection, None)?;
+        Ok(())
+    })
+    .await?
+}
+
 fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
     Ok(EventRecord {
         id: row.get(0)?,
@@ -844,6 +946,13 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
         event_type: row.get(2)?,
         payload_json: row.get(3)?,
         created_at: row.get(4)?,
+    })
+}
+
+async fn read_legacy_selection() -> Result<ProjectSelection> {
+    let state = crate::state::store::read_state().await?;
+    Ok(ProjectSelection {
+        selected_spec: state.selected_spec,
     })
 }
 
@@ -2929,6 +3038,13 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             created_at TEXT NOT NULL,
             FOREIGN KEY(run_id) REFERENCES runs(id)
         );
+
+        CREATE TABLE IF NOT EXISTS project_runtime_state (
+            row_id INTEGER PRIMARY KEY CHECK (row_id = 1),
+            selected_spec TEXT,
+            last_spec_path TEXT,
+            updated_at TEXT NOT NULL
+        );
         "#,
     )?;
     ensure_column(connection, "tasks", "paused_status", "TEXT")?;
@@ -2951,6 +3067,14 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     )?;
     ensure_column(connection, "tasks", "failure_reason", "TEXT")?;
     ensure_column(connection, "tasks", "awaiting_human_by", "TEXT")?;
+    ensure_column(connection, "project_runtime_state", "selected_spec", "TEXT")?;
+    ensure_column(
+        connection,
+        "project_runtime_state",
+        "last_spec_path",
+        "TEXT",
+    )?;
+    migrate_legacy_runtime_metadata(connection)?;
     Ok(())
 }
 
@@ -2983,6 +3107,153 @@ fn ensure_task_exists(connection: &Connection, id: &str, path: &str) -> Result<(
         params![id, path],
     )?;
     Ok(())
+}
+
+fn read_project_selection_from_database(connection: &Connection) -> Result<ProjectSelection> {
+    let selection = connection
+        .query_row(
+            r#"
+            SELECT selected_spec
+            FROM project_runtime_state
+            WHERE row_id = 1
+            "#,
+            [],
+            |row| {
+                Ok(ProjectSelection {
+                    selected_spec: normalize_optional_db_string(row.get(0)?),
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default();
+    Ok(selection)
+}
+
+fn write_project_selection_to_database(
+    connection: &Connection,
+    selection: &ProjectSelection,
+) -> Result<()> {
+    ensure_project_runtime_state_row(connection)?;
+    connection.execute(
+        r#"
+        UPDATE project_runtime_state
+        SET selected_spec = ?1, updated_at = ?2
+        WHERE row_id = 1
+        "#,
+        params![
+            normalized_metadata_value(selection.selected_spec.as_deref()),
+            timestamp()
+        ],
+    )?;
+    Ok(())
+}
+
+fn read_last_spec_path_from_database(connection: &Connection) -> Result<Option<String>> {
+    let value = connection
+        .query_row(
+            "SELECT last_spec_path FROM project_runtime_state WHERE row_id = 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(normalize_optional_db_string(value))
+}
+
+fn write_last_spec_path_to_database(connection: &Connection, path: Option<&str>) -> Result<()> {
+    ensure_project_runtime_state_row(connection)?;
+    connection.execute(
+        r#"
+        UPDATE project_runtime_state
+        SET last_spec_path = ?1, updated_at = ?2
+        WHERE row_id = 1
+        "#,
+        params![normalized_metadata_value(path), timestamp()],
+    )?;
+    Ok(())
+}
+
+fn ensure_project_runtime_state_row(connection: &Connection) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT INTO project_runtime_state (row_id, updated_at)
+        VALUES (1, ?1)
+        ON CONFLICT(row_id) DO NOTHING
+        "#,
+        [timestamp()],
+    )?;
+    Ok(())
+}
+
+fn migrate_legacy_runtime_metadata(connection: &Connection) -> Result<()> {
+    if !table_exists(connection, "runtime_metadata")? {
+        return Ok(());
+    }
+
+    let current_selection = read_project_selection_from_database(connection)?;
+    let current_last_spec_path = read_last_spec_path_from_database(connection)?;
+    let selected_spec = current_selection
+        .selected_spec
+        .or(read_legacy_runtime_metadata(connection, "selected_spec")?);
+    let last_spec_path =
+        current_last_spec_path.or(read_legacy_runtime_metadata(connection, "last_spec_path")?);
+
+    if selected_spec.is_none() && last_spec_path.is_none() {
+        return Ok(());
+    }
+
+    ensure_project_runtime_state_row(connection)?;
+    connection.execute(
+        r#"
+        UPDATE project_runtime_state
+        SET selected_spec = ?1,
+            last_spec_path = ?2,
+            updated_at = ?3
+        WHERE row_id = 1
+        "#,
+        params![selected_spec, last_spec_path, timestamp()],
+    )?;
+    Ok(())
+}
+
+fn read_legacy_runtime_metadata(
+    connection: &Connection,
+    metadata_name: &str,
+) -> Result<Option<String>> {
+    let value = connection
+        .query_row(
+            "SELECT value FROM runtime_metadata WHERE key = ?1",
+            [metadata_name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(normalize_optional_db_string(value))
+}
+
+fn table_exists(connection: &Connection, table_name: &str) -> Result<bool> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            [table_name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
+}
+
+fn normalized_metadata_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_optional_db_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn task_check_retries(connection: &Connection, task_id: &str) -> Result<u32> {
@@ -3458,6 +3729,92 @@ mod tests {
 
     fn teardown(previous: PathBuf) {
         std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn project_selection_round_trips_through_runtime_database() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        write_project_selection(&ProjectSelection {
+            selected_spec: Some("docs/specs/spec.md".to_string()),
+        })
+        .await
+        .unwrap();
+
+        let selection = read_project_selection().await.unwrap();
+        assert_eq!(
+            selection,
+            ProjectSelection {
+                selected_spec: Some("docs/specs/spec.md".to_string()),
+            }
+        );
+        let state = store::read_state().await.unwrap();
+        assert_eq!(state.selected_spec.as_deref(), Some("docs/specs/spec.md"));
+        assert!(state.selected_milestone.is_none());
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn last_spec_path_round_trips_through_runtime_database() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+
+        assert_eq!(read_last_spec_path().await.unwrap(), None);
+        write_last_spec_path("docs/specs/spec.md").await.unwrap();
+        assert_eq!(
+            read_last_spec_path().await.unwrap().as_deref(),
+            Some("docs/specs/spec.md")
+        );
+        clear_last_spec_path().await.unwrap();
+        assert_eq!(read_last_spec_path().await.unwrap(), None);
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn project_runtime_state_migrates_temporary_runtime_metadata_table() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        let database_path = current_database_path().await.unwrap();
+        {
+            let connection = Connection::open(&database_path).unwrap();
+            connection
+                .execute(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS runtime_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TEXT NOT NULL
+                    )
+                    "#,
+                    [],
+                )
+                .unwrap();
+            for (key, value) in [
+                ("selected_spec", "docs/specs/spec.md"),
+                ("last_spec_path", "docs/specs/spec.md"),
+            ] {
+                connection
+                    .execute(
+                        "INSERT OR REPLACE INTO runtime_metadata (key, value, updated_at) VALUES (?1, ?2, ?3)",
+                        params![key, value, timestamp()],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let selection = read_project_selection().await.unwrap();
+        let last_spec_path = read_last_spec_path().await.unwrap();
+
+        assert_eq!(
+            selection.selected_spec.as_deref(),
+            Some("docs/specs/spec.md")
+        );
+        assert_eq!(last_spec_path.as_deref(), Some("docs/specs/spec.md"));
+
+        teardown(previous);
     }
 
     #[test]

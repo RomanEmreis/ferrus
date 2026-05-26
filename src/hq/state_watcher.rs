@@ -3,7 +3,8 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 
-use crate::specs::{self, MilestoneReadiness, SelectedMilestoneState};
+use crate::project::{self, ProjectSelection};
+use crate::specs::{self, MilestoneReadiness};
 use crate::state::{
     machine::{StateData, TaskState},
     store,
@@ -38,7 +39,6 @@ pub struct WatchedMilestone {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SelectedDisplayCacheKey {
     selected_spec: Option<String>,
-    selected_milestone: Option<String>,
     spec_fingerprint: Option<(Option<SystemTime>, u64)>,
 }
 
@@ -51,16 +51,15 @@ struct SelectedDisplayCache {
 impl SelectedDisplayCache {
     async fn get(
         &mut self,
-        state: &StateData,
+        selection: &ProjectSelection,
     ) -> (Option<String>, Option<String>, Vec<WatchedMilestone>) {
         let key = SelectedDisplayCacheKey {
-            selected_spec: state.selected_spec.clone(),
-            selected_milestone: state.selected_milestone.clone(),
-            spec_fingerprint: selected_spec_fingerprint(state).await,
+            selected_spec: selection.selected_spec.clone(),
+            spec_fingerprint: selected_spec_fingerprint(selection).await,
         };
 
         if self.key.as_ref() != Some(&key) {
-            self.value = selected_milestone_display(state).await;
+            self.value = selected_milestone_display(selection).await;
             self.key = Some(key);
         }
 
@@ -86,6 +85,12 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
         let Ok(state) = store::read_state().await else {
             continue;
         };
+        let selection =
+            project::read_project_selection()
+                .await
+                .unwrap_or_else(|_| ProjectSelection {
+                    selected_spec: state.selected_spec.clone(),
+                });
 
         let now = Utc::now();
         let state_elapsed = elapsed_since(state.updated_at, now);
@@ -134,7 +139,7 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
             last_sent_task_elapsed_secs = task_elapsed_secs;
             last_state = Some(state.clone());
             let (selected_spec_display, selected_milestone_display, selected_milestones) =
-                selected_display_cache.get(&state).await;
+                selected_display_cache.get(&selection).await;
             let _ = tx.send(Some(WatchedState {
                 state,
                 state_elapsed,
@@ -147,8 +152,10 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
     }
 }
 
-async fn selected_spec_fingerprint(state: &StateData) -> Option<(Option<SystemTime>, u64)> {
-    let path = state.selected_spec.as_deref()?.trim();
+async fn selected_spec_fingerprint(
+    selection: &ProjectSelection,
+) -> Option<(Option<SystemTime>, u64)> {
+    let path = selection.selected_spec.as_deref()?.trim();
     if path.is_empty() {
         return None;
     }
@@ -158,15 +165,15 @@ async fn selected_spec_fingerprint(state: &StateData) -> Option<(Option<SystemTi
 }
 
 async fn selected_milestone_display(
-    state: &StateData,
+    selection: &ProjectSelection,
 ) -> (Option<String>, Option<String>, Vec<WatchedMilestone>) {
-    let selected_spec_display = state
+    let selected_spec_display = selection
         .selected_spec
         .as_deref()
         .map(specs::spec_display_name)
         .map(|name| specs::compact_spec_display_name(&name))
         .filter(|name| !name.is_empty());
-    let selected_milestones = match state
+    let selected_milestones = match selection
         .selected_spec
         .as_deref()
         .filter(|path| !path.is_empty())
@@ -188,14 +195,11 @@ async fn selected_milestone_display(
         None => Vec::new(),
     };
 
-    match specs::resolve_selected(state).await {
-        Ok(SelectedMilestoneState::Found(selected)) => (
-            Some(specs::compact_spec_display_name(&selected.spec_display)),
-            Some(selected.milestone.marker),
-            selected_milestones,
-        ),
-        _ => (selected_spec_display, None, selected_milestones),
-    }
+    let next_ready = selected_milestones
+        .iter()
+        .find(|milestone| milestone.readiness == MilestoneReadiness::Ready)
+        .map(|milestone| milestone.marker.clone());
+    (selected_spec_display, next_ready, selected_milestones)
 }
 
 fn elapsed_since(started_at: DateTime<Utc>, now: DateTime<Utc>) -> Duration {

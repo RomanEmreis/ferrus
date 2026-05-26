@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::{config::Config, state::machine::StateData};
+use crate::{config::Config, project::ProjectSelection, state::machine::StateData};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Milestone {
@@ -192,6 +192,7 @@ pub fn milestone_plan(milestones: &[Milestone]) -> Vec<MilestonePlanItem> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub async fn select_first_incomplete(state: &mut StateData, spec_path: &str) -> Result<()> {
     let spec = load_spec(spec_path).await?;
     state.selected_spec = Some(spec_path.to_string());
@@ -203,19 +204,38 @@ pub async fn select_first_incomplete(state: &mut StateData, spec_path: &str) -> 
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn resolve_selected(state: &StateData) -> Result<SelectedMilestoneState> {
-    let Some(spec_path) = state
-        .selected_spec
-        .as_deref()
-        .filter(|path| !path.is_empty())
-    else {
+    resolve_spec_milestone(
+        state.selected_spec.as_deref(),
+        state.selected_milestone.as_deref(),
+    )
+    .await
+}
+
+pub async fn first_incomplete_selection(spec_path: &str) -> Result<ProjectSelection> {
+    Ok(ProjectSelection {
+        selected_spec: Some(spec_path.to_string()),
+    })
+}
+
+pub async fn first_incomplete_milestone_id(spec_path: &str) -> Result<Option<String>> {
+    let spec = load_spec(spec_path).await?;
+    Ok(spec
+        .milestones
+        .iter()
+        .find(|milestone| !milestone.completed)
+        .map(|milestone| milestone.id.clone()))
+}
+
+pub async fn resolve_spec_milestone(
+    spec_path: Option<&str>,
+    milestone_id: Option<&str>,
+) -> Result<SelectedMilestoneState> {
+    let Some(spec_path) = spec_path.filter(|path| !path.is_empty()) else {
         return Ok(SelectedMilestoneState::MissingSelection);
     };
-    let Some(milestone_id) = state
-        .selected_milestone
-        .as_deref()
-        .filter(|id| !id.is_empty())
-    else {
+    let Some(milestone_id) = milestone_id.filter(|id| !id.is_empty()) else {
         return Ok(SelectedMilestoneState::MissingSelection);
     };
 

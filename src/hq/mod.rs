@@ -16,8 +16,8 @@ use crate::agents::{AgentRunMode, ExecutorAgent, SupervisorAgent};
 use crate::checks::runner;
 use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::platform;
-use crate::project::TaskRecord;
-use crate::specs::{self, MilestoneReadiness, SelectedMilestone, SelectedMilestoneState};
+use crate::project::{ProjectSelection, TaskRecord};
+use crate::specs::{self, MilestoneReadiness, SelectedMilestone};
 use crate::state::{
     agents,
     machine::{StateData, TaskState},
@@ -1327,10 +1327,15 @@ impl HqContext {
             }
         }
 
+        let selection = crate::project::read_project_selection()
+            .await
+            .unwrap_or_else(|_| crate::project::ProjectSelection {
+                selected_spec: state.selected_spec.clone(),
+            });
         let selected = if manual {
             TaskMilestoneSelection::UseFallback
         } else {
-            self.selected_milestone_for_task(&state, confirm_selected_milestone)
+            self.selected_milestone_for_task(&selection, confirm_selected_milestone)
                 .await?
         };
         let selected = match selected {
@@ -1464,8 +1469,8 @@ impl HqContext {
             return Ok(());
         }
 
-        let state = store::read_state().await?;
-        let Some(spec_path) = state
+        let selection = crate::project::read_project_selection().await?;
+        let Some(spec_path) = selection
             .selected_spec
             .as_deref()
             .map(str::trim)
@@ -1807,71 +1812,70 @@ impl HqContext {
 
     async fn selected_milestone_for_task(
         &self,
-        state: &StateData,
+        selection: &ProjectSelection,
         confirm: bool,
     ) -> Result<TaskMilestoneSelection> {
-        match specs::resolve_selected(state).await? {
-            SelectedMilestoneState::MissingSelection => Ok(TaskMilestoneSelection::UseFallback),
-            SelectedMilestoneState::SpecMissing(path) => {
-                self.display.error(format!(
-                    "Selected spec no longer exists:\n{path}\n\nRun /milestones to select a valid milestone."
-                ));
-                Ok(TaskMilestoneSelection::Stop)
-            }
-            SelectedMilestoneState::MilestoneMissing(_) => {
-                self.display.error(
-                    "Selected milestone no longer exists in the spec.\nRun /milestones to select a valid milestone.",
-                );
-                Ok(TaskMilestoneSelection::Stop)
-            }
-            SelectedMilestoneState::Found(selected) if selected.milestone.completed => {
-                if !confirm {
-                    return Ok(TaskMilestoneSelection::Use(selected));
-                }
-                self.display.info(format!(
-                    "Selected milestone is already completed:\n{}",
-                    selected.milestone.display_title()
-                ));
-                let reply_rx = self.display.confirm_continue(
-                    "Choose another milestone with /milestones, or continue anyway?",
-                );
-                if reply_rx.await.unwrap_or(false) {
-                    Ok(TaskMilestoneSelection::Use(selected))
-                } else {
-                    self.display.muted("Task cancelled.");
-                    Ok(TaskMilestoneSelection::Stop)
-                }
-            }
-            SelectedMilestoneState::Found(selected) => {
-                if !confirm {
-                    return Ok(TaskMilestoneSelection::Use(selected));
-                }
-                self.display.muted(format!(
-                    "\n  • Using selected milestone\n  ╰─ {} / {}\n",
-                    selected.spec_path,
-                    selected.milestone.display_title()
-                ));
-                let reply_rx = self.display.confirm_yes("Proceed?");
-                if reply_rx.await.unwrap_or(true) {
-                    Ok(TaskMilestoneSelection::Use(selected))
-                } else {
-                    self.display.muted("Task cancelled.");
-                    Ok(TaskMilestoneSelection::Stop)
-                }
-            }
+        let Some(spec_path) = selection
+            .selected_spec
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        else {
+            return Ok(TaskMilestoneSelection::UseFallback);
+        };
+        if !Path::new(spec_path).exists() {
+            self.display.error(format!(
+                "Selected spec no longer exists:\n{spec_path}\n\nRun /milestones to select a valid spec."
+            ));
+            return Ok(TaskMilestoneSelection::Stop);
+        }
+
+        let plan = build_run_plan(spec_path).await?;
+        let Some(next) = plan.eligible.first() else {
+            self.display.info_block(run_plan_lines(&plan, 0));
+            self.display
+                .muted("No ready milestone is available. Use /task --manual for an ad-hoc task.");
+            return Ok(TaskMilestoneSelection::Stop);
+        };
+        let spec = specs::load_spec(&plan.spec_path).await?;
+        let milestone = spec
+            .milestones
+            .iter()
+            .find(|milestone| milestone.id == next.id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Ready milestone {} disappeared", next.id))?;
+        let selected = SelectedMilestone {
+            spec_path: spec.path.clone(),
+            spec_display: specs::spec_display_name(&spec.path),
+            milestone,
+        };
+
+        if !confirm {
+            return Ok(TaskMilestoneSelection::Use(selected));
+        }
+        self.display.muted(format!(
+            "\n  • Using next ready milestone\n  ╰─ {} / {}\n",
+            selected.spec_path,
+            selected.milestone.display_title()
+        ));
+        let reply_rx = self.display.confirm_yes("Proceed?");
+        if reply_rx.await.unwrap_or(true) {
+            Ok(TaskMilestoneSelection::Use(selected))
+        } else {
+            self.display.muted("Task cancelled.");
+            Ok(TaskMilestoneSelection::Stop)
         }
     }
 
     async fn reset_spec_selection(&mut self) -> Result<()> {
-        let mut state = store::read_state().await?;
-        if state.selected_spec.is_none() && state.selected_milestone.is_none() {
-            self.display
-                .muted("No selected spec or milestone to reset.");
+        let selection = crate::project::read_project_selection().await?;
+        if selection.selected_spec.is_none() {
+            self.display.muted("No selected spec to reset.");
             return Ok(());
         }
 
-        state.clear_selected_spec_and_milestone();
-        store::write_state(&state).await?;
+        crate::project::write_project_selection(&crate::project::ProjectSelection::default())
+            .await?;
 
         self.display
             .muted("Selected spec reset. /task will use manual task definition.");
@@ -1907,42 +1911,17 @@ impl HqContext {
             return Ok(());
         }
 
-        let options = spec
-            .milestones
-            .iter()
-            .map(|milestone| {
-                let check = if milestone.completed { "[x]" } else { "[ ]" };
-                format!(
-                    "{check} {}  ID: {}  Depends on: {}",
-                    milestone.display_title(),
-                    milestone.id,
-                    milestone.depends_on
-                )
-            })
-            .collect();
-        let Some(milestone_idx) = self
+        crate::project::write_project_selection(&crate::project::ProjectSelection {
+            selected_spec: Some(spec.path.clone()),
+        })
+        .await?;
+
+        self.display
+            .muted(format!("\n  • Selected spec\n  ╰─ {}\n", spec.path));
+
+        let reply_rx = self
             .display
-            .select("Select milestone:", options)
-            .await
-            .unwrap_or(None)
-        else {
-            self.display.muted("Milestone selection cancelled.");
-            return Ok(());
-        };
-
-        let milestone = &spec.milestones[milestone_idx];
-        let mut state = store::read_state().await?;
-        state.selected_spec = Some(spec.path.clone());
-        state.selected_milestone = Some(milestone.id.clone());
-        store::write_state(&state).await?;
-
-        self.display.muted(format!(
-            "\n  • Selected milestone\n  ├─ Spec: {}\n  ╰─ Milestone: {}\n",
-            spec.path,
-            milestone.display_title()
-        ));
-
-        let reply_rx = self.display.confirm("Create task from this milestone now?");
+            .confirm("Create task from the next ready milestone now?");
         if reply_rx.await.unwrap_or(false) {
             self.task(false, false).await?;
         }
@@ -2013,17 +1992,16 @@ impl HqContext {
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Ok(path) = store::read_last_spec_path().await {
-                        let path = path.trim();
-                        if !path.is_empty() {
-                            created_path = Some(path.to_string());
-                            self.stop_interactive_child(
-                                &mut child,
-                                "Spec created — waiting for supervisor to exit…",
-                            )
-                            .await?;
-                            break;
-                        }
+                    if let Ok(Some(path)) = crate::project::read_last_spec_path().await
+                        && !path.is_empty()
+                    {
+                        created_path = Some(path);
+                        self.stop_interactive_child(
+                            &mut child,
+                            "Spec created — waiting for supervisor to exit…",
+                        )
+                        .await?;
+                        break;
                     }
                 }
             }
@@ -2045,12 +2023,10 @@ impl HqContext {
         }
 
         if created_path.is_none()
-            && let Ok(path) = store::read_last_spec_path().await
+            && let Ok(Some(path)) = crate::project::read_last_spec_path().await
+            && !path.is_empty()
         {
-            let path = path.trim();
-            if !path.is_empty() {
-                created_path = Some(path.to_string());
-            }
+            created_path = Some(path);
         }
 
         if let Some(path) = created_path {
@@ -2222,7 +2198,7 @@ impl HqContext {
 }
 
 async fn prepare_spec_session_files() -> Result<()> {
-    store::read_state().await.context(
+    crate::project::touch_current_project().await.context(
         "Cannot start /spec because Ferrus is not initialized. Run `ferrus init` first.",
     )?;
 
@@ -2233,9 +2209,9 @@ async fn prepare_spec_session_files() -> Result<()> {
             .context("Failed to write .ferrus/SPEC_TEMPLATE.md")?;
     }
 
-    store::clear_last_spec_path()
+    crate::project::clear_last_spec_path()
         .await
-        .context("Failed to clear .ferrus/LAST_SPEC_PATH")
+        .context("Failed to clear spec handoff metadata")
 }
 
 async fn build_run_plan(spec_path: &str) -> Result<RunPlan> {
