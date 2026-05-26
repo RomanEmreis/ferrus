@@ -149,15 +149,9 @@ fn runtime_task_id() -> Option<String> {
 }
 
 async fn mirror_state_lease_if_current_task(
-    state: &mut crate::state::machine::StateData,
-    task: &TaskLease,
+    _state: &mut crate::state::machine::StateData,
+    _task: &TaskLease,
 ) -> Result<()> {
-    if state.active_task_id.as_deref() == Some(task.task_id.as_str()) {
-        state.claimed_by = Some(task.claimed_by.clone());
-        state.lease_until = Some(task.lease_until);
-        state.last_heartbeat = Some(chrono::Utc::now());
-        store::write_state(state).await?;
-    }
     Ok(())
 }
 

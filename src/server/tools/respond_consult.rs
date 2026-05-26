@@ -79,17 +79,12 @@ async fn run(agent_id: Option<&str>, response: String) -> Result<String> {
 }
 
 async fn write_consult_response(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     response: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_consult_response_for_run_dir(&context.run_dir, response).await?;
-        if let Some(state) = state
-            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
-        {
-            store::write_consult_response(response).await?;
-        }
         return Ok(());
     }
     store::write_consult_response(response).await

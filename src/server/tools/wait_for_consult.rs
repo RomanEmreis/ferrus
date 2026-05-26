@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_consult_restores_active_task_database_mirror_from_scoped_response() {
+    async fn wait_for_consult_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
         let mut state = StateData {
@@ -289,7 +289,7 @@ mod tests {
 
         assert_eq!(response, "answer");
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Addressing);
+        assert_eq!(state.state, TaskState::Consultation);
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "addressing");

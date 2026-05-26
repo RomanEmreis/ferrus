@@ -145,33 +145,23 @@ fn can_supervisor_ask_during_consultation(
 }
 
 async fn write_question(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     question: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_question_for_run_dir(&context.run_dir, question).await?;
-        if let Some(state) = state
-            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
-        {
-            store::write_question(question).await?;
-        }
         return Ok(());
     }
     store::write_question(question).await
 }
 
 async fn clear_answer(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> Result<()> {
     if let Some(context) = context {
         store::clear_answer_for_run_dir(&context.run_dir).await?;
-        if let Some(state) = state
-            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
-        {
-            store::clear_answer().await?;
-        }
         return Ok(());
     }
     store::clear_answer().await
@@ -307,7 +297,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ask_human_mirrors_active_task_to_database_task() {
+    async fn ask_human_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
         let mut state = StateData {
@@ -334,9 +324,9 @@ mod tests {
             .unwrap();
 
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::AwaitingHuman);
-        assert_eq!(state.paused_state, Some(TaskState::Addressing));
-        assert_eq!(state.awaiting_human_by.as_deref(), Some("executor:codex:1"));
+        assert_eq!(state.state, TaskState::Addressing);
+        assert_eq!(state.paused_state, None);
+        assert_eq!(state.awaiting_human_by, None);
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "awaiting_human");

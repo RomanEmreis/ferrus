@@ -272,6 +272,10 @@ Recovery is SQLite-first:
 - Project spec selection reads and writes the explicit SQLite `project_runtime_state` row after migration and no longer mirrors changes back into `STATE.json`.
 - HQ `/resume`, `/review`, and scheduler reconciliation use SQLite task rows first; legacy `STATE.json` is only a fallback for old single-task projects.
 - HQ `/check` without `STATE.json` runs workspace checks without mutating task state; task-scoped check retry accounting remains in executor MCP `/check`.
+- Shared MCP tool routing now treats a scoped SQLite runtime context as authoritative even when a stale `STATE.json` active task points at the same task id; legacy state is used only when no SQLite context is attached.
+- The old HQ complete-to-next-task preparation path was removed; new task scheduling no longer clears legacy mirror files or resets `STATE.json`.
+- MCP `/answer` is DB-first for scoped awaiting-human tasks and writes the response into the task run directory; legacy `STATE.json` answering remains only as fallback when no SQLite question is queued.
+- Scoped DB tools no longer mirror run artifacts or leases back into legacy single-task files (`QUESTION.md`, `ANSWER.md`, `CONSULT_*`, `SUBMISSION.md`, `REVIEW.md`) or `STATE.json` when a SQLite task context is present.
 
 ## What Remains
 

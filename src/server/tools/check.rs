@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_pass_mirrors_active_state_counters_to_database_task() {
+    async fn check_pass_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
         let mut state = StateData {
@@ -336,8 +336,8 @@ mod tests {
         run(Some("executor:codex:1")).await.unwrap();
 
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.check_retries, 0);
-        assert_eq!(state.failure_reason, None);
+        assert_eq!(state.check_retries, 1);
+        assert_eq!(state.failure_reason.as_deref(), Some("fmt failed"));
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "executing");

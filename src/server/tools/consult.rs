@@ -98,33 +98,23 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
 }
 
 async fn write_consult_request(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     question: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_consult_request_for_run_dir(&context.run_dir, question).await?;
-        if let Some(state) = state
-            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
-        {
-            store::write_consult_request(question).await?;
-        }
         return Ok(());
     }
     store::write_consult_request(question).await
 }
 
 async fn clear_consult_response(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
 ) -> Result<()> {
     if let Some(context) = context {
         store::clear_consult_response_for_run_dir(&context.run_dir).await?;
-        if let Some(state) = state
-            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
-        {
-            store::clear_consult_response().await?;
-        }
         return Ok(());
     }
     store::clear_consult_response().await
@@ -281,7 +271,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn consult_mirrors_active_task_to_database_task() {
+    async fn consult_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
         let mut state = StateData {
@@ -305,8 +295,8 @@ mod tests {
         run("executor:codex:1", request.to_string()).await.unwrap();
 
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Consultation);
-        assert_eq!(state.paused_state, Some(TaskState::Executing));
+        assert_eq!(state.state, TaskState::Executing);
+        assert_eq!(state.paused_state, None);
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "consultation");

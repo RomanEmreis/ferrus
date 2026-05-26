@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_answer_restores_active_task_database_mirror_from_scoped_answer() {
+    async fn wait_for_answer_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
         let mut state = crate::state::machine::StateData {
@@ -330,9 +330,9 @@ mod tests {
 
         assert_eq!(response["status"], "answered");
         assert_eq!(response["answer"], "Use the stable path.");
-        assert_eq!(response["resumed_state"], "Addressing");
+        assert_eq!(response["resumed_state"], "addressing");
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Addressing);
+        assert_eq!(state.state, TaskState::AwaitingHuman);
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "addressing");

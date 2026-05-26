@@ -200,17 +200,12 @@ async fn mirror_review_state(
 }
 
 async fn write_review(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     notes: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_review_for_run_dir(&context.run_dir, notes).await?;
-        if state
-            .is_some_and(|state| state.active_task_id.as_deref() == Some(context.task_id.as_str()))
-        {
-            store::write_review(notes).await?;
-        }
         return Ok(());
     }
     store::write_review(notes).await
@@ -330,7 +325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reject_mirrors_active_state_counters_to_database_task() {
+    async fn reject_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
         let mut state = StateData {
@@ -357,13 +352,13 @@ mod tests {
             .unwrap();
 
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Addressing);
-        assert_eq!(state.review_cycles, 2);
-        assert_eq!(state.check_retries, 0);
+        assert_eq!(state.state, TaskState::Reviewing);
+        assert_eq!(state.review_cycles, 1);
+        assert_eq!(state.check_retries, 4);
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "addressing");
-        assert_eq!(task.review_cycles, 2);
+        assert_eq!(task.review_cycles, 1);
         assert_eq!(task.check_retries, 0);
         assert_eq!(task.claimed_by, None);
 

@@ -274,17 +274,12 @@ async fn runtime_context(agent_id: Option<&str>) -> Option<RuntimeTaskContext> {
 }
 
 async fn write_submission(
-    state: Option<&StateData>,
+    _state: Option<&StateData>,
     context: Option<&RuntimeTaskContext>,
     content: &str,
 ) -> Result<()> {
     if let Some(context) = context {
         store::write_submission_for_run_dir(&context.run_dir, content).await?;
-        if let Some(state) = state
-            && state.active_task_id.as_deref() == Some(context.task_id.as_str())
-        {
-            store::write_submission_for_state(state, content).await?;
-        }
         return Ok(());
     }
     store::write_submission(content).await
@@ -442,7 +437,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_pass_mirrors_active_state_counters_to_database_task() {
+    async fn submit_pass_prefers_database_context_over_active_state_mirror() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (dir, previous) = setup().await;
         let data_dir = dir.path().join(".ferrus/projects/test-project");
@@ -491,9 +486,9 @@ mod tests {
         .unwrap();
 
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Reviewing);
-        assert_eq!(state.check_retries, 0);
-        assert_eq!(state.failure_reason, None);
+        assert_eq!(state.state, TaskState::Executing);
+        assert_eq!(state.check_retries, 1);
+        assert_eq!(state.failure_reason.as_deref(), Some("fmt failed"));
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "reviewing");
