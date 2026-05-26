@@ -66,7 +66,9 @@ impl SelectedDisplayCache {
     }
 }
 
-/// Poll STATE.json every 250 ms and refresh elapsed timers every second.
+/// Poll the compatibility state snapshot when present and refresh elapsed timers every second.
+/// New DB-first projects can run without `STATE.json`; in that case the dashboard uses an Idle
+/// compatibility snapshot and shows runtime task rows from SQLite.
 ///
 /// `updated_at` is the source of truth for how long the current state has been
 /// active. Total task time is tracked in-memory from the first observed
@@ -81,9 +83,7 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
     loop {
         tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
 
-        let Ok(state) = store::read_state().await else {
-            continue;
-        };
+        let state = store::read_state().await.unwrap_or_default();
         let selection =
             project::read_project_selection()
                 .await

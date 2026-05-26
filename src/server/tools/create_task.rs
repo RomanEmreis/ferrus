@@ -1,16 +1,14 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use neva::prelude::*;
 use tracing::info;
 
-use crate::{
-    project,
-    state::{machine::TaskState, store},
-};
+use crate::project;
 
 use super::tool_err;
 
-pub const DESCRIPTION: &str = "Create a new task for the Executor. Transitions state Idle → Executing and writes \
-     the task description to .ferrus/tasks/<task-id>.md. Must be called from state Idle.";
+pub const DESCRIPTION: &str = "Compatibility task creation tool. Prefer /enqueue_task. Writes \
+     the task description to .ferrus/tasks/<task-id>.md and records a pending SQLite task row. \
+     Does not change STATE.json.";
 
 pub const INPUT_SCHEMA: &str = r#"{
     "properties": {
@@ -27,36 +25,20 @@ pub async fn handler(description: String) -> Result<String, Error> {
 }
 
 async fn run(description: String) -> Result<String> {
-    let mut state = store::read_state().await?;
-
-    if state.state != TaskState::Idle {
-        anyhow::bail!(
-            "Cannot create task: current state is {:?}. \
-             The executor must complete or reset the current task first.",
-            state.state
-        );
+    if description.trim().is_empty() {
+        anyhow::bail!("Cannot create task: description is empty.");
     }
 
     let artifact = project::allocate_task_artifact().await?;
-    state.create_task()?;
-    state.set_active_task_artifacts(
-        artifact.id.clone(),
-        artifact.path.clone(),
-        artifact.run_dir.clone(),
-    );
-    store::write_task_for_state(&state, &description).await?;
-    store::clear_submission_for_state(&state).await?;
-    store::clear_consult_request().await?;
-    store::clear_consult_response().await?;
-    store::write_state(&state).await?;
-    project::record_task_status_with_origin(
-        &artifact.id,
-        &artifact.path,
-        "executing",
-        state.task_spec.as_deref(),
-        state.task_milestone.as_deref(),
-    )
-    .await?;
+    tokio::fs::write(&artifact.path, &description)
+        .await
+        .with_context(|| format!("Failed to write {}", artifact.path))?;
+    tokio::fs::create_dir_all(&artifact.run_dir)
+        .await
+        .with_context(|| format!("Failed to create {}", artifact.run_dir))?;
+
+    project::record_task_status_with_origin(&artifact.id, &artifact.path, "pending", None, None)
+        .await?;
     project::record_runtime_event_best_effort(
         None,
         "task_created",
@@ -64,21 +46,26 @@ async fn run(description: String) -> Result<String> {
             "task_id": artifact.id,
             "path": artifact.path,
             "run_dir": artifact.run_dir,
-            "spec_path": state.task_spec,
-            "milestone_id": state.task_milestone,
+            "spec_path": null,
+            "milestone_id": null,
             "description_bytes": description.len(),
         }),
     )
     .await;
 
-    info!("Task created, state → Executing");
-    Ok("Task created. State: Executing. The Executor can now call /wait_for_task.".to_string())
+    info!(
+        task_id = artifact.id,
+        "Task created through compatibility tool, DB task → pending"
+    );
+    Ok(format!(
+        "Task {} created. State: pending. Artifact: {}",
+        artifact.id, artifact.path
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::StateData, store};
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -95,7 +82,6 @@ mod tests {
         let local_ref = toml::to_string_pretty(&local_ref).unwrap();
         std::fs::write(dir.path().join(".ferrus/project.toml"), local_ref).unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
-        store::write_state(&StateData::default()).await.unwrap();
         (dir, previous)
     }
 
@@ -113,14 +99,7 @@ mod tests {
 
         run("Build the thing".to_string()).await.unwrap();
 
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Executing);
-        assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
-        assert_eq!(
-            state.active_task_path.as_deref(),
-            Some(".ferrus/tasks/t-001.md")
-        );
-        assert_eq!(state.active_run_dir.as_deref(), Some(".ferrus/runs/t-001"));
+        assert!(crate::state::store::read_state().await.is_err());
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/tasks/t-001.md")
                 .await
@@ -135,7 +114,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "t-001");
         assert_eq!(tasks[0].path, ".ferrus/tasks/t-001.md");
-        assert_eq!(tasks[0].status, "executing");
+        assert_eq!(tasks[0].status, "pending");
 
         teardown(previous);
     }

@@ -140,7 +140,8 @@ Semantics:
 - does not start an executor directly;
 - requires explicit user approval before the supervisor calls it.
 
-This keeps `/create_task` focused on the old single-task path and avoids overloading it with queue semantics.
+`/create_task` is now a compatibility alias for ad-hoc queued task creation; new prompts should use
+`/enqueue_task` because it accepts explicit origin metadata.
 
 ## Milestone Readiness
 
@@ -262,11 +263,14 @@ Recovery is SQLite-first:
 - Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
 - Dashboard runtime activity shows pending/running/reviewing/awaiting-human task rows before recent run rows.
 - Shared MCP helpers now distinguish legacy active `STATE.json` context from scoped SQLite runtime context consistently across DB-first tools.
+- MCP `/create_task` is DB-first and records a pending SQLite task without reading or writing `STATE.json`.
+- HQ `/reset` is DB-first and marks non-terminal SQLite task rows as `reset` without clearing Markdown history.
+- HQ plain-text human answers fall back to scoped SQLite questions when `STATE.json` is absent.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Retire legacy single-active-task tools that still intentionally depend on `STATE.json`: MCP `/create_task`, HQ `/reset`, and legacy HQ `/answer`.
+- Retire or convert remaining legacy single-active-task surfaces that still intentionally depend on `STATE.json`, especially MCP `/reset` and the legacy AwaitingHuman branch.
 - Remove compatibility `STATE.json` mirrors once the old single-task path is either migrated to SQLite or explicitly kept as a compatibility layer.
 
 ## Milestones

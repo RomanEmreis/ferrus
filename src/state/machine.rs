@@ -197,6 +197,7 @@ impl StateData {
     }
 
     /// `Idle → Executing`. Called by Supervisor via `/create_task`.
+    #[allow(dead_code)]
     pub fn create_task(&mut self) -> Result<(), TransitionError> {
         if self.state != TaskState::Idle {
             return Err(TransitionError::InvalidTransition {

@@ -217,7 +217,7 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             let watched = if let Some(watched) = ctx.state_rx.borrow().clone() {
                 watched
             } else {
-                let state = store::read_state().await?;
+                let state = store::read_state().await.unwrap_or_default();
                 WatchedState {
                     state,
                     state_elapsed: std::time::Duration::default(),
@@ -1119,11 +1119,21 @@ impl HqContext {
     }
 
     async fn do_reset(&mut self, prompt: bool) -> Result<()> {
-        let mut state = store::read_state().await?;
-        if prompt && matches!(state.state, TaskState::Executing | TaskState::Reviewing) {
+        let tasks = crate::project::list_tasks().await?;
+        let resettable = tasks
+            .iter()
+            .filter(|task| is_resettable_task_status(&task.status))
+            .cloned()
+            .collect::<Vec<_>>();
+        let running_agents = self
+            .headless
+            .values()
+            .filter(|handle| handle.is_alive())
+            .count();
+        if prompt && (!resettable.is_empty() || running_agents > 0) {
             let reply_rx = self.display.confirm(format!(
-                "Reset while state is {:?} — agents may be running. Continue?",
-                state.state
+                "Reset {task_count} non-terminal task(s) and stop {running_agents} running agent session(s)?",
+                task_count = resettable.len()
             ));
             let confirmed = reply_rx.await.unwrap_or(false);
             if !confirmed {
@@ -1141,34 +1151,34 @@ impl HqContext {
         }
         agents::write_agents(&reg).await?;
 
-        let active_task = state
-            .active_task_id
-            .clone()
-            .zip(state.active_task_path.clone());
-
-        store::clear_task_for_state(&state).await?;
-        store::clear_submission_for_state(&state).await?;
-        store::clear_answer().await?;
-        store::clear_consult_request().await?;
-        store::clear_consult_response().await?;
-        store::clear_question().await?;
-        store::clear_review_for_state(&state).await?;
-
-        state.force_reset();
-        store::write_state(&state).await?;
-        if let Some((task_id, task_path)) = active_task {
-            crate::project::record_task_status_best_effort(&task_id, &task_path, "reset").await;
+        for task in &resettable {
+            crate::project::record_task_status_with_origin(
+                &task.id,
+                &task.path,
+                "reset",
+                task.spec_path.as_deref(),
+                task.milestone_id.as_deref(),
+            )
+            .await?;
         }
-        crate::project::record_current_task_status_best_effort("idle").await;
-        crate::project::record_runtime_event_best_effort(None, "hq_reset", serde_json::json!({}))
-            .await;
+        crate::project::record_runtime_event_best_effort(
+            None,
+            "hq_reset",
+            serde_json::json!({
+                "reset_task_count": resettable.len(),
+                "stopped_agent_count": running_agents,
+            }),
+        )
+        .await;
 
         self.last_task_state = Some(TaskState::Idle);
         if prompt {
-            self.display
-                .info("State reset to Idle. All task files cleared.");
+            self.display.info(format!(
+                "Runtime reset. {} non-terminal task(s) marked reset.",
+                resettable.len()
+            ));
         } else {
-            tracing::debug!("state reset to Idle; task files cleared");
+            tracing::debug!(reset_task_count = resettable.len(), "runtime reset");
         }
         Ok(())
     }
@@ -1975,7 +1985,9 @@ impl HqContext {
         if response.trim().is_empty() {
             anyhow::bail!("Answer cannot be empty.");
         }
-        let state = store::read_state().await?;
+        let Ok(state) = store::read_state().await else {
+            return self.answer_scoped_human_question(response).await;
+        };
         if state.state != TaskState::AwaitingHuman {
             return self.answer_scoped_human_question(response).await;
         }
@@ -2025,8 +2037,9 @@ impl HqContext {
     }
 
     async fn has_pending_human_question(&self) -> Result<bool> {
-        let state = store::read_state().await?;
-        if state.state == TaskState::AwaitingHuman {
+        if let Ok(state) = store::read_state().await
+            && state.state == TaskState::AwaitingHuman
+        {
             return Ok(true);
         }
         Ok(!crate::project::list_human_questions().await?.is_empty())
@@ -2328,6 +2341,10 @@ fn task_has_active_external_claim(task: &TaskRecord, now: chrono::DateTime<chron
         .is_some_and(|lease_until| lease_until.with_timezone(&chrono::Utc) > now)
 }
 
+fn is_resettable_task_status(status: &str) -> bool {
+    !matches!(status, "idle" | "reset" | "complete" | "failed")
+}
+
 #[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub(crate) enum TransitionAction {
@@ -2613,6 +2630,57 @@ mod tests {
         std::env::set_current_dir(previous).unwrap();
     }
 
+    #[tokio::test]
+    async fn reset_marks_non_terminal_database_tasks_without_state_json() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let data_dir = dir.path().join("runtime");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "pending")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "complete")
+            .await
+            .unwrap();
+
+        let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
+        let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
+        ctx.do_reset(false).await.unwrap();
+
+        assert!(store::read_state().await.is_err());
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let status = |id: &str| {
+            tasks
+                .iter()
+                .find(|task| task.id == id)
+                .map(|task| task.status.as_str())
+        };
+        assert_eq!(status("t-001"), Some("reset"));
+        assert_eq!(status("t-002"), Some("reset"));
+        assert_eq!(status("t-003"), Some("complete"));
+
+        std::env::set_current_dir(previous).unwrap();
+    }
+
     #[test]
     fn run_plan_prompt_context_uses_selected_prefix_only() {
         let plan = RunPlan {
@@ -2792,7 +2860,6 @@ mod tests {
         )
         .await
         .unwrap();
-        store::write_state(&StateData::default()).await.unwrap();
         crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
             .await
             .unwrap();
@@ -2813,6 +2880,7 @@ mod tests {
 
         dispatch("Use option A", &mut ctx).await.unwrap();
 
+        assert!(store::read_state().await.is_err());
         assert_eq!(
             store::read_answer_for_run_dir(".ferrus/runs/t-007")
                 .await

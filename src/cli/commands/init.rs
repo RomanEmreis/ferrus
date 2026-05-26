@@ -1,10 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::{
-    state::{machine::StateData, store},
-    templates::{SPEC_TEMPLATE, TASK_TEMPLATE},
-};
+use crate::templates::{SPEC_TEMPLATE, TASK_TEMPLATE};
 
 const DEFAULT_FERRUS_TOML: &str = r#"[checks]
 commands = []
@@ -272,7 +269,7 @@ to block until the human responds). The human types their answer in the HQ termi
 ## CLI
 
 ```sh
-ferrus init [--agents-path <path>]              # scaffold project files and register ~/.ferrus state
+ferrus init [--agents-path <path>]              # scaffold project files and register ~/.ferrus runtime
 ferrus serve [--role supervisor|executor]       # start MCP server on stdio
 ferrus register --supervisor <a> --supervisor-model <m> --executor <a> --executor-model <m> # write MCP config for agents
 ferrus doctor                                   # verify project metadata, artifacts, and runtime DB
@@ -319,7 +316,8 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 ### Supervisor
 | Tool | From state | Description |
 |---|---|---|
-| `create_task` | Idle | Write task description; moves to Executing |
+| `create_task` | — | Compatibility alias for queued task creation; prefer `enqueue_task` |
+| `enqueue_task` | — | Write approved numbered task artifact and DB `pending` row |
 | `create_spec` | any | Write approved Markdown spec to the configured spec directory |
 | `wait_for_review` | — | Long-poll until state is Reviewing |
 | `review_pending` | Reviewing | Read task + submission context |
@@ -360,7 +358,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://spec_template` | Feature specification template (`SPEC_TEMPLATE.md`) |
 | `ferrus://consult_request` | Scoped pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Scoped Supervisor consultation response (`CONSULT_RESPONSE.md`) |
-| `ferrus://state` | Current task state as JSON (`STATE.json`) |
+| `ferrus://state` | Legacy compatibility state JSON when present |
 | `ferrus://runtime_context` | Agent id, inherited Ferrus env vars, and resolved SQLite task context as JSON |
 
 ## MCP prompts
@@ -403,24 +401,22 @@ model = ""              # optional override; empty = agent default
 
 Ferrus separates project-local artifacts from machine-local runtime state:
 
-- `.ferrus/` stores human-readable project files and current compatibility state.
+- `.ferrus/` stores human-readable project files and legacy compatibility mirrors.
 - `~/.ferrus/projects/<project-id>/` stores machine-local metadata, `ferrus.db`, and logs.
 
-The current single-task loop still uses `.ferrus/STATE.json` as a compatibility state-machine
-snapshot. Executor task claims and heartbeat renewals are coordinated through `ferrus.db` task lease
-columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task
-status, lifecycle events, reset events, and HQ-spawned headless runs as the durable substrate for
-multi-task and multi-executor coordination. On HQ startup, global project metadata is touched, stale
-running DB rows whose PIDs are gone are marked `interrupted`, expired task leases are released, and
-stale `STATE.json` lease mirrors are cleared.
+SQLite is the runtime coordination store. Executor task claims and heartbeat renewals are coordinated
+through `ferrus.db` task lease columns. `ferrus.db` also stores task status, lifecycle events, reset
+events, and HQ-spawned headless runs as the durable substrate for multi-task and multi-executor
+coordination. On HQ startup, global project metadata is touched, stale running DB rows whose PIDs are
+gone are marked `interrupted`, and expired task leases are released.
 
 ### `.ferrus/`
 
 | File | Contents |
 |---|---|
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
-| `STATE.json` | Compatibility state snapshot, mirrored lease fields, counters, schema version, timestamp, PID |
-| `STATE.lock` | Advisory lock file for atomic claiming |
+| `STATE.json` | Legacy compatibility state snapshot when migrating older projects |
+| `STATE.lock` | Legacy advisory lock file for compatibility fallback paths |
 | `TASK.md` | Task drafting template |
 | `REVIEW.md` | Compatibility mirror of active review notes |
 | `SUBMISSION.md` | Compatibility mirror of active submission notes |
@@ -510,14 +506,6 @@ async fn create_ferrus_dir() -> Result<()> {
             .await
             .context("Failed to write .ferrus/TASK.md")?;
         println!("Created .ferrus/TASK.md");
-    }
-
-    let state_path = dir.join("STATE.json");
-    if !state_path.exists() {
-        store::write_state(&StateData::default())
-            .await
-            .context("Failed to write .ferrus/STATE.json")?;
-        println!("Created .ferrus/STATE.json");
     }
 
     for filename in [

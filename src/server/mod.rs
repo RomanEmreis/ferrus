@@ -224,8 +224,14 @@ pub async fn start(role: Option<Role>, agent_name: String, agent_index: u32) -> 
         })
         .with_description(tools::status::DESCRIPTION);
     }
-    app.map_tool("reset", tools::reset::handler)
+    {
+        let id = agent_id.clone();
+        app.map_tool("reset", move || {
+            let id = id.clone();
+            async move { tools::reset::handler_for_agent(&id).await }
+        })
         .with_description(tools::reset::DESCRIPTION);
+    }
     {
         let id = agent_id.clone();
         app.map_tool("heartbeat", move || {

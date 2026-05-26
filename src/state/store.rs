@@ -110,6 +110,7 @@ pub async fn read_task_at(task_path: &str) -> Result<String> {
     read_path(Path::new(task_path)).await
 }
 
+#[allow(dead_code)]
 pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()> {
     if let Some(path) = state.active_task_path.as_deref() {
         write_path(Path::new(path), content).await?;
@@ -117,6 +118,7 @@ pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn clear_task_for_state(state: &StateData) -> Result<()> {
     if let Some(path) = state.active_task_path.as_deref() {
         write_path(Path::new(path), "").await?;
