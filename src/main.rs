@@ -15,11 +15,22 @@ mod update_check;
 
 #[cfg(test)]
 mod test_support {
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    pub(crate) fn cwd_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    pub(crate) struct RecoveringMutex(Mutex<()>);
+
+    impl RecoveringMutex {
+        pub(crate) fn lock(&self) -> Result<MutexGuard<'_, ()>, std::convert::Infallible> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()))
+        }
+    }
+
+    pub(crate) fn cwd_lock() -> &'static RecoveringMutex {
+        static LOCK: OnceLock<RecoveringMutex> = OnceLock::new();
+        LOCK.get_or_init(|| RecoveringMutex(Mutex::new(())))
     }
 }
 

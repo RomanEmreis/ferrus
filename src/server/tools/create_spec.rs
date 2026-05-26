@@ -53,7 +53,7 @@ async fn run(markdown: String) -> Result<String> {
     let content = ensure_trailing_newline(markdown);
     let path = create_unique_spec_file(&spec_dir, &base_name, content.as_bytes()).await?;
 
-    let display_path = path.display().to_string();
+    let display_path = storage_path(&path);
     project::write_last_spec_path(&display_path).await?;
     let selection = specs::first_incomplete_selection(&display_path).await?;
     let first_milestone_id = specs::first_incomplete_milestone_id(&display_path).await?;
@@ -136,6 +136,10 @@ fn spec_path_candidate(dir: &Path, base_name: &str, suffix: u32) -> PathBuf {
     } else {
         dir.join(format!("{base_name}-{suffix}.md"))
     }
+}
+
+fn storage_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn ensure_trailing_newline(mut markdown: String) -> String {
