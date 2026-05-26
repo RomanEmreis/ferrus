@@ -99,9 +99,7 @@ fn state_section(
             state.review_cycles,
         )
     } else {
-        anyhow::bail!(
-            "Cannot build prompt state: no SQLite runtime task context and STATE.json is unavailable"
-        );
+        ("sqlite-runtime".to_string(), 0, 0)
     };
     let mut lines = vec![format!(
         "## {title}\n\nCurrent state: **{state_label}** | Check retries: {check_retries} | Review cycles: {review_cycles}"
@@ -117,6 +115,11 @@ fn state_section(
         if let Some(workspace_path) = context.workspace_path.as_deref() {
             lines.push(format!("Workspace: `{workspace_path}`"));
         }
+    } else if state.is_none() {
+        lines.push(
+            "No scoped SQLite task context is attached to this agent; call the appropriate wait tool first."
+                .to_string(),
+        );
     }
     Ok(lines.join("\n"))
 }
@@ -256,6 +259,29 @@ mod tests {
 
         assert!(text.contains("Current state: **executing**"));
         assert!(text.contains("scoped task"));
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn executor_prompt_without_task_context_does_not_require_state_json() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        tokio::fs::write(".ferrus/TASK.md", "task template")
+            .await
+            .unwrap();
+
+        let text = prompt_text(
+            executor_context_for_agent(Some("executor:codex:7"))
+                .await
+                .unwrap(),
+        );
+
+        assert!(text.contains("Current state: **sqlite-runtime**"));
+        assert!(text.contains("No scoped SQLite task context"));
+        assert!(text.contains("task template"));
         teardown(previous);
     }
 }

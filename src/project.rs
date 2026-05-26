@@ -855,20 +855,11 @@ pub async fn read_project_selection() -> Result<ProjectSelection> {
         }
     };
 
-    let selection = tokio::task::spawn_blocking(move || -> Result<ProjectSelection> {
+    tokio::task::spawn_blocking(move || -> Result<ProjectSelection> {
         let connection = open_runtime_database(&database_path)?;
         read_project_selection_from_database(&connection)
     })
-    .await??;
-
-    if selection.selected_spec.is_none()
-        && let Ok(legacy) = read_legacy_selection().await
-        && legacy.selected_spec.is_some()
-    {
-        return Ok(legacy);
-    }
-
-    Ok(selection)
+    .await?
 }
 
 pub async fn write_project_selection(selection: &ProjectSelection) -> Result<()> {
@@ -888,17 +879,6 @@ pub async fn write_project_selection(selection: &ProjectSelection) -> Result<()>
         Ok(())
     })
     .await??;
-
-    if let Ok(mut state) = crate::state::store::read_state().await {
-        state.selected_spec = selection.selected_spec.clone();
-        state.selected_milestone = None;
-        if let Err(err) = crate::state::store::write_state(&state).await {
-            warn!(
-                error = ?err,
-                "failed to mirror project selection into compatibility STATE.json"
-            );
-        }
-    }
 
     Ok(())
 }
@@ -3750,7 +3730,7 @@ mod tests {
             }
         );
         let state = store::read_state().await.unwrap();
-        assert_eq!(state.selected_spec.as_deref(), Some("docs/specs/spec.md"));
+        assert!(state.selected_spec.is_none());
         assert!(state.selected_milestone.is_none());
 
         teardown(previous);

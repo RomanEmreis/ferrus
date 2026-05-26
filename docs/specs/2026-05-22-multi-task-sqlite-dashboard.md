@@ -257,7 +257,7 @@ Recovery is SQLite-first:
 - `ferrus recover --worktrees` previews or removes orphaned managed worktrees while preserving worktrees owned by active task rows or active run rows.
 - Failed canonical patch application during approval is recorded as `INTEGRATION_ERROR.md`, mirrored into SQLite `failure_reason` and runtime events, and returned by `/review_pending` so the reviewer can reject with concrete conflict details.
 - HQ active spec and `/create_spec` handoff metadata are stored in the explicit single-row `ferrus.db` `project_runtime_state` table. Milestone execution is derived from spec readiness plus `tasks.spec_path`/`tasks.milestone_id`; there is no global selected milestone in canonical runtime state.
-- HQ periodically reconciles SQLite runtime work: reaps exited headless handles, starts reviewers for reviewing DB tasks, and fills freed executor slots with pending DB tasks.
+- HQ periodically reconciles SQLite runtime work without requiring `STATE.json`: reaps exited headless handles, starts reviewers for reviewing DB tasks, starts consultation supervisors, and fills freed executor slots with pending/executing/addressing DB tasks that do not have a live external lease.
 - Review workers launched for DB tasks receive `FERRUS_TASK_ID` and claim that exact task instead of racing for the next available review.
 - Consultation workers launched for DB tasks receive `FERRUS_TASK_ID` and attach to that exact consultation instead of racing for the next available consultation.
 - Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
@@ -266,12 +266,18 @@ Recovery is SQLite-first:
 - MCP `/create_task` is DB-first and records a pending SQLite task without reading or writing `STATE.json`.
 - HQ `/reset` is DB-first and marks non-terminal SQLite task rows as `reset` without clearing Markdown history.
 - HQ plain-text human answers fall back to scoped SQLite questions when `STATE.json` is absent.
+- MCP `/status` without an agent task context reports a SQLite task summary instead of requiring `STATE.json`.
+- MCP `ferrus://state` is DB-first and returns SQLite project selection, task rows, recent run rows, and the caller's task context when present.
+- MCP prompts no longer require `STATE.json` when no scoped task context is attached; they report an unscoped SQLite runtime state and instruct the agent to call the appropriate wait tool.
+- Project spec selection reads and writes the explicit SQLite `project_runtime_state` row after migration and no longer mirrors changes back into `STATE.json`.
+- HQ `/resume`, `/review`, and scheduler reconciliation use SQLite task rows first; legacy `STATE.json` is only a fallback for old single-task projects.
+- HQ `/check` without `STATE.json` runs workspace checks without mutating task state; task-scoped check retry accounting remains in executor MCP `/check`.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Retire or convert remaining legacy single-active-task surfaces that still intentionally depend on `STATE.json`, especially MCP `/reset` and the legacy AwaitingHuman branch.
-- Remove compatibility `STATE.json` mirrors once the old single-task path is either migrated to SQLite or explicitly kept as a compatibility layer.
+- Retire or quarantine the remaining legacy single-active-task compatibility branches in MCP tools once migration coverage is final.
+- Remove compatibility `STATE.json` artifact helpers after the old single-task path is either fully migrated to SQLite or explicitly kept as an isolated compatibility layer.
 
 ## Milestones
 
@@ -395,5 +401,5 @@ active questions, active consultations, and active task identity.
 
 - Worktree isolation may force earlier changes to executor launch paths than expected.
 - The final integration policy needs concrete rules for conflicts, ownership, and partial failures.
-- `STATE.json` cutover should wait until dashboard, ask-human, consultations, and recovery are all DB-backed.
+- `STATE.json` cutover should keep migration/doctor compatibility explicit while avoiding new runtime mirrors.
 - Agent environment propagation for deterministic task id and agent id must be verified per backend.

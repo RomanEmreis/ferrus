@@ -70,8 +70,9 @@ pub async fn read_for_agent(
                 .map_err(to_err)?,
         ),
         "state" => {
-            let state = store::read_state().await.map_err(to_err)?;
-            let json = serde_json::to_string_pretty(&state).map_err(to_err)?;
+            let json = read_runtime_state_for_agent(agent_id)
+                .await
+                .map_err(to_err)?;
             ("application/json", json)
         }
         "runtime_context" => (
@@ -204,6 +205,92 @@ async fn read_runtime_context_for_agent(agent_id: Option<&str>) -> anyhow::Resul
                 payload["task_context_error"] = serde_json::json!(err.to_string());
             }
         }
+    }
+
+    serde_json::to_string_pretty(&payload).map_err(Into::into)
+}
+
+async fn read_runtime_state_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    match read_sqlite_runtime_state_for_agent(agent_id).await {
+        Ok(json) => Ok(json),
+        Err(sqlite_err) => {
+            let state = store::read_state().await.map_err(|legacy_err| {
+                anyhow::anyhow!(
+                    "Cannot read SQLite runtime state ({sqlite_err}) or legacy STATE.json ({legacy_err})"
+                )
+            })?;
+            serde_json::to_string_pretty(&state).map_err(Into::into)
+        }
+    }
+}
+
+async fn read_sqlite_runtime_state_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
+    let selection = project::read_project_selection().await?;
+    let tasks = project::list_tasks().await?;
+    let runs = project::list_runs(10).await?;
+
+    let task_payloads: Vec<_> = tasks
+        .iter()
+        .map(|task| {
+            serde_json::json!({
+                "id": task.id,
+                "path": task.path,
+                "spec_path": task.spec_path,
+                "milestone_id": task.milestone_id,
+                "status": task.status,
+                "paused_status": task.paused_status,
+                "claimed_by": task.claimed_by,
+                "lease_until": task.lease_until,
+                "last_heartbeat": task.last_heartbeat,
+                "check_retries": task.check_retries,
+                "review_cycles": task.review_cycles,
+                "failure_reason": task.failure_reason,
+            })
+        })
+        .collect();
+    let run_payloads: Vec<_> = runs
+        .iter()
+        .map(|run| {
+            serde_json::json!({
+                "id": run.id,
+                "task_id": run.task_id,
+                "role": run.role,
+                "agent": run.agent,
+                "status": run.status,
+                "started_at": run.started_at,
+                "updated_at": run.updated_at,
+                "pid": run.pid,
+                "workspace_path": run.workspace_path,
+            })
+        })
+        .collect();
+
+    let mut payload = serde_json::json!({
+        "source": "sqlite",
+        "selection": {
+            "selected_spec": selection.selected_spec,
+        },
+        "tasks": task_payloads,
+        "recent_runs": run_payloads,
+        "agent_id": agent_id,
+        "task_context": null,
+    });
+
+    if let Some(agent_id) = agent_id
+        && let Some(context) = project::runtime_task_context_for_agent(agent_id).await?
+    {
+        payload["task_context"] = serde_json::json!({
+            "task_id": context.task_id,
+            "task_path": context.task_path,
+            "run_dir": context.run_dir,
+            "status": context.status,
+            "paused_status": context.paused_status,
+            "check_retries": context.check_retries,
+            "review_cycles": context.review_cycles,
+            "failure_reason": context.failure_reason,
+            "run_id": context.run_id,
+            "workspace_path": context.workspace_path,
+        });
     }
 
     serde_json::to_string_pretty(&payload).map_err(Into::into)
@@ -426,6 +513,50 @@ mod tests {
         );
         assert_eq!(payload["task_context"]["status"], "executing");
         assert!(payload["task_context_error"].is_null());
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn state_resource_prefers_sqlite_runtime_state_without_state_json() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        crate::project::write_project_selection(&crate::project::ProjectSelection {
+            selected_spec: Some("docs/specs/example.md".to_string()),
+        })
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        let result = read_for_agent(Some("executor:codex:7"), "state".to_string())
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&text(result)).unwrap();
+
+        assert_eq!(payload["source"], "sqlite");
+        assert_eq!(
+            payload["selection"]["selected_spec"],
+            "docs/specs/example.md"
+        );
+        assert_eq!(payload["tasks"][0]["id"], "t-007");
+        assert_eq!(payload["task_context"]["task_id"], "t-007");
         teardown(previous);
     }
 

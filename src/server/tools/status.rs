@@ -32,9 +32,7 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
             format!("**Review cycles:** {}", state.review_cycles),
         ]
     } else {
-        anyhow::bail!(
-            "Cannot read status: no SQLite runtime task context and STATE.json is unavailable"
-        );
+        sqlite_status_lines().await?
     };
 
     if let Some(reason) = context
@@ -72,6 +70,52 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
     }
 
     Ok(lines.join("\n"))
+}
+
+async fn sqlite_status_lines() -> Result<Vec<String>> {
+    let tasks = project::list_tasks().await?;
+    let running = tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.status.as_str(),
+                "executing" | "addressing" | "consultation" | "checking" | "reviewing"
+            )
+        })
+        .count();
+    let awaiting_human = tasks
+        .iter()
+        .filter(|task| task.status == "awaiting_human")
+        .count();
+    let pending = tasks.iter().filter(|task| task.status == "pending").count();
+    let complete = tasks
+        .iter()
+        .filter(|task| task.status == "complete")
+        .count();
+
+    let mut lines = vec![
+        "**State:** sqlite-runtime".to_string(),
+        format!(
+            "**Tasks:** {running} running, {awaiting_human} awaiting human, {pending} pending, {complete} complete"
+        ),
+    ];
+    for task in tasks.iter().filter(|task| {
+        !matches!(
+            task.status.as_str(),
+            "idle" | "reset" | "complete" | "failed"
+        )
+    }) {
+        let claim = task
+            .claimed_by
+            .as_deref()
+            .map(|claimed_by| format!(" claimed_by={claimed_by}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {} {} ({}){}",
+            task.id, task.status, task.path, claim
+        ));
+    }
+    Ok(lines)
 }
 
 #[cfg(test)]
@@ -145,6 +189,25 @@ mod tests {
 
         assert!(output.contains("**State:** addressing"));
         assert!(output.contains("**Task:** t-007"));
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn status_reports_sqlite_summary_when_state_json_and_agent_context_are_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (dir, previous) = setup().await;
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "pending")
+            .await
+            .unwrap();
+
+        let output = run(None).await.unwrap();
+
+        assert!(output.contains("**State:** sqlite-runtime"));
+        assert!(output.contains("**Tasks:** 0 running, 0 awaiting human, 1 pending, 0 complete"));
+        assert!(output.contains("- t-007 pending (.ferrus/tasks/t-007.md)"));
         teardown(previous);
     }
 }

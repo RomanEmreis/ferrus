@@ -927,18 +927,17 @@ impl HqContext {
     async fn reconcile_runtime_schedule(&mut self) -> Result<()> {
         self.reap_exited_headless().await;
 
-        let state = store::read_state().await?;
-        if !matches!(state.state, TaskState::Idle | TaskState::Complete) {
+        if let Ok(state) = store::read_state().await
+            && !matches!(state.state, TaskState::Idle | TaskState::Complete)
+        {
             return Ok(());
         }
 
         let _ = crate::project::recover_runtime_state().await;
         let tasks = crate::project::list_tasks().await?;
         if !tasks.iter().any(|task| {
-            matches!(
-                task.status.as_str(),
-                "pending" | "reviewing" | "consultation"
-            )
+            is_executor_ready_task_status(&task.status)
+                || matches!(task.status.as_str(), "reviewing" | "consultation")
         }) {
             return Ok(());
         }
@@ -1005,6 +1004,39 @@ impl HqContext {
     }
 
     async fn resume(&mut self) -> Result<()> {
+        let _ = crate::project::recover_runtime_state().await;
+        let tasks = crate::project::list_tasks().await?;
+        let has_runtime_work = tasks.iter().any(|task| {
+            is_executor_ready_task_status(&task.status)
+                || matches!(task.status.as_str(), "reviewing" | "consultation")
+        });
+        if has_runtime_work {
+            self.ensure_hq_config().await?;
+            let config = Config::load().await?;
+            let max_parallel = config.limits.max_parallel_tasks.max(1);
+            let consultation = self
+                .schedule_consultation_tasks(&tasks, max_parallel)
+                .await?;
+            let reviewing = self.schedule_reviewing_tasks(&tasks, max_parallel).await?;
+            let executor = self
+                .schedule_queued_tasks_from(tasks, max_parallel, true)
+                .await?;
+            if consultation + reviewing + executor == 0 {
+                self.display.info(
+                    "No additional runtime task session started. Use /tasks to inspect work.",
+                );
+            }
+            return Ok(());
+        }
+
+        let state = match store::read_state().await {
+            Ok(state) => state,
+            Err(_) => {
+                self.display
+                    .info("No resumable SQLite task found. Use /task or /run to queue work.");
+                return Ok(());
+            }
+        };
         if self
             .headless
             .iter()
@@ -1015,8 +1047,6 @@ impl HqContext {
             );
             return Ok(());
         }
-
-        let state = store::read_state().await?;
         match state.state {
             TaskState::Complete => {
                 self.display
@@ -1064,7 +1094,25 @@ impl HqContext {
     }
 
     async fn review(&mut self) -> Result<()> {
-        let state = store::read_state().await?;
+        let tasks = crate::project::list_tasks().await?;
+        if tasks.iter().any(|task| task.status == "reviewing") {
+            self.ensure_hq_config().await?;
+            let config = Config::load().await?;
+            let max_parallel = config.limits.max_parallel_tasks.max(1);
+            let spawned = self.schedule_reviewing_tasks(&tasks, max_parallel).await?;
+            if spawned == 0 {
+                self.display
+                    .info("No reviewer session started. Reviewing task(s) may already be claimed.");
+            }
+            return Ok(());
+        }
+
+        let state = match store::read_state().await {
+            Ok(state) => state,
+            Err(_) => {
+                anyhow::bail!("No SQLite reviewing task found. Use /status.");
+            }
+        };
         if state.state != TaskState::Reviewing {
             anyhow::bail!(
                 "State is {:?} — /review requires Reviewing. Use /status.",
@@ -1079,31 +1127,8 @@ impl HqContext {
     }
 
     async fn check(&mut self, force: bool) -> Result<()> {
-        if force {
-            let config = Config::load().await?;
-            if config.checks.commands.is_empty() {
-                self.display.info(
-                    "Checks passed. Warning: no check commands are configured in ferrus.toml.",
-                );
-                return Ok(());
-            }
-
-            let result = runner::run_checks(&config.checks.commands).await?;
-            if result.passed {
-                self.display
-                    .info("All configured checks passed. State was not modified.");
-            } else {
-                let failed = result
-                    .commands
-                    .iter()
-                    .filter(|cmd| !cmd.passed)
-                    .map(|cmd| format!("- `{}`", cmd.command))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                self.display.error(format!(
-                    "Forced HQ checks failed. State was not modified.\n\nFailed commands:\n{failed}"
-                ));
-            }
+        if force || store::read_state().await.is_err() {
+            self.run_hq_checks_without_state().await?;
             return Ok(());
         }
 
@@ -1111,6 +1136,33 @@ impl HqContext {
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         self.display.info(result);
+        Ok(())
+    }
+
+    async fn run_hq_checks_without_state(&self) -> Result<()> {
+        let config = Config::load().await?;
+        if config.checks.commands.is_empty() {
+            self.display
+                .info("Checks passed. Warning: no check commands are configured in ferrus.toml.");
+            return Ok(());
+        }
+
+        let result = runner::run_checks(&config.checks.commands).await?;
+        if result.passed {
+            self.display
+                .info("All configured checks passed. Task state was not modified.");
+        } else {
+            let failed = result
+                .commands
+                .iter()
+                .filter(|cmd| !cmd.passed)
+                .map(|cmd| format!("- `{}`", cmd.command))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.display.error(format!(
+                "HQ checks failed. Task state was not modified.\n\nFailed commands:\n{failed}"
+            ));
+        }
         Ok(())
     }
 
@@ -1608,8 +1660,14 @@ impl HqContext {
         max_parallel: usize,
         report_waiting: bool,
     ) -> Result<usize> {
-        let pending_count = tasks.iter().filter(|task| task.status == "pending").count();
-        if pending_count == 0 {
+        let now = chrono::Utc::now();
+        let ready_tasks = tasks
+            .into_iter()
+            .filter(|task| is_executor_ready_task_status(&task.status))
+            .filter(|task| !task_has_active_external_claim(task, now))
+            .collect::<Vec<_>>();
+        let ready_count = ready_tasks.len();
+        if ready_count == 0 {
             return Ok(0);
         }
 
@@ -1618,24 +1676,20 @@ impl HqContext {
         if slots == 0 {
             if report_waiting {
                 self.display.info(format!(
-                    "{pending_count} queued task(s) waiting; executor parallelism limit is {max_parallel}."
+                    "{ready_count} executor-ready task(s) waiting; executor parallelism limit is {max_parallel}."
                 ));
             }
             return Ok(0);
         }
 
-        let requested = pending_count.min(slots);
+        let requested = ready_count.min(slots);
         let mut spawned = 0usize;
         let mut started_task_ids = Vec::new();
         let mut spawn_error = None;
         let prompt = agent_manager::executor_prompt();
-        let pending_tasks = tasks
-            .into_iter()
-            .filter(|task| task.status == "pending")
-            .take(requested)
-            .collect::<Vec<_>>();
+        let ready_tasks = ready_tasks.into_iter().take(requested).collect::<Vec<_>>();
 
-        for task in &pending_tasks {
+        for task in &ready_tasks {
             if spawned >= requested {
                 break;
             }
@@ -1667,7 +1721,7 @@ impl HqContext {
         if spawned > 0 {
             let task_ids = started_task_ids.join(", ");
             self.display.info(format!(
-                "Started executor session(s) for {} queued task(s): {task_ids}",
+                "Started executor session(s) for {} ready task(s): {task_ids}",
                 started_task_ids.len()
             ));
         }
@@ -2345,6 +2399,10 @@ fn is_resettable_task_status(status: &str) -> bool {
     !matches!(status, "idle" | "reset" | "complete" | "failed")
 }
 
+fn is_executor_ready_task_status(status: &str) -> bool {
+    matches!(status, "pending" | "executing" | "addressing")
+}
+
 #[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub(crate) enum TransitionAction {
@@ -2678,6 +2736,41 @@ mod tests {
         assert_eq!(status("t-002"), Some("reset"));
         assert_eq!(status("t-003"), Some("complete"));
 
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconcile_runtime_schedule_does_not_require_state_json() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let data_dir = dir.path().join("runtime");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "complete")
+            .await
+            .unwrap();
+
+        let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
+        let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
+
+        ctx.reconcile_runtime_schedule().await.unwrap();
+
+        assert!(store::read_state().await.is_err());
         std::env::set_current_dir(previous).unwrap();
     }
 
