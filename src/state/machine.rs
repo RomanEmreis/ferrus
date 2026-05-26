@@ -144,6 +144,7 @@ impl StateData {
         self.selected_milestone = selected_milestone;
     }
 
+    #[allow(dead_code)]
     pub fn set_pending_task_origin(&mut self, spec: Option<String>, milestone: Option<String>) {
         self.pending_task_spec = spec;
         self.pending_task_milestone = milestone;

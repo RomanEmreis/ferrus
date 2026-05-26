@@ -223,7 +223,6 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                     state_elapsed: std::time::Duration::default(),
                     transition: None,
                     selected_spec_display: None,
-                    selected_milestone_display: None,
                     selected_milestones: Vec::new(),
                 }
             };
@@ -267,10 +266,10 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             ctx.display.info(concat!(
                 "ferrus HQ commands:\n",
                 "  /plan              Free-form planning session with the supervisor\n",
-                "  /task              Define a task from the selected milestone, then run executor→review loop\n",
-                "  /task --manual     Define a free-form task without selected milestone context\n",
-                "  /milestones        Select the current spec and milestone\n",
-                "  /reset-spec        Clear the selected spec and milestone\n",
+                "  /task              Queue one task from the next ready milestone, then run the scheduler\n",
+                "  /task --manual     Queue one free-form task without spec context\n",
+                "  /milestones        Select the current spec\n",
+                "  /reset-spec        Clear the selected spec\n",
                 "  /spec              Draft, approve, and save a feature specification\n",
                 "  /check             Run the Ferrus check gate deterministically from HQ\n",
                 "  /check --force     Run configured checks from HQ without state requirements\n",
@@ -1195,6 +1194,7 @@ impl HqContext {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn prepare_next_task_after_complete(&mut self) -> Result<()> {
         let mut state = store::read_state().await?;
         if state.state != TaskState::Complete {
@@ -1307,31 +1307,9 @@ impl HqContext {
     }
 
     async fn task(&mut self, manual: bool, confirm_selected_milestone: bool) -> Result<()> {
-        use std::process::Stdio;
-        use tokio::process::Command;
-
         self.ensure_hq_config().await?;
 
-        let mut state = store::read_state().await?;
-        match state.state {
-            TaskState::Idle => {}
-            TaskState::Complete => {
-                tracing::debug!("previous task complete; preparing Idle state for new task");
-                self.prepare_next_task_after_complete().await?;
-                state = store::read_state().await?;
-            }
-            other => {
-                anyhow::bail!(
-                    "State is {other:?} — /task requires Idle or Complete. Use /reset first if needed."
-                );
-            }
-        }
-
-        let selection = crate::project::read_project_selection()
-            .await
-            .unwrap_or_else(|_| crate::project::ProjectSelection {
-                selected_spec: state.selected_spec.clone(),
-            });
+        let selection = crate::project::read_project_selection().await?;
         let selected = if manual {
             TaskMilestoneSelection::UseFallback
         } else {
@@ -1343,16 +1321,6 @@ impl HqContext {
             TaskMilestoneSelection::Use(selected) => Some(selected),
             TaskMilestoneSelection::Stop => return Ok(()),
         };
-        let mut state = store::read_state().await?;
-        if let Some(selected) = selected.as_ref() {
-            state.set_pending_task_origin(
-                Some(selected.spec_path.clone()),
-                Some(selected.milestone.id.clone()),
-            );
-        } else {
-            state.set_pending_task_origin(None, None);
-        }
-        store::write_state(&state).await?;
 
         let supervisor = std::sync::Arc::clone(
             self.supervisor
@@ -1377,88 +1345,14 @@ impl HqContext {
             None => agent_manager::supervisor_task_prompt(),
         };
 
-        let mut cmd = Command::from(
-            supervisor
-                .spawn(AgentRunMode::Interactive {
-                    prompt: Some(prompt),
-                })
-                .with_context(|| {
-                    format!(
-                        "Failed to resolve launcher for supervisor agent {}",
-                        supervisor.name()
-                    )
-                })?,
-        );
-
-        supervisor.validate_interactive_launch(ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)?;
-        let ack_rx = self.display.suspend();
-        let _ = ack_rx.await;
-        let mut resume_guard = ResumeGuard::new(self.display.clone());
-        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-        let mut child = cmd
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("Failed to spawn {program}"))?;
-        let stderr = tee_interactive_stderr(&mut child);
         let supervisor_id = self.supervisor_agent_id()?;
-        self.mark_agent_running(
-            ROLE_SUPERVISOR,
-            supervisor.name(),
-            &supervisor_id,
-            child.id(),
-        )
-        .await?;
+        self.spawn_interactive_supervisor(&supervisor_id, Some(prompt))
+            .await?;
 
-        let mut child_status = None;
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(300));
-        loop {
-            tokio::select! {
-                status = child.wait() => {
-                    child_status = Some(status.with_context(|| format!("Failed to wait for {program}"))?);
-                    break;
-                }
-                _ = ticker.tick() => {
-                    if let Ok(s) = store::read_state().await
-                        && s.state == TaskState::Executing {
-                        self.stop_interactive_child(
-                            &mut child,
-                            "Task created — waiting for supervisor to exit…",
-                        )
-                        .await?;
-                        break;
-                    }
-                }
-            }
-        }
-        let stderr = finish_interactive_stderr(stderr).await;
-        clear_primary_screen();
-        resume_guard.resume_now();
-
-        self.mark_agent_suspended(&supervisor_id).await?;
-        if let Some(status) = child_status
-            && !status.success()
-        {
-            anyhow::bail!(interactive_exit_error(
-                ROLE_SUPERVISOR,
-                supervisor.name(),
-                status,
-                &stderr
-            ));
-        }
-
-        let new_state = store::read_state().await?;
-        if new_state.state == TaskState::Executing {
-            // Let the state watcher handle Idle -> Executing consistently.
-        } else {
-            let mut state = store::read_state().await?;
-            state.set_pending_task_origin(None, None);
-            store::write_state(&state).await?;
-            self.display.info(format!(
-                "No task created (state is {:?}). Re-run /task when ready.",
-                new_state.state
-            ));
+        let scheduled = self.schedule_queued_tasks().await?;
+        if scheduled == 0 {
+            self.display
+                .info("No queued task started. Use /tasks to inspect pending work.");
         }
         Ok(())
     }
@@ -2033,7 +1927,7 @@ impl HqContext {
             self.display
                 .muted(format!("\n  • Specification ready\n  ╰─ {path}\n"));
             self.display
-                .tip("Tip: Use /task to start implementing the selected milestone.");
+                .tip("Tip: Use /task to queue the next ready milestone.");
         } else {
             self.display
                 .info("No specification created. Re-run /spec when ready.");
@@ -2315,7 +2209,7 @@ fn run_plan_prompt_context(plan: &RunPlan, selected_count: usize) -> String {
 
 fn selected_milestone_prompt_context(selected: &SelectedMilestone) -> String {
     format!(
-        "Spec: {}\nMilestone: {}\nMilestone ID: {}\nCompleted: {}\nDepends on: {}",
+        "spec_path: {}\nmilestone: {}\nmilestone_id: {}\ncompleted: {}\ndepends_on: {}",
         selected.spec_path,
         selected.milestone.display_title(),
         selected.milestone.id,

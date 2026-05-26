@@ -124,6 +124,7 @@ pub async fn clear_task_for_state(state: &StateData) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn clear_task_mirror() -> Result<()> {
     Ok(())
 }
@@ -231,6 +232,7 @@ pub async fn clear_review_for_state(state: &StateData) -> Result<()> {
     write_review_for_state(state, "").await
 }
 
+#[allow(dead_code)]
 pub async fn clear_review_mirror() -> Result<()> {
     write_file("REVIEW.md", "").await
 }
@@ -239,6 +241,7 @@ pub async fn clear_submission_for_state(state: &StateData) -> Result<()> {
     write_submission_for_state(state, "").await
 }
 
+#[allow(dead_code)]
 pub async fn clear_submission_mirror() -> Result<()> {
     write_file("SUBMISSION.md", "").await
 }
@@ -340,6 +343,7 @@ pub async fn clear_consult_request() -> Result<()> {
     write_consult_request("").await
 }
 
+#[allow(dead_code)]
 pub async fn clear_consult_request_mirror() -> Result<()> {
     write_file("CONSULT_REQUEST.md", "").await
 }
@@ -380,6 +384,7 @@ pub async fn clear_consult_response_for_run_dir(run_dir: &str) -> Result<()> {
     write_path(&run_file(run_dir, "CONSULT_RESPONSE.md"), "").await
 }
 
+#[allow(dead_code)]
 pub async fn clear_consult_response_mirror() -> Result<()> {
     write_file("CONSULT_RESPONSE.md", "").await
 }
@@ -388,6 +393,7 @@ pub async fn clear_question() -> Result<()> {
     write_question("").await
 }
 
+#[allow(dead_code)]
 pub async fn clear_question_mirror() -> Result<()> {
     write_file("QUESTION.md", "").await
 }
@@ -396,6 +402,7 @@ pub async fn clear_answer() -> Result<()> {
     write_answer("").await
 }
 
+#[allow(dead_code)]
 pub async fn clear_answer_mirror() -> Result<()> {
     write_file("ANSWER.md", "").await
 }

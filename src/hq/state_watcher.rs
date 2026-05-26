@@ -24,7 +24,6 @@ pub struct WatchedState {
     pub state_elapsed: Duration,
     pub transition: Option<TransitionSnapshot>,
     pub selected_spec_display: Option<String>,
-    pub selected_milestone_display: Option<String>,
     pub selected_milestones: Vec<WatchedMilestone>,
 }
 
@@ -45,21 +44,21 @@ struct SelectedDisplayCacheKey {
 #[derive(Clone, Debug, Default)]
 struct SelectedDisplayCache {
     key: Option<SelectedDisplayCacheKey>,
-    value: (Option<String>, Option<String>, Vec<WatchedMilestone>),
+    value: (Option<String>, Vec<WatchedMilestone>),
 }
 
 impl SelectedDisplayCache {
     async fn get(
         &mut self,
         selection: &ProjectSelection,
-    ) -> (Option<String>, Option<String>, Vec<WatchedMilestone>) {
+    ) -> (Option<String>, Vec<WatchedMilestone>) {
         let key = SelectedDisplayCacheKey {
             selected_spec: selection.selected_spec.clone(),
             spec_fingerprint: selected_spec_fingerprint(selection).await,
         };
 
         if self.key.as_ref() != Some(&key) {
-            self.value = selected_milestone_display(selection).await;
+            self.value = selected_spec_display(selection).await;
             self.key = Some(key);
         }
 
@@ -138,14 +137,13 @@ pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
             last_sent_state_elapsed_secs = Some(state_elapsed_secs);
             last_sent_task_elapsed_secs = task_elapsed_secs;
             last_state = Some(state.clone());
-            let (selected_spec_display, selected_milestone_display, selected_milestones) =
+            let (selected_spec_display, selected_milestones) =
                 selected_display_cache.get(&selection).await;
             let _ = tx.send(Some(WatchedState {
                 state,
                 state_elapsed,
                 transition,
                 selected_spec_display,
-                selected_milestone_display,
                 selected_milestones,
             }));
         }
@@ -164,9 +162,9 @@ async fn selected_spec_fingerprint(
     Some((metadata.modified().ok(), metadata.len()))
 }
 
-async fn selected_milestone_display(
+async fn selected_spec_display(
     selection: &ProjectSelection,
-) -> (Option<String>, Option<String>, Vec<WatchedMilestone>) {
+) -> (Option<String>, Vec<WatchedMilestone>) {
     let selected_spec_display = selection
         .selected_spec
         .as_deref()
@@ -195,11 +193,7 @@ async fn selected_milestone_display(
         None => Vec::new(),
     };
 
-    let next_ready = selected_milestones
-        .iter()
-        .find(|milestone| milestone.readiness == MilestoneReadiness::Ready)
-        .map(|milestone| milestone.marker.clone());
-    (selected_spec_display, next_ready, selected_milestones)
+    (selected_spec_display, selected_milestones)
 }
 
 fn elapsed_since(started_at: DateTime<Utc>, now: DateTime<Utc>) -> Duration {

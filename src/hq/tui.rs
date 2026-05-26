@@ -36,9 +36,9 @@ const MAX_HISTORY: usize = 100;
 const MAX_COMPLETIONS: usize = 8;
 const COMMANDS: &[(&str, &str)] = &[
     ("/plan", "spawn supervisor, plan a task"),
-    ("/task", "define a task and run executor then review"),
-    ("/milestones", "select current spec and milestone"),
-    ("/reset-spec", "clear selected spec and milestone"),
+    ("/task", "queue one task and run the scheduler"),
+    ("/milestones", "select current spec"),
+    ("/reset-spec", "clear selected spec"),
     ("/spec", "draft and save an approved feature spec"),
     ("/check", "run the Ferrus check gate from HQ"),
     ("/supervisor", "open an interactive supervisor session"),
@@ -105,7 +105,6 @@ pub struct StatusSnapshot {
     pub supervisor_status: String,
     pub executor_status: String,
     pub selected_spec: Option<String>,
-    pub selected_milestone: Option<String>,
     pub selected_milestones: Vec<MilestoneSnapshot>,
 }
 
@@ -157,7 +156,6 @@ impl StatusSnapshot {
             supervisor_status: "none".to_string(),
             executor_status: "none".to_string(),
             selected_spec: watched.selected_spec_display.clone(),
-            selected_milestone: watched.selected_milestone_display.clone(),
             selected_milestones: watched
                 .selected_milestones
                 .iter()
@@ -725,7 +723,6 @@ fn status_dashboard_changed(previous: &StatusSnapshot, next: &StatusSnapshot) ->
         || previous.directory != next.directory
         || previous.branch != next.branch
         || previous.selected_spec != next.selected_spec
-        || previous.selected_milestone != next.selected_milestone
         || previous.selected_milestones != next.selected_milestones
         || previous.supervisor_status != next.supervisor_status
         || previous.executor_status != next.executor_status
@@ -1423,10 +1420,6 @@ fn project_and_milestone_lines(app: &App, width: usize) -> Vec<DashboardLine> {
             "spec:        {}",
             app.status.selected_spec.as_deref().unwrap_or("-")
         ),
-        format!(
-            "milestone:   {}",
-            app.status.selected_milestone.as_deref().unwrap_or("-")
-        ),
     ];
     let mut right = vec![frame_cell(&section_title("Milestones"))];
     right.extend(milestone_lines(app, right_width));
@@ -1482,7 +1475,7 @@ fn frame_cell(text: &str) -> String {
 
 fn milestone_lines(app: &App, width: usize) -> Vec<String> {
     if app.status.selected_milestones.is_empty() {
-        return vec![frame_cell("no selected milestones")];
+        return vec![frame_cell("no milestones")];
     }
 
     let content_width = width.saturating_sub(2);
@@ -2391,12 +2384,6 @@ fn print_status_line(
         segments.push((spec.to_string(), Color::Grey));
     }
 
-    if let Some(milestone) = status.selected_milestone.as_deref() {
-        segments.push((" | ".to_string(), Color::DarkGrey));
-        segments.push(("milestone: ".to_string(), Color::DarkGrey));
-        segments.push((milestone.to_string(), Color::Grey));
-    }
-
     segments.push((" | ".to_string(), Color::DarkGrey));
     segments.push(("retries: ".to_string(), Color::DarkGrey));
     segments.push((status.retries.to_string(), Color::Grey));
@@ -3052,7 +3039,7 @@ mod tui_tests {
         for text in &rendered {
             assert_eq!(display_width(text), width - 2);
         }
-        assert_eq!(rendered[1].find("Project"), rendered[7].find("tasks:"));
+        assert_eq!(rendered[1].find("Project"), rendered[6].find("tasks:"));
         assert!(rendered[1].contains("│ Project"));
         assert!(rendered[1].contains("│ Milestones"));
         let done_col = rendered[2].find("done").unwrap();

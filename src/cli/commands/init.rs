@@ -293,11 +293,11 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Command | Description |
 |---|---|
 | `/plan` | Free-form planning session with the supervisor (no task created) |
-| `/task` | Define a task from the selected milestone, then run executor→review loop |
-| `/task --manual` | Define a free-form task without selected milestone context |
+| `/task` | Queue one task from the next ready milestone, then run the scheduler |
+| `/task --manual` | Queue one free-form task without spec context |
 | `/spec` | Draft, approve, and save a feature specification |
-| `/milestones` | Select the current spec and milestone |
-| `/reset-spec` | Clear the selected spec and milestone |
+| `/milestones` | Select the current spec |
+| `/reset-spec` | Clear the selected spec |
 | `/supervisor` | Open an interactive supervisor session (no initial prompt) |
 | `/executor` | Open an interactive executor session (no initial prompt) |
 | `/review` | Manually spawn supervisor in review mode (escape hatch) |

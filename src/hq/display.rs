@@ -61,9 +61,6 @@ impl Display {
         if let Some(spec) = &state.selected_spec {
             lines.push(format!("spec       : {spec}"));
         }
-        if let Some(milestone) = &state.selected_milestone {
-            lines.push(format!("milestone  : {milestone}"));
-        }
         if agents.agents.is_empty() {
             lines.push("agents     : none".to_string());
         } else {
@@ -217,13 +214,11 @@ mod tests {
         let watched = WatchedState {
             state: StateData {
                 selected_spec: Some("docs/spec.md".into()),
-                selected_milestone: Some("m1.1".into()),
                 ..StateData::default()
             },
             state_elapsed: Duration::default(),
             transition: None,
             selected_spec_display: None,
-            selected_milestone_display: None,
             selected_milestones: Vec::new(),
         };
         let agents = AgentsRegistry {
@@ -248,7 +243,7 @@ mod tests {
             UiMessage::Info(text) => {
                 assert!(text.contains("state      : Idle\n"));
                 assert!(text.contains("spec       : docs/spec.md\n"));
-                assert!(text.contains("milestone  : m1.1\n"));
+                assert!(!text.contains("milestone  :"));
                 assert!(text.contains("  [supervisor] suspended"));
             }
             _ => panic!("expected info message"),

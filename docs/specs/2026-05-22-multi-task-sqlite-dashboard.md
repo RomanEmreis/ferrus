@@ -225,6 +225,8 @@ Recovery is SQLite-first:
 - MCP tool `/enqueue_task` for queued pending task artifacts.
 - HQ `/run --limit N` planning for ready milestones, including duplicate-task exclusion.
 - `/run` launches one interactive supervisor session for the exact selected milestone list and queues approved tasks with `/enqueue_task`.
+- HQ `/task` now queues exactly one approved task through `/enqueue_task` and then runs the same SQLite scheduler used by `/run`.
+- HQ `/task --manual` uses the same DB queue/scheduler path without spec or milestone origin metadata.
 - Lease claiming, lease renewal, stale lease recovery, and DB lease handoff fixes.
 - Migration fixes for active artifacts and Windows path handling.
 - Completed task history preservation during HQ reset paths.
@@ -264,7 +266,7 @@ Recovery is SQLite-first:
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Convert or retire legacy single-active-task tools that still intentionally depend on `STATE.json`: `/create_task`, `/reset`, and legacy `/answer`.
+- Retire legacy single-active-task tools that still intentionally depend on `STATE.json`: MCP `/create_task`, HQ `/reset`, and legacy HQ `/answer`.
 - Remove compatibility `STATE.json` mirrors once the old single-task path is either migrated to SQLite or explicitly kept as a compatibility layer.
 
 ## Milestones

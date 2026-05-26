@@ -59,15 +59,15 @@ pub enum ShellCommand {
     Quit,
     /// Free-form planning session with the supervisor (no task created, no state requirement).
     Plan,
-    /// Define a task with the supervisor, then run the executor→review loop automatically.
+    /// Queue one task with the supervisor, then run the SQLite scheduler.
     Task {
-        /// Ignore the selected spec milestone and define a free-form task.
+        /// Ignore the selected spec and define a free-form task.
         #[arg(long)]
         manual: bool,
     },
-    /// Select the current spec and milestone without creating a task.
+    /// Select the current spec without creating a task.
     Milestones,
-    /// Clear the selected spec and milestone.
+    /// Clear the selected spec.
     ResetSpec,
     /// Draft and approve a feature specification with the supervisor.
     Spec,
