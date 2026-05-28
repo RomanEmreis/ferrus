@@ -18,10 +18,6 @@ pub async fn run(dry_run: bool, worktrees: bool) -> Result<()> {
     );
     println!("Interrupted runs: {}", recovery.interrupted_runs);
     println!("Expired task leases: {}", recovery.expired_task_leases);
-    println!(
-        "STATE lease mirrors cleared: {}",
-        recovery.state_lease_mirrors_cleared
-    );
     if worktrees {
         if dry_run {
             let orphaned = project::preview_orphaned_worktrees().await?;

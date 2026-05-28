@@ -5,16 +5,10 @@ use tracing::{info, warn};
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext, TaskReviewRejection},
-    state::{
-        machine::{StateData, TaskState, TransitionError},
-        store,
-    },
+    state::store,
 };
 
-use super::{
-    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
-    uses_legacy_state_context,
-};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Reject the current submission with review notes. Writes notes to REVIEW.md and \
      transitions state Reviewing → Addressing (or Failed if the review cycle limit is \
@@ -36,185 +30,82 @@ pub async fn handler_for_agent(agent_id: &str, notes: String) -> Result<String, 
 
 async fn run(agent_id: &str, notes: String) -> Result<String> {
     let config = Config::load().await?;
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
+    let context = require_runtime_task_context(agent_id).await?;
 
-    let context_is_reviewing = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("reviewing")
-    );
-    let state_is_reviewing = state
-        .as_ref()
-        .is_some_and(|state| state.state == TaskState::Reviewing);
-    if !context_is_reviewing && !state_is_reviewing {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
-        anyhow::bail!("Cannot reject from state {current_state}. Call /review_pending first.");
+    if context.status != "reviewing" {
+        anyhow::bail!(
+            "Cannot reject from state {}. Call /review_pending first.",
+            context.status
+        );
     }
-    let state_for_lease = state.get_or_insert_with(StateData::default);
-    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
-    write_review(state.as_ref(), runtime_context.as_ref(), &notes).await?;
+    write_review(&context, &notes).await?;
 
-    if !uses_legacy_state_context(state.as_ref(), runtime_context.as_ref())
-        && let Some(context) = runtime_context.as_ref()
-    {
-        return match project::record_task_review_rejected(
-            &context.task_id,
-            config.limits.max_review_cycles,
-        )
+    match project::record_task_review_rejected(&context.task_id, config.limits.max_review_cycles)
         .await?
-        {
-            TaskReviewRejection::Addressing { cycles } => {
-                project::record_runtime_event_best_effort(
-                    context.run_id.clone(),
-                    "rejected",
-                    serde_json::json!({
-                        "task_id": context.task_id.as_str(),
-                        "review_cycles": cycles,
-                        "max_review_cycles": config.limits.max_review_cycles,
-                        "notes_bytes": notes.len(),
-                    }),
-                )
-                .await;
-                info!(
-                    review_cycles = cycles,
-                    task_id = context.task_id,
-                    "Submission rejected, DB task → addressing"
-                );
-                Ok(format!(
-                    "Submission rejected (cycle {}/{}).\n\n**Review notes written.** \
-                     State: Addressing. The Executor should call /wait_for_task to see the notes \
-                     and /check after addressing them.",
-                    cycles, config.limits.max_review_cycles,
-                ))
-            }
-            TaskReviewRejection::LimitExceeded { cycles } => {
-                project::record_runtime_event_best_effort(
-                    context.run_id.clone(),
-                    "review_limit_exceeded",
-                    serde_json::json!({
-                        "task_id": context.task_id.as_str(),
-                        "review_cycles": cycles,
-                        "max_review_cycles": config.limits.max_review_cycles,
-                        "notes_bytes": notes.len(),
-                    }),
-                )
-                .await;
-                warn!(
-                    review_cycles = cycles,
-                    task_id = context.task_id,
-                    "Review cycle limit reached, DB task → failed"
-                );
-                Ok(format!(
-                    "Review cycle limit reached ({cycles}/{}).\n\nState is now Failed. \
-                     A human must call /reset to recover.",
-                    config.limits.max_review_cycles,
-                ))
-            }
-        };
-    }
-
-    let state = state
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("Cannot reject legacy state: STATE.json is missing"))?;
-    match state.reject(config.limits.max_review_cycles) {
-        Ok(()) => {
-            store::write_state(state).await?;
-            mirror_review_state(runtime_context.as_ref(), state).await?;
+    {
+        TaskReviewRejection::Addressing { cycles } => {
             project::record_runtime_event_best_effort(
-                runtime_context
-                    .as_ref()
-                    .and_then(|context| context.run_id.clone()),
+                context.run_id.clone(),
                 "rejected",
                 serde_json::json!({
-                    "task_id": runtime_context.as_ref().map(|context| context.task_id.as_str()),
-                    "review_cycles": state.review_cycles,
-                    "max_review_cycles": config.limits.max_review_cycles,
-                    "notes_bytes": notes.len(),
-                }),
-            )
-            .await;
-            info!(
-                review_cycles = state.review_cycles,
-                "Submission rejected, state → Addressing"
-            );
-            Ok(format!(
-                "Submission rejected (cycle {}/{}).\n\n**Review notes written.** \
-                 State: Addressing. The Executor should call /wait_for_task to see the notes \
-                 and /check after addressing them.",
-                state.review_cycles, config.limits.max_review_cycles,
-            ))
-        }
-        Err(TransitionError::ReviewLimitExceeded { cycles }) => {
-            store::write_state(state).await?;
-            mirror_review_state(runtime_context.as_ref(), state).await?;
-            project::record_runtime_event_best_effort(
-                runtime_context
-                    .as_ref()
-                    .and_then(|context| context.run_id.clone()),
-                "review_limit_exceeded",
-                serde_json::json!({
-                    "task_id": runtime_context.as_ref().map(|context| context.task_id.as_str()),
+                    "task_id": context.task_id.as_str(),
                     "review_cycles": cycles,
                     "max_review_cycles": config.limits.max_review_cycles,
                     "notes_bytes": notes.len(),
                 }),
             )
             .await;
-            warn!(cycles, "Review cycle limit reached, state → Failed");
+            info!(
+                review_cycles = cycles,
+                task_id = context.task_id,
+                "Submission rejected, DB task → addressing"
+            );
+            Ok(format!(
+                "Submission rejected (cycle {}/{}).\n\n**Review notes written.** \
+                 State: Addressing. The Executor should call /wait_for_task to see the notes \
+                 and /check after addressing them.",
+                cycles, config.limits.max_review_cycles,
+            ))
+        }
+        TaskReviewRejection::LimitExceeded { cycles } => {
+            project::record_runtime_event_best_effort(
+                context.run_id.clone(),
+                "review_limit_exceeded",
+                serde_json::json!({
+                    "task_id": context.task_id.as_str(),
+                    "review_cycles": cycles,
+                    "max_review_cycles": config.limits.max_review_cycles,
+                    "notes_bytes": notes.len(),
+                }),
+            )
+            .await;
+            warn!(
+                review_cycles = cycles,
+                task_id = context.task_id,
+                "Review cycle limit reached, DB task → failed"
+            );
             Ok(format!(
                 "Review cycle limit reached ({cycles}/{}).\n\nState is now Failed. \
                  A human must call /reset to recover.",
                 config.limits.max_review_cycles,
             ))
         }
-        Err(e) => anyhow::bail!(e),
     }
 }
 
-async fn mirror_review_state(
-    context: Option<&RuntimeTaskContext>,
-    state: &crate::state::machine::StateData,
-) -> Result<()> {
-    if let Some(context) = context {
-        project::mirror_task_review_state(
-            &context.task_id,
-            project::task_status_for_state(&state.state),
-            state.review_cycles,
-            state.check_retries,
-            state.failure_reason.as_deref(),
-        )
-        .await?;
-    } else {
-        project::record_current_task_status_best_effort(project::task_status_for_state(
-            &state.state,
-        ))
-        .await;
-    }
-    Ok(())
-}
-
-async fn write_review(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-    notes: &str,
-) -> Result<()> {
-    if let Some(context) = context {
-        store::write_review_for_run_dir(&context.run_dir, notes).await?;
-        return Ok(());
-    }
-    store::write_review(notes).await
+async fn write_review(context: &RuntimeTaskContext, notes: &str) -> Result<()> {
+    store::write_review_for_run_dir(&context.run_dir, notes).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

@@ -7,8 +7,7 @@ use crate::project;
 use super::tool_err;
 
 pub const DESCRIPTION: &str = "Compatibility task creation tool. Prefer /enqueue_task. Writes \
-     the task description to .ferrus/tasks/<task-id>.md and records a pending SQLite task row. \
-     Does not change STATE.json.";
+     the task description to .ferrus/tasks/<task-id>.md and records a pending SQLite task row.";
 
 pub const INPUT_SCHEMA: &str = r#"{
     "properties": {

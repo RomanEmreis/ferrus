@@ -1,5 +1,4 @@
 use anyhow::Result;
-use fs2::FileExt;
 use neva::prelude::*;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -10,10 +9,7 @@ use crate::{
     agent_id::ENV_TASK_ID,
     config::Config,
     project::{self, ReadyTaskClaim, TaskLease},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
 use super::tool_err;
@@ -38,22 +34,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let start = Instant::now();
 
     loop {
-        let claim = {
-            let lock_file = store::open_lock_file()?;
-            let lock_file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
-                lock_file.lock_exclusive().map_err(anyhow::Error::from)?;
-                Ok(lock_file)
-            })
-            .await??;
-
-            let mut state = store::read_state()
-                .await
-                .unwrap_or_else(|_| StateData::default());
-            let claim = claim_review_task(agent_id, ttl_secs, &mut state).await?;
-
-            drop(lock_file);
-            claim
-        };
+        let claim = claim_review_task(agent_id, ttl_secs).await?;
 
         if let Some(claim) = claim {
             project::attach_running_run_to_task_best_effort(
@@ -92,11 +73,7 @@ async fn run(agent_id: &str) -> Result<String> {
         }
 
         if start.elapsed() >= timeout {
-            let state = store::read_state().await.ok();
-            let state_label = state
-                .as_ref()
-                .map(|state| format!("{:?}", state.state))
-                .unwrap_or_else(|| "unavailable".to_string());
+            let state_label = "unavailable";
             info!("wait_for_review timed out, state: {state_label}");
             let response = json!({
                 "status": "timeout",
@@ -109,28 +86,17 @@ async fn run(agent_id: &str) -> Result<String> {
     }
 }
 
-async fn claim_review_task(
-    agent_id: &str,
-    ttl_secs: u64,
-    state: &mut crate::state::machine::StateData,
-) -> Result<Option<TaskLease>> {
+async fn claim_review_task(agent_id: &str, ttl_secs: u64) -> Result<Option<TaskLease>> {
     if let Some(task_id) = runtime_task_id() {
         return claim_runtime_review_task(&task_id, agent_id, ttl_secs).await;
     }
 
     match project::claim_next_review_task(agent_id, ttl_secs).await {
         Ok(ReadyTaskClaim::Claimed(task)) | Ok(ReadyTaskClaim::AlreadyClaimed(task)) => {
-            mirror_state_lease_if_current_task(state, &task).await?;
             Ok(Some(task))
         }
         Ok(ReadyTaskClaim::NoAvailable) => Ok(None),
-        Err(err) => {
-            tracing::warn!(
-                error = ?err,
-                "failed to claim next review task in ferrus.db; falling back to STATE.json lease"
-            );
-            claim_state_fallback(agent_id, ttl_secs, state).await
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -152,55 +118,6 @@ fn runtime_task_id() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-async fn mirror_state_lease_if_current_task(
-    _state: &mut crate::state::machine::StateData,
-    _task: &TaskLease,
-) -> Result<()> {
-    Ok(())
-}
-
-async fn claim_state_fallback(
-    agent_id: &str,
-    ttl_secs: u64,
-    state: &mut crate::state::machine::StateData,
-) -> Result<Option<TaskLease>> {
-    if state.state != TaskState::Reviewing {
-        return Ok(None);
-    }
-
-    if !state.is_claimed() {
-        store::claim_state(agent_id, ttl_secs, state).await?;
-    } else if !state.is_claimed_by(agent_id) {
-        return Ok(None);
-    }
-
-    let task_id = state
-        .active_task_id
-        .clone()
-        .unwrap_or_else(|| "current".to_string());
-    let task_path = state
-        .active_task_path
-        .clone()
-        .unwrap_or_else(|| ".ferrus/TASK.md".to_string());
-    Ok(Some(TaskLease {
-        task_id,
-        task_path,
-        status: "reviewing".to_string(),
-        paused_status: state
-            .paused_state
-            .as_ref()
-            .map(project::task_status_for_state)
-            .map(str::to_string),
-        check_retries: state.check_retries,
-        review_cycles: state.review_cycles,
-        failure_reason: state.failure_reason.clone(),
-        claimed_by: agent_id.to_string(),
-        lease_until: state
-            .lease_until
-            .ok_or_else(|| anyhow::anyhow!("claimed STATE.json review is missing lease_until"))?,
-    }))
-}
-
 fn run_dir_for_task(task_id: &str) -> String {
     format!(".ferrus/runs/{task_id}")
 }
@@ -208,7 +125,7 @@ fn run_dir_for_task(task_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{machine::StateData, store};
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -282,6 +199,9 @@ mod tests {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (dir, previous) = setup().await;
         tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
+            .await
+            .unwrap();
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.lock"))
             .await
             .unwrap();
         tokio::fs::write(".ferrus/tasks/t-003.md", "review task")

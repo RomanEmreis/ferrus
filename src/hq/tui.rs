@@ -26,7 +26,6 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{
     platform,
     project::{RunRecord, TaskRecord},
-    state::store,
 };
 
 use super::state_watcher::{WatchedMilestone, WatchedState, format_elapsed};
@@ -765,12 +764,6 @@ async fn refresh_dashboard_snapshot(app: &mut App, force: bool) -> bool {
             question.question.clone()
         };
         Some(format!("{prefix}{body}"))
-    } else if app.status.task_state == "AwaitingHuman" {
-        store::read_question()
-            .await
-            .ok()
-            .map(|question| question.trim().to_string())
-            .filter(|question| !question.is_empty())
     } else {
         None
     };

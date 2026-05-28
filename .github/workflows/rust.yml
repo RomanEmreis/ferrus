@@ -90,12 +90,13 @@ jobs:
           (
             cd "$tmpdir"
             "$bin_path" init
+            "$bin_path" doctor
           )
 
           test -f "$tmpdir/ferrus.toml"
           test -f "$tmpdir/.ferrus/project.toml"
           test ! -f "$tmpdir/.ferrus/STATE.json"
-          test -f "$tmpdir/.ferrus/STATE.lock"
+          test ! -f "$tmpdir/.ferrus/STATE.lock"
           test -f "$tmpdir/.ferrus/agents.json"
           test -f "$tmpdir/.ferrus/CONSULT_TEMPLATE.md"
           test -f "$tmpdir/.ferrus/TASK.md"

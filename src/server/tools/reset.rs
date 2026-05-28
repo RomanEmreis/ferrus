@@ -2,62 +2,22 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::{
-    project::{self, RuntimeTaskContext},
-    state::{machine::TaskState, store},
-};
+use crate::project::{self, RuntimeTaskContext};
 
-use super::{runtime_task_context_for_agent_best_effort, tool_err, uses_legacy_state_context};
+use super::{require_runtime_task_context, tool_err};
 
-pub const DESCRIPTION: &str = "Human escape hatch: reset a Failed task row. DB-first for scoped \
-     runtime tasks; legacy STATE.json fallback is retained for manually started old sessions.";
+pub const DESCRIPTION: &str = "Human escape hatch: reset a Failed SQLite task row.";
 
 pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
     run_for_agent(Some(agent_id)).await.map_err(tool_err)
 }
 
 async fn run_for_agent(agent_id: Option<&str>) -> Result<String> {
-    let state = store::read_state().await.ok();
-    let runtime_context = match agent_id {
-        Some(agent_id) => runtime_task_context_for_agent_best_effort(agent_id).await,
-        None => None,
+    let Some(agent_id) = agent_id else {
+        anyhow::bail!("Cannot reset without an agent runtime context");
     };
-    if !uses_legacy_state_context(state.as_ref(), runtime_context.as_ref())
-        && let Some(context) = runtime_context.as_ref()
-    {
-        return reset_runtime_task(context).await;
-    }
-
-    let mut state =
-        state.ok_or_else(|| anyhow::anyhow!("Cannot reset legacy state: STATE.json is missing"))?;
-
-    if state.state != TaskState::Failed {
-        anyhow::bail!(
-            "Cannot reset from state {:?}. Reset is only available in the Failed state.",
-            state.state
-        );
-    }
-
-    let active_task = state
-        .active_task_id
-        .clone()
-        .zip(state.active_task_path.clone());
-
-    store::clear_review_for_state(&state).await?;
-    store::clear_submission_for_state(&state).await?;
-    store::clear_consult_request().await?;
-    store::clear_consult_response().await?;
-    state.reset()?;
-    store::write_state(&state).await?;
-
-    if let Some((task_id, task_path)) = active_task {
-        project::record_task_status_best_effort(&task_id, &task_path, "reset").await;
-    }
-    project::record_current_task_status_best_effort("idle").await;
-    project::record_runtime_event_best_effort(None, "reset", serde_json::json!({})).await;
-
-    info!("State reset, Idle");
-    Ok("State reset to Idle. REVIEW.md, SUBMISSION.md, and consultation files cleared. Ready for a new task.".to_string())
+    let context = require_runtime_task_context(agent_id).await?;
+    reset_runtime_task(&context).await
 }
 
 async fn reset_runtime_task(context: &RuntimeTaskContext) -> Result<String> {

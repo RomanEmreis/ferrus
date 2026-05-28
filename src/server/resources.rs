@@ -101,7 +101,7 @@ async fn read_review_for_agent(agent_id: Option<&str>) -> anyhow::Result<String>
     {
         return store::read_review_for_run_dir(&context.run_dir).await;
     }
-    store::read_review().await
+    Ok(String::new())
 }
 
 async fn read_submission_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -110,7 +110,7 @@ async fn read_submission_for_agent(agent_id: Option<&str>) -> anyhow::Result<Str
     {
         return store::read_submission_for_run_dir(&context.run_dir).await;
     }
-    store::read_submission().await
+    Ok(String::new())
 }
 
 async fn read_question_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -120,11 +120,7 @@ async fn read_question_for_agent(agent_id: Option<&str>) -> anyhow::Result<Strin
     {
         return Ok(contents);
     }
-    Ok(
-        tokio::fs::read_to_string(store::resolve_project_path(".ferrus/QUESTION.md"))
-            .await
-            .unwrap_or_default(),
-    )
+    Ok(String::new())
 }
 
 async fn read_answer_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -134,11 +130,7 @@ async fn read_answer_for_agent(agent_id: Option<&str>) -> anyhow::Result<String>
     {
         return Ok(contents);
     }
-    Ok(
-        tokio::fs::read_to_string(store::resolve_project_path(".ferrus/ANSWER.md"))
-            .await
-            .unwrap_or_default(),
-    )
+    Ok(String::new())
 }
 
 async fn read_consult_request_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -148,7 +140,7 @@ async fn read_consult_request_for_agent(agent_id: Option<&str>) -> anyhow::Resul
     {
         return Ok(contents);
     }
-    store::read_consult_request().await
+    Ok(String::new())
 }
 
 async fn read_consult_response_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -158,7 +150,7 @@ async fn read_consult_response_for_agent(agent_id: Option<&str>) -> anyhow::Resu
     {
         return Ok(contents);
     }
-    store::read_consult_response().await
+    Ok(String::new())
 }
 
 async fn read_current_task_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
@@ -211,17 +203,7 @@ async fn read_runtime_context_for_agent(agent_id: Option<&str>) -> anyhow::Resul
 }
 
 async fn read_runtime_state_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {
-    match read_sqlite_runtime_state_for_agent(agent_id).await {
-        Ok(json) => Ok(json),
-        Err(sqlite_err) => {
-            let state = store::read_state().await.map_err(|legacy_err| {
-                anyhow::anyhow!(
-                    "Cannot read SQLite runtime state ({sqlite_err}) or legacy STATE.json ({legacy_err})"
-                )
-            })?;
-            serde_json::to_string_pretty(&state).map_err(Into::into)
-        }
-    }
+    read_sqlite_runtime_state_for_agent(agent_id).await
 }
 
 async fn read_sqlite_runtime_state_for_agent(agent_id: Option<&str>) -> anyhow::Result<String> {

@@ -92,7 +92,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | Tool | From state | Description |
 |---|---|---|
 | `create_task` | Idle | Write task description; moves to Executing |
-| `enqueue_task` | — | Write numbered task artifact and DB `pending` row without changing `STATE.json` |
+| `enqueue_task` | — | Write numbered task artifact and DB `pending` row |
 | `create_spec` | any | Write approved Markdown spec to the configured spec directory |
 | `wait_for_review` | — | Long-poll until state is Reviewing |
 | `review_pending` | Reviewing | Read task + submission context |
@@ -133,7 +133,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://spec_template` | Feature specification template (`SPEC_TEMPLATE.md`) |
 | `ferrus://consult_request` | Scoped pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Scoped Supervisor consultation response (`CONSULT_RESPONSE.md`) |
-| `ferrus://state` | Current task state as JSON (`STATE.json`) |
+| `ferrus://state` | SQLite runtime state summary as JSON |
 | `ferrus://runtime_context` | Agent id, inherited Ferrus env vars, and resolved SQLite task context as JSON |
 
 ## MCP prompts
@@ -167,17 +167,17 @@ directory = "docs/specs" # where /create_spec writes approved specs
 
 | File | Contents |
 |---|---|
-| `STATE.json` | State, counters, schema version, timestamp, PID |
-| `STATE.lock` | Advisory lock file for atomic claiming |
 | `TASK.md` | Task drafting template |
-| `REVIEW.md` | Rejection notes |
-| `SUBMISSION.md` | Submission notes |
-| `QUESTION.md` | Compatibility mirror of the pending human question |
-| `ANSWER.md` | Compatibility mirror of the human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
-| `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
-| `CONSULT_REQUEST.md` | Compatibility mirror of the pending supervisor consultation request |
-| `CONSULT_RESPONSE.md` | Compatibility mirror of the supervisor consultation response |
-| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and consultation files |
+| `tasks/<task-id>.md` | Numbered task intent artifact |
+| `runs/<task-id>/SUBMISSION.md` | Scoped Executor submission notes |
+| `runs/<task-id>/REVIEW.md` | Scoped Supervisor review or rejection notes |
+| `runs/<task-id>/QUESTION.md` | Scoped pending human question |
+| `runs/<task-id>/ANSWER.md` | Scoped human answer |
+| `runs/<task-id>/CONSULT_REQUEST.md` | Scoped Executor consultation request |
+| `runs/<task-id>/CONSULT_RESPONSE.md` | Scoped Supervisor consultation response |
+| `runs/<task-id>/PATCH.diff` | Scoped implementation patch |
+| `runs/<task-id>/INTEGRATION_ERROR.md` | Scoped integration/check failure context |
+| `runs/<task-id>/logs/` | Scoped execution logs |
 | `logs/check_<n>_<ts>.txt` | Full check output |

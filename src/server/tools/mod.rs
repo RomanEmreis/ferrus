@@ -22,11 +22,11 @@ pub mod wait_for_task;
 
 use neva::prelude::*;
 
+use crate::project::{self, RuntimeTaskContext, TaskClaim};
+#[cfg(test)]
 use crate::{
     agent_id::ROLE_SUPERVISOR,
-    project::{self, RuntimeTaskContext, TaskClaim},
     state::machine::{StateData, TaskState},
-    state::store,
 };
 
 /// Convert an [`anyhow::Error`] into a neva tool error.
@@ -49,39 +49,16 @@ pub(super) fn ensure_lease_owner(state: &StateData, agent_id: &str) -> anyhow::R
 }
 
 pub(super) async fn ensure_lease_owner_or_reclaim(
-    state: &mut StateData,
     agent_id: &str,
     ttl_secs: u64,
 ) -> anyhow::Result<()> {
-    if state.claimed_by.as_deref() == Some(agent_id) {
-        if !state.lease_expired() {
-            return Ok(());
-        }
-
-        return reclaim_state_active_task_lease(state, agent_id, ttl_secs).await;
-    }
-
-    if let Some(context) = project::runtime_task_context_for_agent(agent_id).await? {
-        match project::claim_task(&context.task_id, &context.task_path, agent_id, ttl_secs).await {
-            Ok(TaskClaim::Claimed { .. }) | Ok(TaskClaim::AlreadyClaimed { .. }) => {
-                return Ok(());
-            }
-            Ok(TaskClaim::ClaimedByOther { claimed_by }) => {
-                anyhow::bail!("Cannot modify task: lease is held by {claimed_by}, not {agent_id}");
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = ?err,
-                    agent_id,
-                    task_id = context.task_id,
-                    "failed to validate lease in ferrus.db"
-                );
-            }
+    let context = require_runtime_task_context(agent_id).await?;
+    match project::claim_task(&context.task_id, &context.task_path, agent_id, ttl_secs).await? {
+        TaskClaim::Claimed | TaskClaim::AlreadyClaimed => Ok(()),
+        TaskClaim::ClaimedByOther { claimed_by } => {
+            anyhow::bail!("Cannot modify task: lease is held by {claimed_by}, not {agent_id}");
         }
     }
-
-    ensure_lease_identity(state, agent_id)?;
-    Ok(())
 }
 
 pub(super) async fn runtime_task_context_for_agent_best_effort(
@@ -100,61 +77,15 @@ pub(super) async fn runtime_task_context_for_agent_best_effort(
     }
 }
 
-pub(super) fn uses_legacy_state_context(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    context.is_none()
-}
-
-async fn reclaim_state_active_task_lease(
-    state: &mut StateData,
+pub(super) async fn require_runtime_task_context(
     agent_id: &str,
-    ttl_secs: u64,
-) -> anyhow::Result<()> {
-    match state.state {
-        TaskState::Executing | TaskState::Addressing | TaskState::Consultation => {
-            match project::claim_current_task(agent_id, ttl_secs).await {
-                Ok(TaskClaim::Claimed {
-                    claimed_by,
-                    lease_until,
-                })
-                | Ok(TaskClaim::AlreadyClaimed {
-                    claimed_by,
-                    lease_until,
-                }) => {
-                    state.claimed_by = Some(claimed_by);
-                    state.lease_until = Some(lease_until);
-                    state.last_heartbeat = Some(chrono::Utc::now());
-                    store::write_state(state).await?;
-                    Ok(())
-                }
-                Ok(TaskClaim::ClaimedByOther { claimed_by }) => {
-                    anyhow::bail!(
-                        "Cannot modify task: lease is held by {claimed_by}, not {agent_id}"
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = ?err,
-                        agent_id,
-                        "failed to reclaim lease in ferrus.db; falling back to STATE.json lease"
-                    );
-                    store::claim_state(agent_id, ttl_secs, state).await?;
-                    Ok(())
-                }
-            }
-        }
-        TaskState::Reviewing => {
-            store::claim_state(agent_id, ttl_secs, state).await?;
-            Ok(())
-        }
-        _ => anyhow::bail!(
-            "Cannot modify task: lease for {agent_id} has expired. Call wait_for_task again to reclaim work."
-        ),
-    }
+) -> anyhow::Result<RuntimeTaskContext> {
+    project::runtime_task_context_for_agent(agent_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("No SQLite runtime task is assigned to {agent_id}. Call the appropriate wait tool first."))
 }
 
+#[cfg(test)]
 pub(super) fn ensure_lease_identity(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
     if state.claimed_by.as_deref() != Some(agent_id) {
         let owner = state.claimed_by.as_deref().unwrap_or("none");
@@ -171,6 +102,7 @@ pub(super) fn ensure_can_ask_human(state: &StateData, agent_id: &str) -> anyhow:
     ensure_lease_owner(state, agent_id)
 }
 
+#[cfg(test)]
 pub(super) fn ensure_answer_waiter(state: &StateData, agent_id: &str) -> anyhow::Result<()> {
     if let Some(waiter) = state.awaiting_human_by.as_deref() {
         if waiter == agent_id {
@@ -188,6 +120,7 @@ pub(super) fn ensure_answer_waiter(state: &StateData, agent_id: &str) -> anyhow:
     ensure_lease_identity(state, agent_id)
 }
 
+#[cfg(test)]
 fn agent_role(agent_id: &str) -> Option<&str> {
     agent_id.split_once(':').map(|(role, _)| role)
 }
@@ -261,14 +194,7 @@ mod tests {
         crate::project::claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
             .await
             .unwrap();
-        let mut state = StateData {
-            state: TaskState::Executing,
-            claimed_by: Some("executor:codex:1".to_string()),
-            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            ..StateData::default()
-        };
-
-        ensure_lease_owner_or_reclaim(&mut state, "executor:codex:2", 60)
+        ensure_lease_owner_or_reclaim("executor:codex:2", 60)
             .await
             .unwrap();
 
@@ -311,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn answer_waiter_check_has_legacy_fallbacks() {
+    fn answer_waiter_check_accepts_role_owner_when_no_asker_is_recorded() {
         let mut state = StateData {
             state: TaskState::AwaitingHuman,
             paused_state: Some(TaskState::Consultation),

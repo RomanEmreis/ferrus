@@ -358,7 +358,7 @@ Set `RUST_LOG=ferrus=debug` (or `info`/`warn`) for verbose logs to stderr.
 | `ferrus://spec_template` | Feature specification template (`SPEC_TEMPLATE.md`) |
 | `ferrus://consult_request` | Scoped pending supervisor consultation request (`CONSULT_REQUEST.md`) |
 | `ferrus://consult_response` | Scoped Supervisor consultation response (`CONSULT_RESPONSE.md`) |
-| `ferrus://state` | Legacy compatibility state JSON when present |
+| `ferrus://state` | SQLite runtime state summary as JSON |
 | `ferrus://runtime_context` | Agent id, inherited Ferrus env vars, and resolved SQLite task context as JSON |
 
 ## MCP prompts
@@ -401,7 +401,7 @@ model = ""              # optional override; empty = agent default
 
 Ferrus separates project-local artifacts from machine-local runtime state:
 
-- `.ferrus/` stores human-readable project files and legacy compatibility mirrors.
+- `.ferrus/` stores human-readable project files and task/run artifacts.
 - `~/.ferrus/projects/<project-id>/` stores machine-local metadata, `ferrus.db`, and logs.
 
 SQLite is the runtime coordination store. Executor task claims and heartbeat renewals are coordinated
@@ -415,17 +415,9 @@ gone are marked `interrupted`, and expired task leases are released.
 | File | Contents |
 |---|---|
 | `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
-| `STATE.json` | Legacy compatibility state snapshot when migrating older projects |
-| `STATE.lock` | Legacy advisory lock file for compatibility fallback paths |
 | `TASK.md` | Task drafting template |
-| `REVIEW.md` | Compatibility mirror of active review notes |
-| `SUBMISSION.md` | Compatibility mirror of active submission notes |
-| `QUESTION.md` | Compatibility mirror of the pending human question |
-| `ANSWER.md` | Compatibility mirror of the human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
-| `CONSULT_REQUEST.md` | Compatibility mirror of the pending supervisor consultation request |
-| `CONSULT_RESPONSE.md` | Compatibility mirror of the supervisor consultation response |
 | `tasks/` | Task descriptions such as `tasks/t-001.md`; active task files are cleared on reset |
 | `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and consultation files; active run files are cleared on reset |
 | `logs/check_<n>_<ts>.txt` | Full check output |
@@ -445,7 +437,6 @@ pub async fn run(agents_path: String) -> Result<()> {
     create_spec_dir().await?;
     create_skill_files(&agents_path).await?;
     let registration = crate::project::register_current_project().await?;
-    crate::project::record_current_task_status_best_effort("idle").await;
     update_gitignore().await?;
     println!(
         "Registered project {} in {}",
@@ -506,32 +497,6 @@ async fn create_ferrus_dir() -> Result<()> {
             .await
             .context("Failed to write .ferrus/TASK.md")?;
         println!("Created .ferrus/TASK.md");
-    }
-
-    for filename in [
-        "REVIEW.md",
-        "SUBMISSION.md",
-        "QUESTION.md",
-        "ANSWER.md",
-        "CONSULT_REQUEST.md",
-        "CONSULT_RESPONSE.md",
-    ] {
-        let path = dir.join(filename);
-        if !path.exists() {
-            tokio::fs::write(&path, "")
-                .await
-                .with_context(|| format!("Failed to write .ferrus/{filename}"))?;
-            println!("Created .ferrus/{filename}");
-        }
-    }
-
-    // Create the advisory lock file used by wait_for_task, wait_for_review, and /heartbeat
-    let lock_path = dir.join("STATE.lock");
-    if !lock_path.exists() {
-        tokio::fs::write(&lock_path, "")
-            .await
-            .context("Failed to create .ferrus/STATE.lock")?;
-        println!("Created .ferrus/STATE.lock");
     }
 
     // Create empty agents registry

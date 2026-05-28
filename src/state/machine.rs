@@ -16,7 +16,8 @@ pub enum TaskState {
     AwaitingHuman,
 }
 
-/// Persisted to `.ferrus/STATE.json`.
+/// Legacy state shape retained for transition tests and dashboard compatibility while runtime
+/// coordination lives in SQLite.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateData {
     /// Incremented on breaking schema changes so readers can detect stale files.
@@ -115,6 +116,7 @@ impl Default for StateData {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum TransitionError {
     #[error("cannot {action} from state {state:?} — current state is invalid for this operation")]
@@ -134,6 +136,7 @@ pub enum TransitionError {
     ReviewLimitExceeded { cycles: u32 },
 }
 
+#[allow(dead_code)]
 impl StateData {
     /// Reset to Idle from any state. Used by the HQ `/reset` command.
     pub fn force_reset(&mut self) {

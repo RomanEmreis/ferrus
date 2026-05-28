@@ -4,16 +4,12 @@ use tracing::{info, warn};
 
 use crate::{
     config::Config,
-    project::{self, RuntimeTaskContext, TaskCheckFailure},
-    state::{
-        machine::{StateData, TaskState, TransitionError},
-        store,
-    },
+    project::{self, TaskCheckFailure},
 };
 
 use super::{
     check_gate::{self, CheckGateResult},
-    ensure_lease_owner_or_reclaim, tool_err, uses_legacy_state_context,
+    ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err,
 };
 
 pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, etc.) against the current \
@@ -22,62 +18,30 @@ pub const DESCRIPTION: &str = "Run all configured checks (clippy, fmt, tests, et
      On fail: stay in the current work state (or state → Failed if the retry \
      limit is exhausted).";
 
-pub async fn handler() -> Result<String, Error> {
-    run(None).await.map_err(tool_err)
-}
-
 pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
     run(Some(agent_id)).await.map_err(tool_err)
 }
 
 async fn run(agent_id: Option<&str>) -> Result<String> {
-    let config = Config::load().await?;
-    let runtime_context = match agent_id {
-        Some(agent_id) => super::runtime_task_context_for_agent_best_effort(agent_id).await,
-        None => None,
+    let Some(agent_id) = agent_id else {
+        anyhow::bail!("Cannot run task checks without an agent runtime context");
     };
-    let mut state = store::read_state().await.ok();
+    let config = Config::load().await?;
+    let context = require_runtime_task_context(agent_id).await?;
 
-    let context_is_working = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("executing" | "addressing")
-    );
-    let state_is_working = state
-        .as_ref()
-        .is_some_and(|state| matches!(state.state, TaskState::Executing | TaskState::Addressing));
-    if !context_is_working && !state_is_working {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
+    if !matches!(context.status.as_str(), "executing" | "addressing") {
         anyhow::bail!(
-            "Cannot run checks from state {current_state}. \
+            "Cannot run checks from state {}. \
              Checks are only valid in Executing or Addressing state.",
+            context.status
         );
     }
-    if let Some(agent_id) = agent_id {
-        let state_for_lease = state.get_or_insert_with(StateData::default);
-        ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
-    }
-    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
     if config.checks.commands.is_empty() {
-        if use_legacy_state {
-            let state = state.as_mut().ok_or_else(|| {
-                anyhow::anyhow!("Cannot check legacy state: STATE.json is missing")
-            })?;
-            state.check_passed()?;
-            store::write_state(state).await?;
-            mirror_check_state(runtime_context.as_ref(), state).await?;
-        } else if let Some(context) = runtime_context.as_ref() {
-            project::record_task_check_passed(&context.task_id).await?;
-        }
+        project::record_task_check_passed(&context.task_id).await?;
         project::record_runtime_event_best_effort(
-            runtime_context
-                .as_ref()
-                .and_then(|context| context.run_id.clone()),
+            context.run_id.clone(),
             "check_passed",
             serde_json::json!({ "commands": 0 }),
         )
@@ -90,38 +54,17 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
     }
 
     info!("Running {} check(s)", config.checks.commands.len());
-    let attempt = if use_legacy_state {
-        state
-            .as_ref()
-            .map(|state| state.check_retries + 1)
-            .unwrap_or(1)
-    } else {
-        runtime_context
-            .as_ref()
-            .map(|context| context.check_retries + 1)
-            .unwrap_or(1)
-    };
+    let attempt = context.check_retries + 1;
     match check_gate::run(&config, attempt).await? {
         CheckGateResult::Passed => {
-            if use_legacy_state {
-                let state = state.as_mut().ok_or_else(|| {
-                    anyhow::anyhow!("Cannot check legacy state: STATE.json is missing")
-                })?;
-                state.check_passed()?;
-                store::write_state(state).await?;
-                mirror_check_state(runtime_context.as_ref(), state).await?;
-            } else if let Some(context) = runtime_context.as_ref() {
-                project::record_task_check_passed(&context.task_id).await?;
-            }
+            project::record_task_check_passed(&context.task_id).await?;
             project::record_runtime_event_best_effort(
-                runtime_context
-                    .as_ref()
-                    .and_then(|context| context.run_id.clone()),
+                context.run_id.clone(),
                 "check_passed",
                 serde_json::json!({ "commands": config.checks.commands.len() }),
             )
             .await;
-            let state_label = work_state_label(state.as_ref(), runtime_context.as_ref());
+            let state_label = context.status.clone();
             info!(
                 state = state_label,
                 "All checks passed; staying in current work state"
@@ -131,103 +74,41 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
             ))
         }
         CheckGateResult::Failed(failure) => {
-            if !use_legacy_state {
-                let Some(context) = runtime_context.as_ref() else {
-                    anyhow::bail!("Cannot update task check failure without runtime task context");
-                };
-                return match project::record_task_check_failed(
-                    &context.task_id,
-                    &failure.failure_reason,
-                    config.limits.max_check_retries,
-                )
-                .await?
-                {
-                    TaskCheckFailure::Failed { retries } => {
-                        project::record_runtime_event_best_effort(
-                            context.run_id.clone(),
-                            "check_failed",
-                            serde_json::json!({
-                                "task_id": context.task_id,
-                                "retries": retries,
-                                "max_retries": config.limits.max_check_retries,
-                                "state": context.status,
-                            }),
-                        )
-                        .await;
-                        warn!(
-                            retries,
-                            task_id = context.task_id,
-                            "Checks failed; DB task stays in current work state"
-                        );
-                        Ok(format!(
-                            "Checks failed (retry {}/{}).\n\n{}\n\nState remains {}. Fix the issues and call /check again.",
-                            retries,
-                            config.limits.max_check_retries,
-                            failure.report,
-                            context.status,
-                        ))
-                    }
-                    TaskCheckFailure::LimitExceeded { retries } => {
-                        project::record_runtime_event_best_effort(
-                            context.run_id.clone(),
-                            "check_limit_exceeded",
-                            serde_json::json!({
-                                "task_id": context.task_id,
-                                "retries": retries,
-                                "max_retries": config.limits.max_check_retries,
-                            }),
-                        )
-                        .await;
-                        warn!(
-                            retries,
-                            task_id = context.task_id,
-                            "Check retry limit reached, DB task → failed"
-                        );
-                        Ok(format!(
-                            "Check retry limit reached ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
-                            config.limits.max_check_retries, failure.report,
-                        ))
-                    }
-                };
-            }
-            let state = state.as_mut().ok_or_else(|| {
-                anyhow::anyhow!("Cannot check legacy state: STATE.json is missing")
-            })?;
-            match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
-                Ok(()) => {
-                    store::write_state(state).await?;
-                    mirror_check_state(runtime_context.as_ref(), state).await?;
+            match project::record_task_check_failed(
+                &context.task_id,
+                &failure.failure_reason,
+                config.limits.max_check_retries,
+            )
+            .await?
+            {
+                TaskCheckFailure::Failed { retries } => {
                     project::record_runtime_event_best_effort(
-                        None,
+                        context.run_id.clone(),
                         "check_failed",
                         serde_json::json!({
-                            "retries": state.check_retries,
+                            "task_id": context.task_id,
+                            "retries": retries,
                             "max_retries": config.limits.max_check_retries,
-                            "state": format!("{:?}", state.state),
+                            "state": context.status,
                         }),
                     )
                     .await;
                     warn!(
-                        retries = state.check_retries,
-                        state = ?state.state,
-                        "Checks failed; staying in current work state"
+                        retries,
+                        task_id = context.task_id,
+                        "Checks failed; DB task stays in current work state"
                     );
                     Ok(format!(
-                        "Checks failed (retry {}/{}).\n\n{}\n\nState remains {:?}. Fix the issues and call /check again.",
-                        state.check_retries,
-                        config.limits.max_check_retries,
-                        failure.report,
-                        state.state,
+                        "Checks failed (retry {}/{}).\n\n{}\n\nState remains {}. Fix the issues and call /check again.",
+                        retries, config.limits.max_check_retries, failure.report, context.status,
                     ))
                 }
-                Err(TransitionError::CheckLimitExceeded { retries }) => {
-                    store::write_state(state).await?;
-                    mirror_check_state(runtime_context.as_ref(), state).await?;
-                    project::record_current_task_status_best_effort("failed").await;
+                TaskCheckFailure::LimitExceeded { retries } => {
                     project::record_runtime_event_best_effort(
-                        None,
+                        context.run_id.clone(),
                         "check_limit_exceeded",
                         serde_json::json!({
+                            "task_id": context.task_id,
                             "retries": retries,
                             "max_retries": config.limits.max_check_retries,
                         }),
@@ -239,41 +120,18 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
                         config.limits.max_check_retries, failure.report,
                     ))
                 }
-                Err(e) => anyhow::bail!(e),
             }
         }
     }
 }
 
-async fn mirror_check_state(
-    context: Option<&RuntimeTaskContext>,
-    state: &crate::state::machine::StateData,
-) -> Result<()> {
-    if let Some(context) = context {
-        project::mirror_task_check_state(
-            &context.task_id,
-            project::task_status_for_state(&state.state),
-            state.check_retries,
-            state.failure_reason.as_deref(),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-fn work_state_label(state: Option<&StateData>, context: Option<&RuntimeTaskContext>) -> String {
-    if let Some(context) = context {
-        return context.status.clone();
-    }
-    state
-        .map(|state| format!("{:?}", state.state))
-        .unwrap_or_else(|| "unavailable".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

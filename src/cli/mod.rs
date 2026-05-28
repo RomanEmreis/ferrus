@@ -62,7 +62,7 @@ enum Commands {
     Migrate,
     /// Recover ferrus.db runtime state after crashes or stale leases
     Recover {
-        /// Show pending recovery work without mutating ferrus.db or STATE.json
+        /// Show pending recovery work without mutating ferrus.db
         #[arg(long)]
         dry_run: bool,
         /// Also remove managed task worktrees that no active task or active run still owns

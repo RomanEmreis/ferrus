@@ -8,16 +8,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext, TaskHumanAnswerRestore},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
-use super::{
-    ensure_answer_waiter, ensure_lease_owner_or_reclaim,
-    runtime_task_context_for_agent_best_effort, tool_err, uses_legacy_state_context,
-};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Block until the human provides an answer to the question you asked via /ask_human. \
      Polls .ferrus/ANSWER.md until it has content, then restores the paused state and \
@@ -32,78 +26,29 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 }
 
 async fn run(agent_id: &str) -> Result<String> {
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
-    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
-    if use_legacy_state {
-        let state = state.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Cannot wait for legacy answer: STATE.json is missing")
-        })?;
-        if state.state != TaskState::AwaitingHuman {
-            anyhow::bail!(
-                "Cannot wait for answer from state {:?}; expected AwaitingHuman",
-                state.state
-            );
-        }
-    }
-
     let config = Config::load().await?;
-    if use_legacy_state {
-        let state = state.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Cannot wait for legacy answer: STATE.json is missing")
-        })?;
-        ensure_answer_waiter(state, agent_id)?;
-    } else if let Some(context) = runtime_context.as_ref() {
-        if context.status != "awaiting_human" {
-            anyhow::bail!(
-                "Cannot wait for answer from task status {:?}; expected awaiting_human",
-                context.status
-            );
-        }
-        ensure_scoped_answer_waiter(&mut state, context, agent_id, config.lease.ttl_secs).await?;
-    } else {
-        anyhow::bail!("Cannot wait for scoped answer without runtime task context");
+    let context = require_runtime_task_context(agent_id).await?;
+    if context.status != "awaiting_human" {
+        anyhow::bail!(
+            "Cannot wait for answer from task status {:?}; expected awaiting_human",
+            context.status
+        );
     }
+    ensure_scoped_answer_waiter(&context, agent_id, config.lease.ttl_secs).await?;
 
     let timeout = Duration::from_secs(config.limits.wait_timeout_secs);
     let start = Instant::now();
 
     loop {
-        match read_answer(use_legacy_state, runtime_context.as_ref()).await {
+        match read_answer(&context).await {
             Ok(ans) if !ans.trim().is_empty() => {
-                let resumed = if use_legacy_state {
-                    // Answer is available — restore paused state and return it.
-                    let mut state = store::read_state().await?;
-                    if state.state != TaskState::AwaitingHuman {
-                        anyhow::bail!(
-                            "Cannot wait for answer from state {:?}; expected AwaitingHuman",
-                            state.state
-                        );
-                    }
-                    ensure_answer_waiter(&state, agent_id)?;
-                    let resumed = state.answer()?;
-                    store::write_state(&state).await?;
-                    store::clear_answer().await?;
-                    store::clear_question().await?;
-                    if let Some(context) = runtime_context.as_ref() {
-                        let _ = project::restore_task_from_human_answer(&context.task_id).await?;
-                        store::clear_answer_for_run_dir(&context.run_dir).await?;
-                        store::clear_question_for_run_dir(&context.run_dir).await?;
-                    }
-                    format!("{resumed:?}")
-                } else if let Some(context) = runtime_context.as_ref() {
-                    let restored =
-                        project::restore_task_from_human_answer(&context.task_id).await?;
-                    let resumed = match restored {
-                        TaskHumanAnswerRestore::Restored { status } => status,
-                        TaskHumanAnswerRestore::NotAwaitingHuman => context.status.clone(),
-                    };
-                    store::clear_answer_for_run_dir(&context.run_dir).await?;
-                    store::clear_question_for_run_dir(&context.run_dir).await?;
-                    resumed
-                } else {
-                    anyhow::bail!("Cannot restore scoped answer without runtime task context");
+                let restored = project::restore_task_from_human_answer(&context.task_id).await?;
+                let resumed = match restored {
+                    TaskHumanAnswerRestore::Restored { status } => status,
+                    TaskHumanAnswerRestore::NotAwaitingHuman => context.status.clone(),
                 };
+                store::clear_answer_for_run_dir(&context.run_dir).await?;
+                store::clear_question_for_run_dir(&context.run_dir).await?;
 
                 let answer = ans.trim().to_string();
                 info!(resumed, "Human answered; task restored");
@@ -128,7 +73,6 @@ async fn run(agent_id: &str) -> Result<String> {
 }
 
 async fn ensure_scoped_answer_waiter(
-    state: &mut Option<StateData>,
     context: &RuntimeTaskContext,
     agent_id: &str,
     ttl_secs: u64,
@@ -139,26 +83,17 @@ async fn ensure_scoped_answer_waiter(
         }
         anyhow::bail!("Cannot wait for answer: question was asked by {owner}, not {agent_id}");
     }
-    let state = state.get_or_insert_with(StateData::default);
-    ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
+    ensure_lease_owner_or_reclaim(agent_id, ttl_secs).await
 }
 
-async fn read_answer(
-    use_legacy_state: bool,
-    context: Option<&RuntimeTaskContext>,
-) -> Result<String> {
-    if let Some(context) = context {
-        let scoped = store::read_answer_for_run_dir(&context.run_dir).await?;
-        if !use_legacy_state || !scoped.trim().is_empty() {
-            return Ok(scoped);
-        }
-    }
-    store::read_answer().await
+async fn read_answer(context: &RuntimeTaskContext) -> Result<String> {
+    store::read_answer_for_run_dir(&context.run_dir).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{machine::TaskState, store};
     use chrono::Utc;
     use tempfile::TempDir;
 

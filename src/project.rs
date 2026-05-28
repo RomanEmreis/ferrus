@@ -80,7 +80,6 @@ pub struct ProjectListEntry {
 pub struct RuntimeRecovery {
     pub interrupted_runs: usize,
     pub expired_task_leases: usize,
-    pub state_lease_mirrors_cleared: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,23 +159,17 @@ pub struct RuntimeTaskContext {
 struct CurrentTaskRecord {
     id: String,
     path: String,
+    #[cfg(test)]
     spec_path: Option<String>,
+    #[cfg(test)]
     milestone_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum TaskClaim {
-    Claimed {
-        claimed_by: String,
-        lease_until: DateTime<Utc>,
-    },
-    AlreadyClaimed {
-        claimed_by: String,
-        lease_until: DateTime<Utc>,
-    },
-    ClaimedByOther {
-        claimed_by: String,
-    },
+    Claimed,
+    AlreadyClaimed,
+    ClaimedByOther { claimed_by: String },
 }
 
 #[allow(dead_code)]
@@ -210,9 +203,6 @@ pub enum LeaseRenewal {
         lease_until: DateTime<Utc>,
     },
     NotClaimed,
-    ClaimedByOther {
-        claimed_by: String,
-    },
     Expired,
 }
 
@@ -331,12 +321,19 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
         .await
         .context("Failed to create .ferrus/runs")?;
     copy_legacy_artifacts().await?;
-    if let Ok(mut state) = crate::state::store::read_state().await {
-        if populate_legacy_active_artifacts(&mut state) {
-            crate::state::store::write_state(&state).await?;
-        }
-        record_current_task_status_best_effort(task_status_for_state(&state.state)).await;
+    if let Ok(state) = crate::state::store::read_state().await
+        && state.state != TaskState::Idle
+    {
+        record_task_status_with_origin(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            task_status_for_state(&state.state),
+            state.task_spec.as_deref(),
+            state.task_milestone.as_deref(),
+        )
+        .await?;
     }
+    remove_legacy_state_files().await?;
     Ok(registration)
 }
 
@@ -512,119 +509,44 @@ async fn add_recovery_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path
             recovery.expired_task_leases
         ),
     });
-    checks.push(DoctorCheck {
-        ok: recovery.state_lease_mirrors_cleared == 0,
-        message: format!(
-            "no stale STATE.json lease mirror recovery pending ({} found; run `ferrus recover`)",
-            recovery.state_lease_mirrors_cleared
-        ),
-    });
 }
 
 async fn add_runtime_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path: &Path) {
-    let state = match crate::state::store::read_state().await {
-        Ok(state) => {
-            checks.push(DoctorCheck {
-                ok: true,
-                message: "STATE.json is readable".to_string(),
-            });
-            state
-        }
+    let task_rows = match read_task_records_from_database(database_path).await {
+        Ok(rows) => rows,
         Err(err) => {
             checks.push(DoctorCheck {
                 ok: false,
-                message: format!("STATE.json is readable ({err})"),
+                message: format!("task rows can be read from ferrus.db ({err})"),
             });
             return;
         }
     };
-
-    let active_fields = [
-        state.active_task_id.as_ref(),
-        state.active_task_path.as_ref(),
-        state.active_run_dir.as_ref(),
-    ];
-    let active_field_count = active_fields.iter().filter(|field| field.is_some()).count();
-    let active_metadata_complete = active_field_count == 0 || active_field_count == 3;
     checks.push(DoctorCheck {
-        ok: active_metadata_complete,
-        message: "active task metadata is complete when present".to_string(),
+        ok: true,
+        message: "task rows can be read from ferrus.db".to_string(),
     });
-
-    if state.state == TaskState::Idle {
+    for task in task_rows
+        .iter()
+        .filter(|task| !matches!(task.status.as_str(), "idle" | "reset"))
+    {
         checks.push(DoctorCheck {
-            ok: active_field_count == 0,
-            message: "Idle STATE.json has no active task artifacts".to_string(),
+            ok: tokio::fs::metadata(&task.path).await.is_ok(),
+            message: format!("task artifact exists for {} at {}", task.id, task.path),
         });
-    } else {
-        checks.push(DoctorCheck {
-            ok: active_field_count == 3,
-            message: format!("{:?} STATE.json has active task artifacts", state.state),
-        });
-    }
-
-    if let Some(task_path) = state.active_task_path.as_deref() {
-        checks.push(DoctorCheck {
-            ok: tokio::fs::metadata(task_path).await.is_ok(),
-            message: format!("active task path exists at {task_path}"),
-        });
-    }
-    if let Some(run_dir) = state.active_run_dir.as_deref() {
-        let run_dir_exists = tokio::fs::metadata(run_dir)
+        let run_dir = run_dir_for_task(&task.id);
+        let run_dir_exists = tokio::fs::metadata(&run_dir)
             .await
             .map(|metadata| metadata.is_dir())
             .unwrap_or(false);
         checks.push(DoctorCheck {
             ok: run_dir_exists,
-            message: format!("active run directory exists at {run_dir}"),
+            message: format!(
+                "run artifact directory exists for {} at {}",
+                task.id, run_dir
+            ),
         });
     }
-
-    let Some(task_id) = state.active_task_id.as_deref() else {
-        return;
-    };
-    let task_row = match read_task_record_from_database(database_path, task_id).await {
-        Ok(row) => row,
-        Err(err) => {
-            checks.push(DoctorCheck {
-                ok: false,
-                message: format!("active task row can be read from ferrus.db ({err})"),
-            });
-            return;
-        }
-    };
-    let Some(task_row) = task_row else {
-        checks.push(DoctorCheck {
-            ok: false,
-            message: format!("active task row exists in ferrus.db for {task_id}"),
-        });
-        return;
-    };
-
-    checks.push(DoctorCheck {
-        ok: true,
-        message: format!("active task row exists in ferrus.db for {task_id}"),
-    });
-    if let Some(active_task_path) = state.active_task_path.as_deref() {
-        checks.push(DoctorCheck {
-            ok: task_row.path == active_task_path,
-            message: format!("active task DB path matches STATE.json ({active_task_path})"),
-        });
-    }
-    if !matches!(
-        state.state,
-        TaskState::Consultation | TaskState::AwaitingHuman
-    ) {
-        let expected_status = task_status_for_state(&state.state);
-        checks.push(DoctorCheck {
-            ok: task_row.status == expected_status,
-            message: format!("active task DB status matches STATE.json ({expected_status})"),
-        });
-    }
-    checks.push(DoctorCheck {
-        ok: task_row.claimed_by == state.claimed_by,
-        message: "active task DB claim owner matches STATE.json".to_string(),
-    });
 }
 
 pub async fn list_registered_projects() -> Result<Vec<ProjectListEntry>> {
@@ -843,17 +765,7 @@ pub async fn list_events(limit: usize, run_id: Option<String>) -> Result<Vec<Eve
 }
 
 pub async fn read_project_selection() -> Result<ProjectSelection> {
-    let database_path = match current_database_path().await {
-        Ok(path) => path,
-        Err(db_err) => {
-            return match read_legacy_selection().await {
-                Ok(selection) => Ok(selection),
-                Err(legacy_err) => Err(db_err).with_context(|| {
-                    format!("legacy STATE.json selection is unavailable: {legacy_err}")
-                }),
-            };
-        }
-    };
+    let database_path = current_database_path().await?;
 
     tokio::task::spawn_blocking(move || -> Result<ProjectSelection> {
         let connection = open_runtime_database(&database_path)?;
@@ -929,13 +841,6 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRecord> {
     })
 }
 
-async fn read_legacy_selection() -> Result<ProjectSelection> {
-    let state = crate::state::store::read_state().await?;
-    Ok(ProjectSelection {
-        selected_spec: state.selected_spec,
-    })
-}
-
 fn task_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord> {
     Ok(TaskRecord {
         id: row.get(0)?,
@@ -953,6 +858,7 @@ fn task_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord>
     })
 }
 
+#[cfg(test)]
 pub async fn record_current_task_status(status: &str) -> Result<()> {
     let task = current_task_record().await;
     record_task_status_with_origin(
@@ -1029,6 +935,7 @@ pub async fn record_task_check_passed(task_id: &str) -> Result<()> {
     .await?
 }
 
+#[cfg(test)]
 pub async fn mirror_task_check_state(
     task_id: &str,
     status: &str,
@@ -1065,66 +972,6 @@ pub async fn mirror_task_check_state(
                 "task_id": task_id,
                 "status": status,
                 "check_retries": check_retries,
-            }),
-        )?;
-        Ok(())
-    })
-    .await?
-}
-
-pub async fn mirror_task_review_state(
-    task_id: &str,
-    status: &str,
-    review_cycles: u32,
-    check_retries: u32,
-    failure_reason: Option<&str>,
-) -> Result<()> {
-    let database_path = current_database_path().await?;
-    let task_id = task_id.to_string();
-    let status = status.to_string();
-    let failure_reason = failure_reason.map(str::to_string);
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let connection = open_runtime_database(&database_path)?;
-        if clears_task_lease_for_status(&status) {
-            connection.execute(
-                r#"
-                UPDATE tasks
-                SET status = ?1, review_cycles = ?2, check_retries = ?3, failure_reason = ?4,
-                    claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
-                WHERE id = ?5
-                "#,
-                params![
-                    status,
-                    review_cycles,
-                    check_retries,
-                    failure_reason,
-                    task_id
-                ],
-            )?;
-        } else {
-            connection.execute(
-                r#"
-                UPDATE tasks
-                SET status = ?1, review_cycles = ?2, check_retries = ?3, failure_reason = ?4
-                WHERE id = ?5
-                "#,
-                params![
-                    status,
-                    review_cycles,
-                    check_retries,
-                    failure_reason,
-                    task_id
-                ],
-            )?;
-        }
-        insert_event(
-            &connection,
-            None,
-            "task_review_state_mirrored",
-            &serde_json::json!({
-                "task_id": task_id,
-                "status": status,
-                "review_cycles": review_cycles,
             }),
         )?;
         Ok(())
@@ -1468,6 +1315,7 @@ fn clears_task_lease_for_status(status: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 pub async fn claim_current_task(agent_id: &str, ttl_secs: u64) -> Result<TaskClaim> {
     let (task_id, task_path) = current_task_identity().await;
     claim_task(&task_id, &task_path, agent_id, ttl_secs).await
@@ -1736,10 +1584,7 @@ async fn claim_task_in_database(
 
         if lease_active && claimed_by.as_deref() == Some(agent_id.as_str()) {
             transaction.commit()?;
-            return Ok(TaskClaim::AlreadyClaimed {
-                claimed_by: agent_id,
-                lease_until: existing_lease.expect("active lease exists"),
-            });
+            return Ok(TaskClaim::AlreadyClaimed);
         }
         if lease_active {
             transaction.commit()?;
@@ -1752,14 +1597,12 @@ async fn claim_task_in_database(
             now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
         claim_task_in_transaction(&transaction, &task_id, &agent_id, lease_until, now)?;
         transaction.commit()?;
-        Ok(TaskClaim::Claimed {
-            claimed_by: agent_id,
-            lease_until,
-        })
+        Ok(TaskClaim::Claimed)
     })
     .await?
 }
 
+#[cfg(test)]
 pub async fn renew_current_task_lease(agent_id: &str, ttl_secs: u64) -> Result<LeaseRenewal> {
     let database_path = current_database_path().await?;
     let (task_id, task_path) = current_task_identity().await;
@@ -1784,7 +1627,7 @@ pub async fn renew_current_task_lease(agent_id: &str, ttl_secs: u64) -> Result<L
         };
         if claimed_by != agent_id {
             transaction.commit()?;
-            return Ok(LeaseRenewal::ClaimedByOther { claimed_by });
+            return Ok(LeaseRenewal::NotClaimed);
         }
         let Some(lease_until) = renew_task_lease_in_transaction(
             &transaction,
@@ -2069,12 +1912,6 @@ fn consultation_context_for_run(
 
 fn run_dir_for_task(task_id: &str) -> String {
     format!(".ferrus/runs/{task_id}")
-}
-
-pub async fn record_current_task_status_best_effort(status: &str) {
-    if let Err(err) = record_current_task_status(status).await {
-        warn!(error = ?err, status, "failed to mirror task status into ferrus.db");
-    }
 }
 
 pub async fn record_task_status_best_effort(task_id: &str, task_path: &str, status: &str) {
@@ -2585,11 +2422,9 @@ pub async fn recover_expired_task_leases() -> Result<usize> {
 pub async fn recover_runtime_state() -> Result<RuntimeRecovery> {
     let interrupted_runs = recover_interrupted_runs().await?;
     let expired_task_leases = recover_expired_task_leases().await?;
-    let state_lease_mirrors_cleared = recover_state_lease_mirror().await?;
     Ok(RuntimeRecovery {
         interrupted_runs,
         expired_task_leases,
-        state_lease_mirrors_cleared,
     })
 }
 
@@ -2722,7 +2557,6 @@ async fn preview_runtime_recovery_from(database_path: &Path) -> Result<RuntimeRe
     Ok(RuntimeRecovery {
         interrupted_runs: preview_interrupted_runs(database_path).await?,
         expired_task_leases: preview_expired_task_leases(database_path).await?,
-        state_lease_mirrors_cleared: preview_state_lease_mirror().await?,
     })
 }
 
@@ -2771,54 +2605,6 @@ async fn preview_expired_task_leases(database_path: &Path) -> Result<usize> {
         Ok(expired)
     })
     .await?
-}
-
-async fn preview_state_lease_mirror() -> Result<usize> {
-    let Ok(state) = crate::state::store::read_state().await else {
-        return Ok(0);
-    };
-    if state.claimed_by.is_none() {
-        return Ok(0);
-    }
-    if state
-        .lease_until
-        .is_some_and(|lease_until| Utc::now() < lease_until)
-    {
-        return Ok(0);
-    }
-    Ok(1)
-}
-
-async fn recover_state_lease_mirror() -> Result<usize> {
-    let Ok(mut state) = crate::state::store::read_state().await else {
-        return Ok(0);
-    };
-    if state.claimed_by.is_none() {
-        return Ok(0);
-    }
-    if state
-        .lease_until
-        .is_some_and(|lease_until| Utc::now() < lease_until)
-    {
-        return Ok(0);
-    }
-
-    let task_id = state.active_task_id.clone();
-    let claimed_by = state.claimed_by.clone();
-    let lease_until = state.lease_until;
-    state.clear_lease();
-    crate::state::store::write_state(&state).await?;
-    record_runtime_event(
-        None,
-        "state_lease_mirror_cleared",
-        serde_json::json!({
-            "task_id": task_id,
-            "claimed_by": claimed_by,
-            "lease_until": lease_until,
-        }),
-    )
-    .await?;
-    Ok(1)
 }
 
 pub fn task_status_for_state(state: &TaskState) -> &'static str {
@@ -2913,25 +2699,25 @@ async fn max_task_number_from_database(path: &Path) -> Result<u32> {
     .await?
 }
 
-async fn read_task_record_from_database(path: &Path, task_id: &str) -> Result<Option<TaskRecord>> {
+async fn read_task_records_from_database(path: &Path) -> Result<Vec<TaskRecord>> {
     let path = path.to_path_buf();
-    let task_id = task_id.to_string();
-    tokio::task::spawn_blocking(move || -> Result<Option<TaskRecord>> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<TaskRecord>> {
         let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("Failed to open {}", path.display()))?;
-        let task = connection
-            .query_row(
-                r#"
-                SELECT id, path, spec_path, milestone_id, status, paused_status, claimed_by,
-                       lease_until, last_heartbeat, check_retries, review_cycles, failure_reason
-                FROM tasks
-                WHERE id = ?1
-                "#,
-                [task_id],
-                task_record_from_row,
-            )
-            .optional()?;
-        Ok(task)
+        let mut statement = connection.prepare(
+            r#"
+            SELECT id, path, spec_path, milestone_id, status, paused_status, claimed_by,
+                   lease_until, last_heartbeat, check_retries, review_cycles, failure_reason
+            FROM tasks
+            ORDER BY id
+            "#,
+        )?;
+        let rows = statement.query_map([], task_record_from_row)?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(row?);
+        }
+        Ok(tasks)
     })
     .await?
 }
@@ -2944,23 +2730,27 @@ async fn current_database_path() -> Result<PathBuf> {
 }
 
 async fn current_task_record() -> CurrentTaskRecord {
-    let Ok(state) = crate::state::store::read_state().await else {
+    #[cfg(test)]
+    if let Ok(state) = crate::state::store::read_state().await {
         return CurrentTaskRecord {
-            id: CURRENT_TASK_ID.to_string(),
-            path: CURRENT_TASK_PATH.to_string(),
-            spec_path: None,
-            milestone_id: None,
+            id: state
+                .active_task_id
+                .unwrap_or_else(|| CURRENT_TASK_ID.to_string()),
+            path: state
+                .active_task_path
+                .unwrap_or_else(|| CURRENT_TASK_PATH.to_string()),
+            spec_path: state.task_spec,
+            milestone_id: state.task_milestone,
         };
-    };
+    }
+
     CurrentTaskRecord {
-        id: state
-            .active_task_id
-            .unwrap_or_else(|| CURRENT_TASK_ID.to_string()),
-        path: state
-            .active_task_path
-            .unwrap_or_else(|| CURRENT_TASK_PATH.to_string()),
-        spec_path: state.task_spec,
-        milestone_id: state.task_milestone,
+        id: CURRENT_TASK_ID.to_string(),
+        path: CURRENT_TASK_PATH.to_string(),
+        #[cfg(test)]
+        spec_path: None,
+        #[cfg(test)]
+        milestone_id: None,
     }
 }
 
@@ -3467,16 +3257,15 @@ async fn copy_legacy_artifacts() -> Result<()> {
     Ok(())
 }
 
-fn populate_legacy_active_artifacts(state: &mut crate::state::machine::StateData) -> bool {
-    if state.state == TaskState::Idle || state.active_task_id.is_some() {
-        return false;
+async fn remove_legacy_state_files() -> Result<()> {
+    for path in [".ferrus/STATE.json", ".ferrus/STATE.lock"] {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).with_context(|| format!("Failed to remove {path}")),
+        }
     }
-    state.set_active_task_artifacts(
-        "t-001".to_string(),
-        ".ferrus/tasks/t-001.md".to_string(),
-        ".ferrus/runs/t-001".to_string(),
-    );
-    true
+    Ok(())
 }
 
 async fn copy_if_nonempty(from: &str, to: &str) -> Result<()> {
@@ -3797,60 +3586,16 @@ mod tests {
         teardown(previous);
     }
 
-    #[test]
-    fn legacy_non_idle_state_gets_default_active_artifacts_for_migration() {
-        let mut state = StateData {
-            state: TaskState::Executing,
-            ..StateData::default()
-        };
-
-        assert!(populate_legacy_active_artifacts(&mut state));
-        assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
-        assert_eq!(
-            state.active_task_path.as_deref(),
-            Some(".ferrus/tasks/t-001.md")
-        );
-        assert_eq!(state.active_run_dir.as_deref(), Some(".ferrus/runs/t-001"));
-    }
-
-    #[test]
-    fn legacy_artifact_population_leaves_idle_and_existing_artifacts_unchanged() {
-        let mut idle = StateData::default();
-        assert!(!populate_legacy_active_artifacts(&mut idle));
-        assert!(idle.active_task_id.is_none());
-
-        let mut migrated = StateData {
-            state: TaskState::Addressing,
-            ..StateData::default()
-        };
-        migrated.set_active_task_artifacts(
-            "t-009".to_string(),
-            ".ferrus/tasks/t-009.md".to_string(),
-            ".ferrus/runs/t-009".to_string(),
-        );
-
-        assert!(!populate_legacy_active_artifacts(&mut migrated));
-        assert_eq!(migrated.active_task_id.as_deref(), Some("t-009"));
-        assert_eq!(
-            migrated.active_task_path.as_deref(),
-            Some(".ferrus/tasks/t-009.md")
-        );
-        assert_eq!(
-            migrated.active_run_dir.as_deref(),
-            Some(".ferrus/runs/t-009")
-        );
-    }
-
     #[tokio::test]
     async fn sqlite_task_claim_is_exclusive_and_renewable() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
 
         let first = claim_current_task("executor:codex:1", 60).await.unwrap();
-        assert!(matches!(first, TaskClaim::Claimed { .. }));
+        assert!(matches!(first, TaskClaim::Claimed));
 
         let second = claim_current_task("executor:codex:1", 60).await.unwrap();
-        assert!(matches!(second, TaskClaim::AlreadyClaimed { .. }));
+        assert!(matches!(second, TaskClaim::AlreadyClaimed));
 
         let other = claim_current_task("executor:codex:2", 60).await.unwrap();
         match other {
@@ -3876,7 +3621,7 @@ mod tests {
         let first = claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
             .await
             .unwrap();
-        assert!(matches!(first, TaskClaim::Claimed { .. }));
+        assert!(matches!(first, TaskClaim::Claimed));
 
         let second = claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:3", 60)
             .await
@@ -3907,7 +3652,7 @@ mod tests {
         let first = claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
             .await
             .unwrap();
-        assert!(matches!(first, TaskClaim::Claimed { .. }));
+        assert!(matches!(first, TaskClaim::Claimed));
 
         store::write_state(&StateData::default()).await.unwrap();
 
@@ -4394,10 +4139,11 @@ mod tests {
         add_runtime_doctor_checks(&mut checks, &database_path).await;
 
         assert!(checks.iter().any(|check| {
-            !check.ok && check.message == "active task path exists at .ferrus/tasks/t-001.md"
+            !check.ok && check.message == "task artifact exists for t-001 at .ferrus/tasks/t-001.md"
         }));
         assert!(checks.iter().any(|check| {
-            !check.ok && check.message == "active run directory exists at .ferrus/runs/t-001"
+            !check.ok
+                && check.message == "run artifact directory exists for t-001 at .ferrus/runs/t-001"
         }));
 
         teardown(previous);
@@ -4456,32 +4202,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_runtime_state_clears_expired_state_lease_mirror() {
+    async fn runtime_doctor_checks_database_task_artifacts() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (_dir, previous) = setup_project().await;
-        claim_current_task("executor:codex:1", 0).await.unwrap();
-        let mut state = store::read_state().await.unwrap();
-        state.claimed_by = Some("executor:codex:1".to_string());
-        state.lease_until = Some(Utc::now() - chrono::Duration::seconds(1));
-        state.last_heartbeat = Some(Utc::now() - chrono::Duration::seconds(2));
-        store::write_state(&state).await.unwrap();
+        let (dir, previous) = setup_project().await;
+        tokio::fs::create_dir_all(dir.path().join(".ferrus/tasks"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dir.path().join(".ferrus/runs/t-010"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join(".ferrus/tasks/t-010.md"), "task")
+            .await
+            .unwrap();
+        record_task_status("t-010", ".ferrus/tasks/t-010.md", "executing")
+            .await
+            .unwrap();
+        let database_path = current_database_path().await.unwrap();
+        let mut checks = Vec::new();
 
-        let recovery = recover_runtime_state().await.unwrap();
-        let state = store::read_state().await.unwrap();
-        let tasks = list_tasks().await.unwrap();
-        let events = list_events(20, None).await.unwrap();
+        add_runtime_doctor_checks(&mut checks, &database_path).await;
 
-        assert_eq!(recovery.expired_task_leases, 1);
-        assert_eq!(recovery.state_lease_mirrors_cleared, 1);
-        assert_eq!(state.claimed_by, None);
-        assert_eq!(state.lease_until, None);
-        assert_eq!(state.last_heartbeat, None);
-        assert_eq!(tasks[0].claimed_by, None);
         assert!(
-            events
+            checks
                 .iter()
-                .any(|event| { event.event_type == "state_lease_mirror_cleared" })
+                .any(|check| check.ok && check.message == "task rows can be read from ferrus.db")
         );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.ok && check.message.contains("task artifact exists for t-010"))
+        );
+        assert!(checks.iter().any(|check| {
+            check.ok
+                && check
+                    .message
+                    .contains("run artifact directory exists for t-010")
+        }));
 
         teardown(previous);
     }
@@ -4557,35 +4313,21 @@ mod tests {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
         claim_current_task("executor:codex:1", 0).await.unwrap();
-        let mut state = store::read_state().await.unwrap();
-        state.claimed_by = Some("executor:codex:1".to_string());
-        state.lease_until = Some(Utc::now() - chrono::Duration::seconds(1));
-        state.last_heartbeat = Some(Utc::now() - chrono::Duration::seconds(2));
-        store::write_state(&state).await.unwrap();
         let database_path = current_database_path().await.unwrap();
         let mut checks = Vec::new();
 
         let preview = preview_runtime_recovery_from(&database_path).await.unwrap();
         add_recovery_doctor_checks(&mut checks, &database_path).await;
-        let state_after = store::read_state().await.unwrap();
         let tasks = list_tasks().await.unwrap();
 
         assert_eq!(preview.interrupted_runs, 0);
         assert_eq!(preview.expired_task_leases, 1);
-        assert_eq!(preview.state_lease_mirrors_cleared, 1);
-        assert_eq!(state_after.claimed_by.as_deref(), Some("executor:codex:1"));
         assert_eq!(tasks[0].claimed_by.as_deref(), Some("executor:codex:1"));
         assert!(checks.iter().any(|check| {
             !check.ok
                 && check
                     .message
                     .contains("expired task lease recovery pending (1")
-        }));
-        assert!(checks.iter().any(|check| {
-            !check.ok
-                && check
-                    .message
-                    .contains("stale STATE.json lease mirror recovery pending (1")
         }));
 
         teardown(previous);

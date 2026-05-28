@@ -11,11 +11,10 @@ fn to_err(e: impl std::fmt::Display) -> Error {
 
 pub async fn executor_context_for_agent(agent_id: Option<&str>) -> Result<GetPromptResult, Error> {
     let runtime_context = runtime_context(agent_id).await.map_err(to_err)?;
-    let state = store::read_state().await.ok();
     let task = read_task(runtime_context.as_ref()).await.map_err(to_err)?;
 
     let mut sections = vec![
-        state_section("State", state.as_ref(), runtime_context.as_ref()).map_err(to_err)?,
+        state_section("State", runtime_context.as_ref()).map_err(to_err)?,
         format!("## Task\n\n{task}"),
     ];
 
@@ -33,11 +32,10 @@ pub async fn executor_context_for_agent(agent_id: Option<&str>) -> Result<GetPro
 
 pub async fn supervisor_review_for_agent(agent_id: Option<&str>) -> Result<GetPromptResult, Error> {
     let runtime_context = runtime_context(agent_id).await.map_err(to_err)?;
-    let state = store::read_state().await.ok();
     let task = read_task(runtime_context.as_ref()).await.map_err(to_err)?;
 
     let mut sections = vec![
-        state_section("State", state.as_ref(), runtime_context.as_ref()).map_err(to_err)?,
+        state_section("State", runtime_context.as_ref()).map_err(to_err)?,
         format!("## Task\n\n{task}"),
     ];
 
@@ -71,32 +69,22 @@ async fn read_review(context: Option<&RuntimeTaskContext>) -> anyhow::Result<Str
     if let Some(context) = context {
         return store::read_review_for_run_dir(&context.run_dir).await;
     }
-    store::read_review().await
+    Ok(String::new())
 }
 
 async fn read_submission(context: Option<&RuntimeTaskContext>) -> anyhow::Result<String> {
     if let Some(context) = context {
         return store::read_submission_for_run_dir(&context.run_dir).await;
     }
-    store::read_submission().await
+    Ok(String::new())
 }
 
-fn state_section(
-    title: &str,
-    state: Option<&crate::state::machine::StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> anyhow::Result<String> {
+fn state_section(title: &str, context: Option<&RuntimeTaskContext>) -> anyhow::Result<String> {
     let (state_label, check_retries, review_cycles) = if let Some(context) = context {
         (
             context.status.clone(),
             context.check_retries,
             context.review_cycles,
-        )
-    } else if let Some(state) = state {
-        (
-            format!("{:?}", state.state),
-            state.check_retries,
-            state.review_cycles,
         )
     } else {
         ("sqlite-runtime".to_string(), 0, 0)
@@ -115,7 +103,7 @@ fn state_section(
         if let Some(workspace_path) = context.workspace_path.as_deref() {
             lines.push(format!("Workspace: `{workspace_path}`"));
         }
-    } else if state.is_none() {
+    } else {
         lines.push(
             "No scoped SQLite task context is attached to this agent; call the appropriate wait tool first."
                 .to_string(),

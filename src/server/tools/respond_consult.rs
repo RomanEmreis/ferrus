@@ -4,10 +4,7 @@ use tracing::info;
 
 use crate::{
     project::{self, RuntimeTaskContext},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
 use super::{runtime_task_context_for_agent_best_effort, tool_err};
@@ -34,7 +31,6 @@ async fn run(agent_id: Option<&str>, response: String) -> Result<String> {
         anyhow::bail!("Consultation response cannot be empty.");
     }
 
-    let state = store::read_state().await.ok();
     let runtime_context = match agent_id {
         Some(agent_id) => runtime_task_context_for_agent_best_effort(agent_id)
             .await
@@ -54,46 +50,32 @@ async fn run(agent_id: Option<&str>, response: String) -> Result<String> {
         None => None,
     };
 
-    let context_is_consultation = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("consultation")
-    );
-    let state_is_consultation = state
-        .as_ref()
-        .is_some_and(|state| state.state == TaskState::Consultation);
-    if !context_is_consultation && !state_is_consultation {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
+    let Some(context) = runtime_context else {
+        anyhow::bail!("Cannot respond to consultation without a SQLite runtime task context.");
+    };
+    if context.status != "consultation" {
         anyhow::bail!(
-            "Cannot respond to consultation from state {current_state}. /respond_consult is only valid in Consultation state.",
+            "Cannot respond to consultation from state {}. /respond_consult is only valid in Consultation state.",
+            context.status
         );
     }
 
-    write_consult_response(state.as_ref(), runtime_context.as_ref(), &response).await?;
+    write_consult_response(&context, &response).await?;
     info!("Consultation response recorded");
     Ok("Consultation response recorded in `.ferrus/CONSULT_RESPONSE.md`.".to_string())
 }
 
-async fn write_consult_response(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-    response: &str,
-) -> Result<()> {
-    if let Some(context) = context {
-        store::write_consult_response_for_run_dir(&context.run_dir, response).await?;
-        return Ok(());
-    }
-    store::write_consult_response(response).await
+async fn write_consult_response(context: &RuntimeTaskContext, response: &str) -> Result<()> {
+    store::write_consult_response_for_run_dir(&context.run_dir, response).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

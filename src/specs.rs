@@ -27,6 +27,7 @@ impl Milestone {
 pub struct SpecDocument {
     pub path: String,
     pub milestones: Vec<Milestone>,
+    #[allow(dead_code)]
     lines: Vec<String>,
 }
 
@@ -262,6 +263,7 @@ pub async fn resolve_spec_milestone(
     }))
 }
 
+#[allow(dead_code)]
 pub async fn complete_task_milestone_and_advance(state: &mut StateData) -> Result<()> {
     let Some(spec_path) = state.task_spec.clone() else {
         return Ok(());
@@ -406,12 +408,14 @@ fn normalize_ref(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+#[allow(dead_code)]
 fn mark_line_completed(line: &mut String) {
     if let Some(pos) = line.find("- [ ]") {
         line.replace_range(pos..pos + 5, "- [x]");
     }
 }
 
+#[allow(dead_code)]
 async fn write_spec_lines(path: &str, lines: &[String]) -> Result<()> {
     let mut content = lines.join("\n");
     if !content.ends_with('\n') {

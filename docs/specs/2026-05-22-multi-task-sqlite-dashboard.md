@@ -23,7 +23,7 @@ The core boundary is:
 ## Non-Goals
 
 - Publishing a new stable release before the multi-task flow and dashboard are stable.
-- Removing `STATE.json` immediately before the SQLite-backed replacement is complete.
+- Reintroducing `STATE.json` as a runtime coordination layer.
 - Starting true parallel code changes without worktree isolation and integration policy.
 - Asking agents to decide which milestones are ready without deterministic HQ validation.
 
@@ -136,7 +136,7 @@ Semantics:
 - writes one numbered task artifact under `.ferrus/tasks/`;
 - records a SQLite task row with status `pending`;
 - stores origin metadata such as `spec_path` and `milestone_id` when available;
-- does not set `STATE.json` active task fields;
+- does not set single-active-task state fields;
 - does not start an executor directly;
 - requires explicit user approval before the supervisor calls it.
 
@@ -241,13 +241,11 @@ Recovery is SQLite-first:
 - Runtime identity propagation through `FERRUS_AGENT_ID`, `FERRUS_TASK_ID`, and `FERRUS_RUN_ID` for HQ-managed headless sessions.
 - MCP resource `ferrus://runtime_context` for deterministic runtime identity diagnostics from inside the agent-started MCP server.
 - MCP `/status` is scoped by runtime agent id and includes the agent's SQLite task context when one exists.
-- MCP prompts `executor-context` and `supervisor-review` are scoped by runtime agent id and prefer numbered task/run artifacts over legacy mirrors when a SQLite task context exists.
-- MCP `/status` and scoped prompts are DB-first for agents with SQLite runtime context and no longer require `STATE.json` in that path.
-- MCP `/wait_for_task`, `/wait_for_review`, `/heartbeat`, `/check`, `/submit`, `/consult`, `/respond_consult`, `/wait_for_consult`, `/ask_human`, `/wait_for_answer`, `/review_pending`, `/approve`, and `/reject` are DB-first for agents with SQLite runtime context and no longer require `STATE.json` in that path.
-- MCP resources for task run artifacts (`review`, `submission`, `question`, `answer`) are scoped by runtime agent id and prefer `.ferrus/runs/<task-id>/` files over legacy mirrors.
-- Active-task `/check`, `/submit` final-gate, and `/reject` review transitions mirror retry/failure/cycle state into SQLite so DB task rows do not lag behind `STATE.json`.
-- Active-task `/consult`, `/wait_for_consult`, `/ask_human`, and `/wait_for_answer` mirror pause/restore state into SQLite and support scoped run artifacts with legacy fallback.
-- SQLite task rows record `awaiting_human_by`; `/wait_for_answer` enforces requester identity before consuming scoped answers, and legacy `/wait_for_task` fallback preserves `.ferrus/REVIEW.md` notes.
+- MCP prompts `executor-context` and `supervisor-review` are scoped by runtime agent id and use numbered task/run artifacts.
+- MCP `/status`, `/wait_for_task`, `/wait_for_review`, `/heartbeat`, `/check`, `/submit`, `/consult`, `/respond_consult`, `/wait_for_consult`, `/ask_human`, `/wait_for_answer`, `/review_pending`, `/approve`, `/reject`, and `/reset` use SQLite runtime context instead of `STATE.json`.
+- MCP resources for task run artifacts (`review`, `submission`, `question`, `answer`) are scoped by runtime agent id and read `.ferrus/runs/<task-id>/` files.
+- Task check, submit, review, consultation, and human-answer transitions update SQLite task rows directly.
+- SQLite task rows record `awaiting_human_by`; `/wait_for_answer` enforces requester identity before consuming scoped answers.
 - `ferrus doctor` warnings and `ferrus migrate` conversion for legacy indexed MCP registrations and tool permissions.
 - Pending queued tasks are promoted atomically by the targeted executor's `/wait_for_task` claim.
 - Run records can be preallocated and stored with an explicit `workspace_path`; HQ headless launchers now have a cwd hook for future worktree execution.
@@ -262,26 +260,24 @@ Recovery is SQLite-first:
 - Consultation workers launched for DB tasks receive `FERRUS_TASK_ID` and attach to that exact consultation instead of racing for the next available consultation.
 - Scoped task human questions are listed from SQLite/runtime artifacts; HQ plain input answers the first queued scoped question by writing to that task's run directory.
 - Dashboard runtime activity shows pending/running/reviewing/awaiting-human task rows before recent run rows.
-- Shared MCP helpers now distinguish legacy active `STATE.json` context from scoped SQLite runtime context consistently across DB-first tools.
-- MCP `/create_task` is DB-first and records a pending SQLite task without reading or writing `STATE.json`.
+- Shared MCP helpers require scoped SQLite runtime context for task-owned operations.
+- MCP `/create_task` records a pending SQLite task without reading or writing `STATE.json`.
 - HQ `/reset` is DB-first and marks non-terminal SQLite task rows as `reset` without clearing Markdown history.
-- HQ plain-text human answers fall back to scoped SQLite questions when `STATE.json` is absent.
+- HQ plain-text human answers write to the first queued scoped SQLite question.
 - MCP `/status` without an agent task context reports a SQLite task summary instead of requiring `STATE.json`.
 - MCP `ferrus://state` is DB-first and returns SQLite project selection, task rows, recent run rows, and the caller's task context when present.
-- MCP prompts no longer require `STATE.json` when no scoped task context is attached; they report an unscoped SQLite runtime state and instruct the agent to call the appropriate wait tool.
-- Project spec selection reads and writes the explicit SQLite `project_runtime_state` row after migration and no longer mirrors changes back into `STATE.json`.
-- HQ `/resume`, `/review`, and scheduler reconciliation use SQLite task rows first; legacy `STATE.json` is only a fallback for old single-task projects.
-- HQ `/check` without `STATE.json` runs workspace checks without mutating task state; task-scoped check retry accounting remains in executor MCP `/check`.
-- Shared MCP tool routing now treats a scoped SQLite runtime context as authoritative even when a stale `STATE.json` active task points at the same task id; legacy state is used only when no SQLite context is attached.
-- The old HQ complete-to-next-task preparation path was removed; new task scheduling no longer clears legacy mirror files or resets `STATE.json`.
-- MCP `/answer` is DB-first for scoped awaiting-human tasks and writes the response into the task run directory; legacy `STATE.json` answering remains only as fallback when no SQLite question is queued.
-- Scoped DB tools no longer mirror run artifacts or leases back into legacy single-task files (`QUESTION.md`, `ANSWER.md`, `CONSULT_*`, `SUBMISSION.md`, `REVIEW.md`) or `STATE.json` when a SQLite task context is present.
+- MCP prompts report an unscoped SQLite runtime state when no task context is attached and instruct the agent to call the appropriate wait tool.
+- Project spec selection reads and writes the explicit SQLite `project_runtime_state` row.
+- HQ `/resume`, `/review`, scheduler reconciliation, `/check`, and human answers use SQLite task rows and scoped artifacts only.
+- The old HQ complete-to-next-task preparation path was removed; new task scheduling no longer clears Markdown history.
+- MCP `/wait_for_task`, `/wait_for_review`, and `/heartbeat` no longer use `.ferrus/STATE.lock`.
+- HQ state watching no longer polls `STATE.json`; it watches project selection/spec display data while task activity comes from SQLite rows.
+- Scoped DB tools no longer mirror run artifacts or leases into single-task files.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Retire or quarantine the remaining legacy single-active-task compatibility branches in MCP tools once migration coverage is final.
-- Remove compatibility `STATE.json` artifact helpers after the old single-task path is either fully migrated to SQLite or explicitly kept as an isolated compatibility layer.
+- Remove the remaining test-only `StateData` scaffolding after all tests are rewritten around SQLite fixtures.
 
 ## Milestones
 
@@ -405,5 +401,5 @@ active questions, active consultations, and active task identity.
 
 - Worktree isolation may force earlier changes to executor launch paths than expected.
 - The final integration policy needs concrete rules for conflicts, ownership, and partial failures.
-- `STATE.json` cutover should keep migration/doctor compatibility explicit while avoiding new runtime mirrors.
+- Migration may read old `STATE.json` once as an import source, then removes legacy state files; runtime paths must not fall back to it.
 - Agent environment propagation for deterministic task id and agent id must be verified per backend.

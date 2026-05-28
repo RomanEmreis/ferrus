@@ -1,11 +1,7 @@
 use anyhow::Result;
 use neva::prelude::*;
-use tracing::info;
 
-use crate::{
-    project,
-    state::{machine::TaskState, store},
-};
+use crate::{project, state::store};
 
 use super::tool_err;
 
@@ -45,23 +41,7 @@ async fn run(response: String) -> Result<String> {
         ));
     }
 
-    let mut state = store::read_state().await?;
-    if state.state != TaskState::AwaitingHuman {
-        anyhow::bail!(
-            "Cannot answer from state {:?}. /answer is only valid in AwaitingHuman state.",
-            state.state
-        );
-    }
-
-    let resumed = state.answer()?;
-    store::write_answer(&response).await?;
-    store::write_state(&state).await?;
-
-    info!(resumed = ?resumed, "State → {resumed:?} (resumed from AwaitingHuman)");
-    Ok(format!(
-        "Response recorded in `.ferrus/ANSWER.md`. State restored to {resumed:?}. \
-         The agent can read the answer and continue."
-    ))
+    anyhow::bail!("No task is currently waiting for a human answer.")
 }
 
 #[cfg(test)]

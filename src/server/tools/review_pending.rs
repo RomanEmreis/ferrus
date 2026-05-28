@@ -2,16 +2,9 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::{
-    config::Config,
-    project::RuntimeTaskContext,
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
-};
+use crate::{config::Config, project::RuntimeTaskContext, state::store};
 
-use super::{ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Retrieve the pending submission for review. Returns the task description, \
      the Executor's submission notes (summary, verification steps, known limitations), \
@@ -23,33 +16,19 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 
 async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
+    let context = require_runtime_task_context(agent_id).await?;
 
-    let context_is_reviewing = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("reviewing")
-    );
-    let state_is_reviewing = state
-        .as_ref()
-        .is_some_and(|state| state.state == TaskState::Reviewing);
-    if !context_is_reviewing && !state_is_reviewing {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
+    if context.status != "reviewing" {
         anyhow::bail!(
-            "No submission pending review. Current state: {current_state}. \
+            "No submission pending review. Current state: {}. \
              Wait for the Executor to call /submit.",
+            context.status
         );
     }
-    let state_for_lease = state.get_or_insert_with(StateData::default);
-    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
     let (task, submission, review, patch, integration_error) =
-        read_review_context(runtime_context.as_ref()).await?;
+        read_review_context(&context).await?;
 
     let mut response = format!("## Task\n\n{task}\n");
 
@@ -80,16 +59,8 @@ async fn run(agent_id: &str) -> Result<String> {
         }
     }
 
-    let review_cycles = runtime_context
-        .as_ref()
-        .map(|context| context.review_cycles)
-        .or_else(|| state.as_ref().map(|state| state.review_cycles))
-        .unwrap_or_default();
-    let check_retries = runtime_context
-        .as_ref()
-        .map(|context| context.check_retries)
-        .or_else(|| state.as_ref().map(|state| state.check_retries))
-        .unwrap_or_default();
+    let review_cycles = context.review_cycles;
+    let check_retries = context.check_retries;
 
     response.push_str(&format!(
         "\n---\nReview cycles used: {}/{}  \nCheck retries used: {}/{}",
@@ -104,31 +75,21 @@ async fn run(agent_id: &str) -> Result<String> {
 }
 
 async fn read_review_context(
-    context: Option<&RuntimeTaskContext>,
+    context: &RuntimeTaskContext,
 ) -> Result<(String, String, String, String, String)> {
-    if let Some(context) = context {
-        return Ok((
-            store::read_task_at(&context.task_path).await?,
-            store::read_submission_for_run_dir(&context.run_dir).await?,
-            store::read_review_for_run_dir(&context.run_dir).await?,
-            store::read_patch_for_run_dir(&context.run_dir).await?,
-            store::read_integration_error_for_run_dir(&context.run_dir).await?,
-        ));
-    }
-
     Ok((
-        store::read_task().await?,
-        store::read_submission().await?,
-        store::read_review().await?,
-        String::new(),
-        String::new(),
+        store::read_task_at(&context.task_path).await?,
+        store::read_submission_for_run_dir(&context.run_dir).await?,
+        store::read_review_for_run_dir(&context.run_dir).await?,
+        store::read_patch_for_run_dir(&context.run_dir).await?,
+        store::read_integration_error_for_run_dir(&context.run_dir).await?,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{machine::StateData, store};
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

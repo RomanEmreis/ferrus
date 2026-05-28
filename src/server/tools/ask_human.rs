@@ -4,16 +4,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
-use super::{
-    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
-    uses_legacy_state_context,
-};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the human a question. \
      Writes the question to QUESTION.md, transitions state to AwaitingHuman, \
@@ -40,43 +34,15 @@ pub async fn handler_for_agent(
 
 async fn run(agent_id: &str, question: String) -> Result<String> {
     let config = Config::load().await?;
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
-    ensure_can_ask_human(
-        &mut state,
-        runtime_context.as_ref(),
-        agent_id,
-        config.lease.ttl_secs,
-    )
-    .await?;
+    let context = require_runtime_task_context(agent_id).await?;
+    ensure_can_ask_human(&context, agent_id, config.lease.ttl_secs).await?;
 
-    write_question(state.as_ref(), runtime_context.as_ref(), &question).await?;
-    clear_answer(state.as_ref(), runtime_context.as_ref()).await?;
+    write_question(&context, &question).await?;
+    clear_answer(&context).await?;
 
-    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
-    let paused = if use_legacy_state {
-        let state = state.as_mut().ok_or_else(|| {
-            anyhow::anyhow!("Cannot ask human for legacy state: STATE.json is missing")
-        })?;
-        let paused = state.ask_human()?;
-        state.awaiting_human_by = Some(agent_id.to_string());
-        store::write_state(state).await?;
-        if let Some(context) = runtime_context.as_ref() {
-            project::record_task_human_question_requested(
-                &context.task_id,
-                project::task_status_for_state(&paused),
-                agent_id,
-            )
-            .await?;
-        }
-        format!("{paused:?}")
-    } else if let Some(context) = runtime_context.as_ref() {
-        project::record_task_human_question_requested(&context.task_id, &context.status, agent_id)
-            .await?;
-        context.status.clone()
-    } else {
-        anyhow::bail!("Cannot ask human without runtime task context");
-    };
+    project::record_task_human_question_requested(&context.task_id, &context.status, agent_id)
+        .await?;
+    let paused = context.status.clone();
 
     info!(paused, "Task → AwaitingHuman");
     Ok(format!(
@@ -88,83 +54,42 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
 }
 
 async fn ensure_can_ask_human(
-    state: &mut Option<StateData>,
-    context: Option<&RuntimeTaskContext>,
+    context: &RuntimeTaskContext,
     agent_id: &str,
     ttl_secs: u64,
 ) -> Result<()> {
-    if !can_ask_from_state_or_context(state.as_ref(), context) {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
+    if !can_ask_from_context(context) {
         anyhow::bail!(
-            "Cannot ask human from state {current_state}. /ask_human is only available while active work is in progress.",
+            "Cannot ask human from state {}. /ask_human is only available while active work is in progress.",
+            context.status
         );
     }
-    if can_supervisor_ask_during_consultation(state.as_ref(), context, agent_id) {
+    if can_supervisor_ask_during_consultation(context, agent_id) {
         return Ok(());
     }
-    let state = state.get_or_insert_with(StateData::default);
-    ensure_lease_owner_or_reclaim(state, agent_id, ttl_secs).await
+    ensure_lease_owner_or_reclaim(agent_id, ttl_secs).await
 }
 
-fn can_ask_from_state_or_context(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> bool {
-    state.is_some_and(|state| {
-        matches!(
-            state.state,
-            TaskState::Executing
-                | TaskState::Addressing
-                | TaskState::Consultation
-                | TaskState::Reviewing
-        )
-    }) || matches!(
-        context.map(|context| context.status.as_str()),
-        Some("executing" | "addressing" | "consultation" | "reviewing")
+fn can_ask_from_context(context: &RuntimeTaskContext) -> bool {
+    matches!(
+        context.status.as_str(),
+        "executing" | "addressing" | "consultation" | "reviewing"
     )
 }
 
-fn can_supervisor_ask_during_consultation(
-    state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-    agent_id: &str,
-) -> bool {
+fn can_supervisor_ask_during_consultation(context: &RuntimeTaskContext, agent_id: &str) -> bool {
     if !is_supervisor(agent_id) {
         return false;
     }
-    if uses_legacy_state_context(state, context) {
-        return state.is_some_and(|state| state.state == TaskState::Consultation);
-    }
-    matches!(
-        context.map(|context| context.status.as_str()),
-        Some("consultation")
-    )
+    context.status == "consultation"
 }
 
-async fn write_question(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-    question: &str,
-) -> Result<()> {
-    if let Some(context) = context {
-        store::write_question_for_run_dir(&context.run_dir, question).await?;
-        return Ok(());
-    }
-    store::write_question(question).await
+async fn write_question(context: &RuntimeTaskContext, question: &str) -> Result<()> {
+    store::write_question_for_run_dir(&context.run_dir, question).await
 }
 
-async fn clear_answer(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> Result<()> {
-    if let Some(context) = context {
-        store::clear_answer_for_run_dir(&context.run_dir).await?;
-        return Ok(());
-    }
-    store::clear_answer().await
+async fn clear_answer(context: &RuntimeTaskContext) -> Result<()> {
+    store::clear_answer_for_run_dir(&context.run_dir).await
 }
 
 fn is_supervisor(agent_id: &str) -> bool {
@@ -174,6 +99,10 @@ fn is_supervisor(agent_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use chrono::Utc;
     use tempfile::TempDir;
 

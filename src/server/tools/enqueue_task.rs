@@ -8,7 +8,7 @@ use crate::project;
 use super::tool_err;
 
 pub const DESCRIPTION: &str = "Enqueue an approved task artifact for later execution. Writes \
-     .ferrus/tasks/<task-id>.md and records a pending SQLite task row. Does not change STATE.json.";
+     .ferrus/tasks/<task-id>.md and records a pending SQLite task row.";
 
 pub const INPUT_SCHEMA: &str = r#"{
     "properties": {

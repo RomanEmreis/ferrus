@@ -7,17 +7,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext},
-    specs,
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
-use super::{
-    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
-    uses_legacy_state_context,
-};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Approve the current submission. Transitions state Reviewing → Complete. \
      Must be called after /review_pending.";
@@ -28,49 +21,24 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 
 async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
+    let context = require_runtime_task_context(agent_id).await?;
 
-    let context_is_reviewing = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("reviewing")
-    );
-    let state_is_reviewing = state
-        .as_ref()
-        .is_some_and(|state| state.state == TaskState::Reviewing);
-    if !context_is_reviewing && !state_is_reviewing {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
-        anyhow::bail!("Cannot approve from state {current_state}. Call /review_pending first.");
+    if context.status != "reviewing" {
+        anyhow::bail!(
+            "Cannot approve from state {}. Call /review_pending first.",
+            context.status
+        );
     }
-    let state_for_lease = state.get_or_insert_with(StateData::default);
-    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
-    if uses_legacy_state_context(state.as_ref(), runtime_context.as_ref()) {
-        let state = state
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Cannot approve legacy state: STATE.json is missing"))?;
-        specs::complete_task_milestone_and_advance(state).await?;
-        state.approve()?;
-        store::write_state(state).await?;
-        project::record_current_task_status_best_effort("complete").await;
-    } else if let Some(context) = runtime_context.as_ref() {
-        apply_approved_patch(context).await?;
-        project::record_task_status_best_effort(&context.task_id, &context.task_path, "complete")
-            .await;
-        cleanup_approved_workspace_best_effort(context).await;
-    }
+    apply_approved_patch(&context).await?;
+    project::record_task_status_best_effort(&context.task_id, &context.task_path, "complete").await;
+    cleanup_approved_workspace_best_effort(&context).await;
     project::record_runtime_event_best_effort(
-        runtime_context
-            .as_ref()
-            .and_then(|context| context.run_id.clone()),
+        context.run_id.clone(),
         "approved",
         serde_json::json!({
-            "task_id": runtime_context.as_ref().map(|context| context.task_id.as_str()),
+            "task_id": context.task_id.as_str(),
         }),
     )
     .await;
@@ -199,7 +167,10 @@ fn is_managed_workspace_path(path: &Path, managed_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

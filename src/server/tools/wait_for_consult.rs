@@ -7,16 +7,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext, TaskConsultRestore},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
-use super::{
-    ensure_lease_identity, ensure_lease_owner_or_reclaim,
-    runtime_task_context_for_agent_best_effort, tool_err, uses_legacy_state_context,
-};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Block until CONSULT_RESPONSE.md exists, then restore the pre-consult state and \
      return the consultant's response text. Each call waits up to `wait_timeout_secs` and then \
@@ -31,79 +25,32 @@ async fn run(agent_id: &str) -> Result<String> {
     let timeout = Duration::from_secs(config.limits.wait_timeout_secs);
     let start = Instant::now();
 
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
-    let context_is_consultation = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("consultation")
-    );
-    let state_is_consultation = state
-        .as_ref()
-        .is_some_and(|state| state.state == TaskState::Consultation);
-    if !context_is_consultation && !state_is_consultation {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
+    let context = require_runtime_task_context(agent_id).await?;
+    if context.status != "consultation" {
         anyhow::bail!(
-            "Cannot wait for consultation from state {current_state}. Call /consult first.",
+            "Cannot wait for consultation from state {}. Call /consult first.",
+            context.status
         );
     }
-    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
-    if use_legacy_state {
-        let state = state.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Cannot wait for legacy consultation: STATE.json is missing")
-        })?;
-        ensure_lease_identity(state, agent_id)?;
-    } else {
-        let state_for_lease = state.get_or_insert_with(StateData::default);
-        ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
-    }
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
     loop {
-        match read_consult_response(use_legacy_state, runtime_context.as_ref()).await {
+        match read_consult_response(&context).await {
             Ok(response) if !response.trim().is_empty() => {
-                if use_legacy_state {
-                    let mut state = store::read_state().await?;
-                    ensure_lease_identity(&state, agent_id)?;
-                    let resumed = state.finish_consult()?;
-                    if let Some(agent_id) = state.claimed_by.clone() {
-                        store::claim_state(&agent_id, config.lease.ttl_secs, &mut state).await?;
-                    } else {
-                        store::write_state(&state).await?;
-                    }
-                    store::clear_consult_response().await?;
-                    store::clear_consult_request().await?;
-                    if let Some(context) = runtime_context.as_ref() {
-                        let _ = project::restore_task_from_consultation(&context.task_id).await?;
-                        store::clear_consult_response_for_run_dir(&context.run_dir).await?;
-                        store::clear_consult_request_for_run_dir(&context.run_dir).await?;
-                    }
+                let restored = project::restore_task_from_consultation(&context.task_id).await?;
+                let resumed = match restored {
+                    TaskConsultRestore::Restored { status } => status,
+                    TaskConsultRestore::NotInConsultation => context.status.clone(),
+                };
+                store::clear_consult_response_for_run_dir(&context.run_dir).await?;
+                store::clear_consult_request_for_run_dir(&context.run_dir).await?;
 
-                    let response = response.trim().to_string();
-                    info!(resumed = ?resumed, "Consultation answered; state restored");
-                    return Ok(response);
-                } else if let Some(context) = runtime_context.as_ref() {
-                    let restored =
-                        project::restore_task_from_consultation(&context.task_id).await?;
-                    let resumed = match restored {
-                        TaskConsultRestore::Restored { status } => status,
-                        TaskConsultRestore::NotInConsultation => context.status.clone(),
-                    };
-                    store::clear_consult_response_for_run_dir(&context.run_dir).await?;
-                    store::clear_consult_request_for_run_dir(&context.run_dir).await?;
-
-                    let response = response.trim().to_string();
-                    info!(
-                        task_id = context.task_id,
-                        resumed, "Consultation answered; DB task restored"
-                    );
-                    return Ok(response);
-                } else {
-                    anyhow::bail!("Cannot restore consultation without runtime task context");
-                }
+                let response = response.trim().to_string();
+                info!(
+                    task_id = context.task_id,
+                    resumed, "Consultation answered; DB task restored"
+                );
+                return Ok(response);
             }
             _ => {}
         }
@@ -118,23 +65,17 @@ async fn run(agent_id: &str) -> Result<String> {
     }
 }
 
-async fn read_consult_response(
-    use_legacy_state: bool,
-    context: Option<&RuntimeTaskContext>,
-) -> Result<String> {
-    if let Some(context) = context {
-        let scoped = store::read_consult_response_for_run_dir(&context.run_dir).await?;
-        if !use_legacy_state || !scoped.trim().is_empty() {
-            return Ok(scoped);
-        }
-    }
-    store::read_consult_response().await
+async fn read_consult_response(context: &RuntimeTaskContext) -> Result<String> {
+    store::read_consult_response_for_run_dir(&context.run_dir).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

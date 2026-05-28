@@ -33,14 +33,11 @@ pub async fn run(debug: bool) -> Result<()> {
         tracing::debug!(error = ?err, "skipped ferrus project touch");
     }
     if let Ok(recovery) = crate::project::recover_runtime_state().await
-        && (recovery.interrupted_runs > 0
-            || recovery.expired_task_leases > 0
-            || recovery.state_lease_mirrors_cleared > 0)
+        && (recovery.interrupted_runs > 0 || recovery.expired_task_leases > 0)
     {
         tracing::info!(
             interrupted_runs = recovery.interrupted_runs,
             expired_task_leases = recovery.expired_task_leases,
-            state_lease_mirrors_cleared = recovery.state_lease_mirrors_cleared,
             "recovered ferrus.db runtime state"
         );
     }
@@ -217,9 +214,8 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
             let watched = if let Some(watched) = ctx.state_rx.borrow().clone() {
                 watched
             } else {
-                let state = store::read_state().await.unwrap_or_default();
                 WatchedState {
-                    state,
+                    state: StateData::default(),
                     state_elapsed: std::time::Duration::default(),
                     transition: None,
                     selected_spec_display: None,
@@ -693,16 +689,19 @@ impl HqContext {
     }
 
     async fn handle_pause_for_human(&mut self) -> Result<()> {
-        match store::read_question().await {
-            Ok(q) if !q.trim().is_empty() => {
-                self.display.info(format!(
-                    "\n[AWAITING YOUR ANSWER]\n{q}\n\nType your answer and press Enter."
-                ));
-            }
-            _ => {
-                self.display
-                    .info("[AWAITING YOUR ANSWER] Type your response and press Enter.");
-            }
+        let questions = crate::project::list_human_questions()
+            .await
+            .unwrap_or_default();
+        if let Some(question) = questions.first()
+            && !question.question.trim().is_empty()
+        {
+            self.display.info(format!(
+                "\n[AWAITING YOUR ANSWER]\n{}\n\nType your answer and press Enter.",
+                question.question
+            ));
+        } else {
+            self.display
+                .info("[AWAITING YOUR ANSWER] Type your response and press Enter.");
         }
         Ok(())
     }
@@ -927,12 +926,6 @@ impl HqContext {
     async fn reconcile_runtime_schedule(&mut self) -> Result<()> {
         self.reap_exited_headless().await;
 
-        if let Ok(state) = store::read_state().await
-            && !matches!(state.state, TaskState::Idle | TaskState::Complete)
-        {
-            return Ok(());
-        }
-
         let _ = crate::project::recover_runtime_state().await;
         let tasks = crate::project::list_tasks().await?;
         if !tasks.iter().any(|task| {
@@ -1029,68 +1022,9 @@ impl HqContext {
             return Ok(());
         }
 
-        let state = match store::read_state().await {
-            Ok(state) => state,
-            Err(_) => {
-                self.display
-                    .info("No resumable SQLite task found. Use /task or /run to queue work.");
-                return Ok(());
-            }
-        };
-        if self
-            .headless
-            .iter()
-            .any(|(name, handle)| name.starts_with(ROLE_EXECUTOR) && handle.is_alive())
-        {
-            self.display.info(
-                "An executor is already running — work is in progress. Plan a new task first with /plan.",
-            );
-            return Ok(());
-        }
-        match state.state {
-            TaskState::Complete => {
-                self.display
-                    .info("Task is already complete. Use /task to start a new task.");
-                return Ok(());
-            }
-            TaskState::Reviewing => {
-                self.display.info(
-                    "Execution is done and submission is pending review. Use /review to review it.",
-                );
-                return Ok(());
-            }
-            TaskState::Consultation => {
-                self.ensure_hq_config().await?;
-                let supervisor_id = self.supervisor_agent_id()?;
-                self.shutdown_headless(&supervisor_id).await;
-                self.spawn_headless_supervisor(
-                    &supervisor_id,
-                    agent_manager::consultant_resume_prompt(),
-                )
-                .await?;
-
-                let executor_id = self.executor_agent_id()?;
-                return self
-                    .spawn_headless_executor(
-                        &executor_id,
-                        agent_manager::executor_wait_for_consult_prompt(),
-                    )
-                    .await;
-            }
-            _ => {}
-        }
-
-        self.ensure_hq_config().await?;
-
-        // Use resume prompt if state is AwaitingHuman (executor was relaunched after answer).
-        let prompt = if state.state == TaskState::AwaitingHuman {
-            agent_manager::executor_resume_prompt()
-        } else {
-            agent_manager::executor_prompt()
-        };
-
-        let executor_id = self.executor_agent_id()?;
-        self.spawn_headless_executor(&executor_id, prompt).await
+        self.display
+            .info("No resumable SQLite task found. Use /task or /run to queue work.");
+        Ok(())
     }
 
     async fn review(&mut self) -> Result<()> {
@@ -1107,35 +1041,12 @@ impl HqContext {
             return Ok(());
         }
 
-        let state = match store::read_state().await {
-            Ok(state) => state,
-            Err(_) => {
-                anyhow::bail!("No SQLite reviewing task found. Use /status.");
-            }
-        };
-        if state.state != TaskState::Reviewing {
-            anyhow::bail!(
-                "State is {:?} — /review requires Reviewing. Use /status.",
-                state.state
-            );
-        }
-
-        self.ensure_hq_config().await?;
-        let supervisor_id = self.supervisor_agent_id()?;
-        self.spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
-            .await
+        anyhow::bail!("No SQLite reviewing task found. Use /status.")
     }
 
     async fn check(&mut self, force: bool) -> Result<()> {
-        if force || store::read_state().await.is_err() {
-            self.run_hq_checks_without_state().await?;
-            return Ok(());
-        }
-
-        let result = crate::server::tools::check::handler()
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        self.display.info(result);
+        let _ = force;
+        self.run_hq_checks_without_state().await?;
         Ok(())
     }
 
@@ -1998,64 +1909,28 @@ impl HqContext {
         if response.trim().is_empty() {
             anyhow::bail!("Answer cannot be empty.");
         }
-        let Ok(state) = store::read_state().await else {
-            return self.answer_scoped_human_question(response).await;
-        };
-        if state.state != TaskState::AwaitingHuman {
+        if self.has_scoped_human_question().await? {
             return self.answer_scoped_human_question(response).await;
         }
 
-        // Write ANSWER.md. If the agent is alive and blocking on /wait_for_answer,
-        // the tool will detect this, restore state, and return the answer automatically.
-        store::write_answer(&response).await?;
-        self.display
-            .info("Answer recorded. Waiting for agent to resume…");
-
-        // Fallback: if the asking agent has exited, /wait_for_answer will never poll again.
-        // Restore state directly so the user can relaunch the right workflow manually.
-        let agent_alive = if let Some(waiter) = state.awaiting_human_by.as_deref() {
-            self.headless
-                .get(waiter)
-                .map(agent_manager::HeadlessHandle::is_alive)
-                .unwrap_or(false)
-        } else {
-            self.executor_agent_id()
-                .ok()
-                .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
-                .unwrap_or(false)
-                || self
-                    .supervisor_agent_id()
-                    .ok()
-                    .and_then(|id| self.headless.get(&id).map(|h| h.is_alive()))
-                    .unwrap_or(false)
-        };
-
-        if !agent_alive {
-            let mut st = store::read_state().await?;
-            if st.state == TaskState::AwaitingHuman {
-                let resumed = st.answer()?;
-                store::write_state(&st).await?;
-                store::clear_question().await?;
-                let relaunch_hint = match resumed {
-                    TaskState::Reviewing => "Use /review to relaunch the reviewer.",
-                    TaskState::Consultation => "Use /resume to relaunch the consultation workflow.",
-                    _ => "Use /resume to relaunch — it will read ANSWER.md and continue.",
-                };
-                self.display.info(format!(
-                    "Agent is not running. State restored to {resumed:?}. {relaunch_hint}"
-                ));
-            }
-        }
-        Ok(())
+        anyhow::bail!("No task is currently waiting for a human answer.")
     }
 
     async fn has_pending_human_question(&self) -> Result<bool> {
-        if let Ok(state) = store::read_state().await
-            && state.state == TaskState::AwaitingHuman
-        {
+        if self.has_scoped_human_question().await? {
             return Ok(true);
         }
-        Ok(!crate::project::list_human_questions().await?.is_empty())
+        Ok(false)
+    }
+
+    async fn has_scoped_human_question(&self) -> Result<bool> {
+        match crate::project::list_human_questions().await {
+            Ok(questions) => Ok(!questions.is_empty()),
+            Err(err) => {
+                tracing::debug!(error = ?err, "failed to list scoped human questions");
+                Ok(false)
+            }
+        }
     }
 
     async fn answer_scoped_human_question(&mut self, response: String) -> Result<()> {
@@ -2740,39 +2615,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answer_restores_when_recorded_asker_is_not_alive() {
-        let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let dir = tempfile::TempDir::new().unwrap();
-        let previous = std::env::current_dir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let state = StateData {
-            state: AwaitingHuman,
-            paused_state: Some(Consultation),
-            awaiting_human_by: Some("supervisor:claude-code:1".to_string()),
-            ..StateData::default()
-        };
-        store::write_state(&state).await.unwrap();
-        store::write_question("Need human input").await.unwrap();
-
-        let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
-        let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
-
-        ctx.answer("Use the simpler path".to_string())
-            .await
-            .unwrap();
-
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, Consultation);
-        assert!(state.awaiting_human_by.is_none());
-        assert_eq!(store::read_answer().await.unwrap(), "Use the simpler path");
-
-        std::env::set_current_dir(previous).unwrap();
-    }
-
-    #[tokio::test]
     async fn plain_input_answers_first_scoped_human_question() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let dir = tempfile::TempDir::new().unwrap();
@@ -2830,6 +2672,59 @@ mod tests {
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "executing");
+
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn plain_input_answers_scoped_human_question_without_state_json() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus/runs/t-009")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status("t-009", ".ferrus/tasks/t-009.md", "executing")
+            .await
+            .unwrap();
+        crate::project::record_task_human_question_requested(
+            "t-009",
+            "executing",
+            "executor:codex:9",
+        )
+        .await
+        .unwrap();
+        store::write_question_for_run_dir(".ferrus/runs/t-009", "Need scoped input")
+            .await
+            .unwrap();
+
+        let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
+        let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
+
+        dispatch("Use scoped answer", &mut ctx).await.unwrap();
+
+        assert_eq!(
+            store::read_answer_for_run_dir(".ferrus/runs/t-009")
+                .await
+                .unwrap(),
+            "Use scoped answer"
+        );
+        assert!(store::read_state().await.is_err());
 
         std::env::set_current_dir(previous).unwrap();
     }

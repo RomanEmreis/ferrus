@@ -1,7 +1,7 @@
 use anyhow::Result;
 use neva::prelude::*;
 
-use crate::{project, state::store};
+use crate::project;
 
 use super::tool_err;
 
@@ -17,19 +17,11 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
         Some(agent_id) => project::runtime_task_context_for_agent(agent_id).await?,
         None => None,
     };
-    let state = store::read_state().await.ok();
-
     let mut lines = if let Some(context) = context.as_ref() {
         vec![
             format!("**State:** {}", context.status),
             format!("**Check retries:** {}", context.check_retries),
             format!("**Review cycles:** {}", context.review_cycles),
-        ]
-    } else if let Some(state) = state.as_ref() {
-        vec![
-            format!("**State:** {:?}", state.state),
-            format!("**Check retries:** {}", state.check_retries),
-            format!("**Review cycles:** {}", state.review_cycles),
         ]
     } else {
         sqlite_status_lines().await?
@@ -38,11 +30,6 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
     if let Some(reason) = context
         .as_ref()
         .and_then(|context| context.failure_reason.as_ref())
-        .or_else(|| {
-            state
-                .as_ref()
-                .and_then(|state| state.failure_reason.as_ref())
-        })
     {
         lines.push(format!("**Failure reason:** {reason}"));
     }

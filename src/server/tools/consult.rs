@@ -4,16 +4,10 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
-use super::{
-    ensure_lease_owner_or_reclaim, runtime_task_context_for_agent_best_effort, tool_err,
-    uses_legacy_state_context,
-};
+use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
 pub const DESCRIPTION: &str = "Ask the configured Supervisor for a consultation. \
      Writes CONSULT_REQUEST.md, transitions state to Consultation, clears any stale \
@@ -39,54 +33,21 @@ pub async fn handler_for_agent(
 
 async fn run(agent_id: &str, question: String) -> Result<String> {
     let config = Config::load().await?;
-    let runtime_context = runtime_task_context_for_agent_best_effort(agent_id).await;
-    let mut state = store::read_state().await.ok();
-    let context_is_working = matches!(
-        runtime_context
-            .as_ref()
-            .map(|context| context.status.as_str()),
-        Some("executing" | "addressing")
-    );
-    let state_is_working = state
-        .as_ref()
-        .is_some_and(|state| matches!(state.state, TaskState::Executing | TaskState::Addressing));
-    if !context_is_working && !state_is_working {
-        let current_state = state
-            .as_ref()
-            .map(|state| format!("{:?}", state.state))
-            .unwrap_or_else(|| "unavailable".to_string());
+    let context = require_runtime_task_context(agent_id).await?;
+    if !matches!(context.status.as_str(), "executing" | "addressing") {
         anyhow::bail!(
-            "Cannot consult from state {current_state}. Consultation is only available while executing work.",
+            "Cannot consult from state {}. Consultation is only available while executing work.",
+            context.status
         );
     }
-    let state_for_lease = state.get_or_insert_with(StateData::default);
-    ensure_lease_owner_or_reclaim(state_for_lease, agent_id, config.lease.ttl_secs).await?;
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
     validate_consult_request(&question)?;
 
-    write_consult_request(state.as_ref(), runtime_context.as_ref(), &question).await?;
-    clear_consult_response(state.as_ref(), runtime_context.as_ref()).await?;
-    let use_legacy_state = uses_legacy_state_context(state.as_ref(), runtime_context.as_ref());
-    let paused = if use_legacy_state {
-        let state = state
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Cannot consult legacy state: STATE.json is missing"))?;
-        let paused = state.consult()?;
-        store::write_state(state).await?;
-        if let Some(context) = runtime_context.as_ref() {
-            project::record_task_consultation_requested(
-                &context.task_id,
-                project::task_status_for_state(&paused),
-            )
-            .await?;
-        }
-        format!("{paused:?}")
-    } else if let Some(context) = runtime_context.as_ref() {
-        project::record_task_consultation_requested(&context.task_id, &context.status).await?;
-        context.status.clone()
-    } else {
-        anyhow::bail!("Cannot request consultation without runtime task context");
-    };
+    write_consult_request(&context, &question).await?;
+    clear_consult_response(&context).await?;
+    project::record_task_consultation_requested(&context.task_id, &context.status).await?;
+    let paused = context.status.clone();
 
     info!(paused, "Task → Consultation");
     Ok(format!(
@@ -97,27 +58,12 @@ async fn run(agent_id: &str, question: String) -> Result<String> {
     ))
 }
 
-async fn write_consult_request(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-    question: &str,
-) -> Result<()> {
-    if let Some(context) = context {
-        store::write_consult_request_for_run_dir(&context.run_dir, question).await?;
-        return Ok(());
-    }
-    store::write_consult_request(question).await
+async fn write_consult_request(context: &RuntimeTaskContext, question: &str) -> Result<()> {
+    store::write_consult_request_for_run_dir(&context.run_dir, question).await
 }
 
-async fn clear_consult_response(
-    _state: Option<&StateData>,
-    context: Option<&RuntimeTaskContext>,
-) -> Result<()> {
-    if let Some(context) = context {
-        store::clear_consult_response_for_run_dir(&context.run_dir).await?;
-        return Ok(());
-    }
-    store::clear_consult_response().await
+async fn clear_consult_response(context: &RuntimeTaskContext) -> Result<()> {
+    store::clear_consult_response_for_run_dir(&context.run_dir).await
 }
 
 fn validate_consult_request(question: &str) -> Result<()> {
@@ -149,7 +95,10 @@ fn validate_consult_request(question: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {

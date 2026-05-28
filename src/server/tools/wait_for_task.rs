@@ -1,5 +1,4 @@
 use anyhow::Result;
-use fs2::FileExt;
 use neva::prelude::*;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -10,10 +9,7 @@ use crate::{
     agent_id::ENV_TASK_ID,
     config::Config,
     project::{self, ReadyTaskClaim, TaskLease},
-    state::{
-        machine::{StateData, TaskState},
-        store,
-    },
+    state::store,
 };
 
 use super::tool_err;
@@ -40,24 +36,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let start = Instant::now();
 
     loop {
-        // Keep STATE.lock during the claim cycle so the compatibility STATE.json mirror
-        // cannot race with the SQLite task queue claim.
-        let claim = {
-            let lock_file = store::open_lock_file()?;
-            let lock_file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
-                lock_file.lock_exclusive().map_err(anyhow::Error::from)?;
-                Ok(lock_file)
-            })
-            .await??;
-
-            let mut state = store::read_state()
-                .await
-                .unwrap_or_else(|_| StateData::default());
-            let claim = claim_ready_task(agent_id, ttl_secs, &mut state).await?;
-
-            drop(lock_file);
-            claim
-        };
+        let claim = claim_ready_task(agent_id, ttl_secs).await?;
 
         if let Some(claim) = claim {
             project::attach_running_run_to_task_best_effort(
@@ -88,11 +67,7 @@ async fn run(agent_id: &str) -> Result<String> {
         }
 
         if start.elapsed() >= timeout {
-            let state = store::read_state().await.ok();
-            let state_label = state
-                .as_ref()
-                .map(|state| format!("{:?}", state.state))
-                .unwrap_or_else(|| "unavailable".to_string());
+            let state_label = "unavailable";
             info!("wait_for_task timed out, state: {state_label}");
             let response = json!({
                 "status": "timeout",
@@ -105,28 +80,17 @@ async fn run(agent_id: &str) -> Result<String> {
     }
 }
 
-async fn claim_ready_task(
-    agent_id: &str,
-    ttl_secs: u64,
-    state: &mut crate::state::machine::StateData,
-) -> Result<Option<TaskLease>> {
+async fn claim_ready_task(agent_id: &str, ttl_secs: u64) -> Result<Option<TaskLease>> {
     if let Some(task_id) = runtime_task_id() {
         return claim_runtime_task(&task_id, agent_id, ttl_secs).await;
     }
 
     match project::claim_next_ready_task(agent_id, ttl_secs).await {
         Ok(ReadyTaskClaim::Claimed(task)) | Ok(ReadyTaskClaim::AlreadyClaimed(task)) => {
-            mirror_state_lease_if_current_task(state, &task).await?;
             Ok(Some(task))
         }
         Ok(ReadyTaskClaim::NoAvailable) => Ok(None),
-        Err(err) => {
-            tracing::warn!(
-                error = ?err,
-                "failed to claim next ready task in ferrus.db; falling back to STATE.json lease"
-            );
-            claim_state_fallback(agent_id, ttl_secs, state).await
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -148,70 +112,12 @@ fn runtime_task_id() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-async fn mirror_state_lease_if_current_task(
-    _state: &mut crate::state::machine::StateData,
-    _task: &TaskLease,
-) -> Result<()> {
-    Ok(())
-}
-
-async fn claim_state_fallback(
-    agent_id: &str,
-    ttl_secs: u64,
-    state: &mut crate::state::machine::StateData,
-) -> Result<Option<TaskLease>> {
-    let claimable = matches!(state.state, TaskState::Executing | TaskState::Addressing);
-    if !claimable {
-        return Ok(None);
-    }
-
-    if !state.is_claimed() {
-        store::claim_state(agent_id, ttl_secs, state).await?;
-    } else if !state.is_claimed_by(agent_id) {
-        return Ok(None);
-    }
-
-    let task_id = state
-        .active_task_id
-        .clone()
-        .unwrap_or_else(|| "current".to_string());
-    let task_path = state
-        .active_task_path
-        .clone()
-        .unwrap_or_else(|| ".ferrus/TASK.md".to_string());
-    Ok(Some(TaskLease {
-        task_id,
-        task_path,
-        status: task_status_for_state(&state.state).to_string(),
-        paused_status: state
-            .paused_state
-            .as_ref()
-            .map(project::task_status_for_state)
-            .map(str::to_string),
-        check_retries: state.check_retries,
-        review_cycles: state.review_cycles,
-        failure_reason: state.failure_reason.clone(),
-        claimed_by: agent_id.to_string(),
-        lease_until: state
-            .lease_until
-            .ok_or_else(|| anyhow::anyhow!("claimed STATE.json task is missing lease_until"))?,
-    }))
-}
-
 fn run_dir_for_task(task_id: &str) -> String {
     format!(".ferrus/runs/{task_id}")
 }
 
-async fn read_review_for_claim(claim: &TaskLease, run_dir: &str) -> Result<String> {
-    let scoped_review = store::read_review_for_run_dir(run_dir).await?;
-    if !scoped_review.trim().is_empty() || !is_legacy_state_fallback_claim(claim) {
-        return Ok(scoped_review);
-    }
-    store::read_review().await
-}
-
-fn is_legacy_state_fallback_claim(claim: &TaskLease) -> bool {
-    claim.task_id == "current" && claim.task_path == ".ferrus/TASK.md"
+async fn read_review_for_claim(_claim: &TaskLease, run_dir: &str) -> Result<String> {
+    store::read_review_for_run_dir(run_dir).await
 }
 
 fn state_name_for_task_status(status: &str) -> &'static str {
@@ -221,17 +127,13 @@ fn state_name_for_task_status(status: &str) -> &'static str {
     }
 }
 
-fn task_status_for_state(state: &TaskState) -> &'static str {
-    match state {
-        TaskState::Addressing => "addressing",
-        _ => "executing",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::machine::StateData;
+    use crate::state::{
+        machine::{StateData, TaskState},
+        store,
+    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -320,6 +222,9 @@ mod tests {
         tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
             .await
             .unwrap_or(());
+        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.lock"))
+            .await
+            .unwrap();
         tokio::fs::write(".ferrus/tasks/t-002.md", "queued task")
             .await
             .unwrap();
@@ -333,44 +238,6 @@ mod tests {
         assert_eq!(response["status"], "claimed");
         assert_eq!(response["task_id"], "t-002");
         assert_eq!(response["task"], "queued task");
-
-        teardown(previous);
-    }
-
-    #[tokio::test]
-    async fn wait_for_task_fallback_reads_legacy_review_notes() {
-        let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let previous = std::env::current_dir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-        tokio::fs::write(
-            "ferrus.toml",
-            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 1\n\n[lease]\nttl_secs = 60\n",
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
-        tokio::fs::write(".ferrus/TASK.md", "legacy task")
-            .await
-            .unwrap();
-        tokio::fs::write(".ferrus/REVIEW.md", "fix the legacy issue")
-            .await
-            .unwrap();
-        store::write_state(&StateData {
-            state: TaskState::Addressing,
-            ..StateData::default()
-        })
-        .await
-        .unwrap();
-
-        let response: serde_json::Value =
-            serde_json::from_str(&run("executor:codex:1").await.unwrap()).unwrap();
-
-        assert_eq!(response["status"], "claimed");
-        assert_eq!(response["task_id"], "current");
-        assert_eq!(response["task_path"], ".ferrus/TASK.md");
-        assert_eq!(response["review"], "fix the legacy issue");
 
         teardown(previous);
     }
