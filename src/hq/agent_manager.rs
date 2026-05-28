@@ -1,4 +1,4 @@
-use crate::agent_id::{ENV_AGENT_ID, ENV_PROJECT_ROOT, ENV_RUN_ID, ROLE_EXECUTOR, ROLE_SUPERVISOR};
+use crate::agent_id::{ENV_PROJECT_ROOT, ENV_RUN_ID, ROLE_EXECUTOR, ROLE_SUPERVISOR};
 use crate::agents::{AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent};
 use crate::platform::{self, ShutdownSignal};
 use crate::state::agents::{AgentEntry, AgentStatus, read_agents, write_agents};
@@ -348,22 +348,6 @@ pub async fn spawn_headless_executor_with_env(
 pub struct HeadlessWorkspace {
     pub workspace_dir: PathBuf,
     pub project_root: PathBuf,
-}
-
-pub async fn spawn_headless_supervisor(
-    agent: &dyn SupervisorAgent,
-    name: &str,
-    prompt: &str,
-    debug: bool,
-) -> Result<HeadlessHandle> {
-    spawn_headless_supervisor_with_env(
-        agent,
-        name,
-        prompt,
-        debug,
-        vec![(ENV_AGENT_ID, name.to_string())],
-    )
-    .await
 }
 
 pub async fn spawn_headless_supervisor_with_env(

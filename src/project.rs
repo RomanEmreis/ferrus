@@ -145,6 +145,8 @@ pub struct HumanQuestion {
 pub struct RuntimeTaskContext {
     pub task_id: String,
     pub task_path: String,
+    pub spec_path: Option<String>,
+    pub milestone_id: Option<String>,
     pub run_dir: String,
     pub status: String,
     pub paused_status: Option<String>,
@@ -1315,12 +1317,6 @@ fn clears_task_lease_for_status(status: &str) -> bool {
     )
 }
 
-#[cfg(test)]
-pub async fn claim_current_task(agent_id: &str, ttl_secs: u64) -> Result<TaskClaim> {
-    let (task_id, task_path) = current_task_identity().await;
-    claim_task(&task_id, &task_path, agent_id, ttl_secs).await
-}
-
 pub async fn claim_task(
     task_id: &str,
     task_path: &str,
@@ -1602,55 +1598,6 @@ async fn claim_task_in_database(
     .await?
 }
 
-#[cfg(test)]
-pub async fn renew_current_task_lease(agent_id: &str, ttl_secs: u64) -> Result<LeaseRenewal> {
-    let database_path = current_database_path().await?;
-    let (task_id, task_path) = current_task_identity().await;
-    let agent_id = agent_id.to_string();
-    tokio::task::spawn_blocking(move || -> Result<LeaseRenewal> {
-        let mut connection = open_runtime_database(&database_path)?;
-        let transaction = connection.transaction()?;
-        let existing: Option<(Option<String>, Option<String>)> = transaction
-            .query_row(
-                "SELECT claimed_by, lease_until FROM tasks WHERE id = ?1",
-                [&task_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let Some((claimed_by, lease_until)) = existing else {
-            transaction.commit()?;
-            return Ok(LeaseRenewal::NotClaimed);
-        };
-        let Some(claimed_by) = claimed_by else {
-            transaction.commit()?;
-            return Ok(LeaseRenewal::NotClaimed);
-        };
-        if claimed_by != agent_id {
-            transaction.commit()?;
-            return Ok(LeaseRenewal::NotClaimed);
-        }
-        let Some(lease_until) = renew_task_lease_in_transaction(
-            &transaction,
-            &task_id,
-            &agent_id,
-            ttl_secs,
-            lease_until.as_deref(),
-        )?
-        else {
-            transaction.commit()?;
-            return Ok(LeaseRenewal::Expired);
-        };
-        transaction.commit()?;
-        Ok(LeaseRenewal::Renewed {
-            task_id,
-            task_path,
-            claimed_by: agent_id,
-            lease_until,
-        })
-    })
-    .await?
-}
-
 pub async fn renew_claimed_task_lease(agent_id: &str, ttl_secs: u64) -> Result<LeaseRenewal> {
     let database_path = current_database_path().await?;
     let agent_id = agent_id.to_string();
@@ -1708,6 +1655,8 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
         if let Some((
             task_id,
             task_path,
+            spec_path,
+            milestone_id,
             status,
             paused_status,
             check_retries,
@@ -1716,7 +1665,7 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
         )) = connection
             .query_row(
                 r#"
-                SELECT id, path, status, paused_status,
+                SELECT id, path, spec_path, milestone_id, status, paused_status,
                        check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE claimed_by = ?1
@@ -1731,11 +1680,13 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
-                        row.get::<_, i64>(4)? as u32,
-                        row.get::<_, i64>(5)? as u32,
-                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)? as u32,
+                        row.get::<_, i64>(7)? as u32,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
@@ -1746,6 +1697,8 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                 run_dir: run_dir_for_task(&task_id),
                 task_id,
                 task_path,
+                spec_path,
+                milestone_id,
                 status,
                 paused_status,
                 check_retries,
@@ -1760,7 +1713,8 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
             .query_row(
                 r#"
                 SELECT runs.id, runs.workspace_path,
-                       tasks.id, tasks.path, tasks.status, tasks.paused_status,
+                       tasks.id, tasks.path, tasks.spec_path, tasks.milestone_id,
+                       tasks.status, tasks.paused_status,
                        tasks.check_retries, tasks.review_cycles, tasks.failure_reason
                 FROM runs
                 JOIN tasks ON tasks.id = runs.task_id
@@ -1777,11 +1731,13 @@ pub async fn runtime_task_context_for_agent(agent_id: &str) -> Result<Option<Run
                         run_dir: run_dir_for_task(&task_id),
                         task_id,
                         task_path: row.get(3)?,
-                        status: row.get(4)?,
-                        paused_status: row.get(5)?,
-                        check_retries: row.get::<_, i64>(6)? as u32,
-                        review_cycles: row.get::<_, i64>(7)? as u32,
-                        failure_reason: row.get(8)?,
+                        spec_path: row.get(4)?,
+                        milestone_id: row.get(5)?,
+                        status: row.get(6)?,
+                        paused_status: row.get(7)?,
+                        check_retries: row.get::<_, i64>(8)? as u32,
+                        review_cycles: row.get::<_, i64>(9)? as u32,
+                        failure_reason: row.get(10)?,
                         run_id: Some(run_id),
                         workspace_path: Some(workspace_path),
                     })
@@ -1883,7 +1839,8 @@ fn consultation_context_for_run(
     Ok(connection
         .query_row(
             r#"
-            SELECT tasks.id, tasks.path, tasks.status, tasks.paused_status,
+            SELECT tasks.id, tasks.path, tasks.spec_path, tasks.milestone_id,
+                   tasks.status, tasks.paused_status,
                    tasks.check_retries, tasks.review_cycles, tasks.failure_reason
             FROM runs
             JOIN tasks ON tasks.id = runs.task_id
@@ -1897,11 +1854,13 @@ fn consultation_context_for_run(
                     run_dir: run_dir_for_task(&task_id),
                     task_id,
                     task_path: row.get(1)?,
-                    status: row.get(2)?,
-                    paused_status: row.get(3)?,
-                    check_retries: row.get::<_, i64>(4)? as u32,
-                    review_cycles: row.get::<_, i64>(5)? as u32,
-                    failure_reason: row.get(6)?,
+                    spec_path: row.get(2)?,
+                    milestone_id: row.get(3)?,
+                    status: row.get(4)?,
+                    paused_status: row.get(5)?,
+                    check_retries: row.get::<_, i64>(6)? as u32,
+                    review_cycles: row.get::<_, i64>(7)? as u32,
+                    failure_reason: row.get(8)?,
                     run_id: Some(run_id.to_string()),
                     workspace_path: None,
                 })
@@ -2134,7 +2093,7 @@ pub async fn attach_running_run_to_next_consultation(
         let candidate = transaction
             .query_row(
                 r#"
-                SELECT id, path, status, paused_status,
+                SELECT id, path, spec_path, milestone_id, status, paused_status,
                        check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE status = 'consultation'
@@ -2153,12 +2112,14 @@ pub async fn attach_running_run_to_next_consultation(
                     Ok(RuntimeTaskContext {
                         task_id: row.get(0)?,
                         task_path: row.get(1)?,
+                        spec_path: row.get(2)?,
+                        milestone_id: row.get(3)?,
                         run_dir: String::new(),
-                        status: row.get(2)?,
-                        paused_status: row.get(3)?,
-                        check_retries: row.get::<_, i64>(4)? as u32,
-                        review_cycles: row.get::<_, i64>(5)? as u32,
-                        failure_reason: row.get(6)?,
+                        status: row.get(4)?,
+                        paused_status: row.get(5)?,
+                        check_retries: row.get::<_, i64>(6)? as u32,
+                        review_cycles: row.get::<_, i64>(7)? as u32,
+                        failure_reason: row.get(8)?,
                         run_id: Some(run_id.clone()),
                         workspace_path: None,
                     })
@@ -2229,7 +2190,7 @@ pub async fn attach_running_run_to_consultation(
         let candidate = transaction
             .query_row(
                 r#"
-                SELECT id, path, status, paused_status,
+                SELECT id, path, spec_path, milestone_id, status, paused_status,
                        check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE id = ?1
@@ -2248,12 +2209,14 @@ pub async fn attach_running_run_to_consultation(
                     Ok(RuntimeTaskContext {
                         task_id: row.get(0)?,
                         task_path: row.get(1)?,
+                        spec_path: row.get(2)?,
+                        milestone_id: row.get(3)?,
                         run_dir: String::new(),
-                        status: row.get(2)?,
-                        paused_status: row.get(3)?,
-                        check_retries: row.get::<_, i64>(4)? as u32,
-                        review_cycles: row.get::<_, i64>(5)? as u32,
-                        failure_reason: row.get(6)?,
+                        status: row.get(4)?,
+                        paused_status: row.get(5)?,
+                        check_retries: row.get::<_, i64>(6)? as u32,
+                        review_cycles: row.get::<_, i64>(7)? as u32,
+                        failure_reason: row.get(8)?,
                         run_id: Some(run_id.clone()),
                         workspace_path: None,
                     })
@@ -2730,20 +2693,6 @@ async fn current_database_path() -> Result<PathBuf> {
 }
 
 async fn current_task_record() -> CurrentTaskRecord {
-    #[cfg(test)]
-    if let Ok(state) = crate::state::store::read_state().await {
-        return CurrentTaskRecord {
-            id: state
-                .active_task_id
-                .unwrap_or_else(|| CURRENT_TASK_ID.to_string()),
-            path: state
-                .active_task_path
-                .unwrap_or_else(|| CURRENT_TASK_PATH.to_string()),
-            spec_path: state.task_spec,
-            milestone_id: state.task_milestone,
-        };
-    }
-
     CurrentTaskRecord {
         id: CURRENT_TASK_ID.to_string(),
         path: CURRENT_TASK_PATH.to_string(),
@@ -3456,7 +3405,6 @@ fn process_is_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::StateData, store};
     use tempfile::TempDir;
 
     async fn setup_project() -> (TempDir, PathBuf) {
@@ -3481,14 +3429,6 @@ mod tests {
             .await
             .unwrap();
 
-        let mut state = StateData::default();
-        state.state = TaskState::Executing;
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
         record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
             .await
             .unwrap();
@@ -3518,10 +3458,6 @@ mod tests {
                 selected_spec: Some("docs/specs/spec.md".to_string()),
             }
         );
-        let state = store::read_state().await.unwrap();
-        assert!(state.selected_spec.is_none());
-        assert!(state.selected_milestone.is_none());
-
         teardown(previous);
     }
 
@@ -3591,13 +3527,19 @@ mod tests {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
 
-        let first = claim_current_task("executor:codex:1", 60).await.unwrap();
+        let first = claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
         assert!(matches!(first, TaskClaim::Claimed));
 
-        let second = claim_current_task("executor:codex:1", 60).await.unwrap();
+        let second = claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
         assert!(matches!(second, TaskClaim::AlreadyClaimed));
 
-        let other = claim_current_task("executor:codex:2", 60).await.unwrap();
+        let other = claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:2", 60)
+            .await
+            .unwrap();
         match other {
             TaskClaim::ClaimedByOther { claimed_by } => {
                 assert_eq!(claimed_by, "executor:codex:1");
@@ -3605,7 +3547,7 @@ mod tests {
             _ => panic!("expected claimed_by_other"),
         }
 
-        let renewed = renew_current_task_lease("executor:codex:1", 60)
+        let renewed = renew_claimed_task_lease("executor:codex:1", 60)
             .await
             .unwrap();
         assert!(matches!(renewed, LeaseRenewal::Renewed { .. }));
@@ -3653,8 +3595,6 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(first, TaskClaim::Claimed));
-
-        store::write_state(&StateData::default()).await.unwrap();
 
         let renewed = renew_claimed_task_lease("executor:codex:2", 60)
             .await
@@ -3896,7 +3836,9 @@ mod tests {
     async fn list_tasks_reads_runtime_rows() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        claim_current_task("executor:codex:1", 60).await.unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
 
         let tasks = list_tasks().await.unwrap();
 
@@ -3911,20 +3853,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_task_status_records_origin_metadata() {
+    async fn current_task_status_does_not_read_legacy_state_origin() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        let mut state = store::read_state().await.unwrap();
-        state.task_spec = Some("docs/specs/spec.md".to_string());
-        state.task_milestone = Some("m1.0".to_string());
-        store::write_state(&state).await.unwrap();
 
         record_current_task_status("executing").await.unwrap();
 
         let tasks = list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
-        assert_eq!(task.spec_path.as_deref(), Some("docs/specs/spec.md"));
-        assert_eq!(task.milestone_id.as_deref(), Some("m1.0"));
+        assert!(task.spec_path.is_none());
+        assert!(task.milestone_id.is_none());
 
         teardown(previous);
     }
@@ -3992,7 +3930,9 @@ mod tests {
     async fn sqlite_task_check_failures_use_per_task_retry_budget() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        claim_current_task("executor:codex:1", 60).await.unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
 
         let first = record_task_check_failed("t-001", "fmt failed", 2)
             .await
@@ -4105,7 +4045,9 @@ mod tests {
     async fn handoff_task_statuses_clear_database_lease() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        claim_current_task("executor:codex:1", 60).await.unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
 
         record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
             .await
@@ -4116,7 +4058,9 @@ mod tests {
         assert_eq!(tasks[0].lease_until, None);
         assert_eq!(tasks[0].last_heartbeat, None);
 
-        claim_current_task("executor:codex:2", 60).await.unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:2", 60)
+            .await
+            .unwrap();
         record_task_status("t-001", ".ferrus/tasks/t-001.md", "addressing")
             .await
             .unwrap();
@@ -4182,7 +4126,9 @@ mod tests {
     async fn recover_expired_task_leases_releases_stale_claims() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        claim_current_task("executor:codex:1", 0).await.unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 0)
+            .await
+            .unwrap();
 
         let recovered = recover_expired_task_leases().await.unwrap();
         let tasks = list_tasks().await.unwrap();
@@ -4312,7 +4258,9 @@ mod tests {
     async fn preview_runtime_recovery_reports_pending_work_without_mutating() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        claim_current_task("executor:codex:1", 0).await.unwrap();
+        claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 0)
+            .await
+            .unwrap();
         let database_path = current_database_path().await.unwrap();
         let mut checks = Vec::new();
 
@@ -4475,7 +4423,7 @@ mod tests {
         let first = runs.iter().find(|run| run.id == first_run.id).unwrap();
         let second = runs.iter().find(|run| run.id == second_run.id).unwrap();
         assert_eq!(first.task_id, "t-007");
-        assert_eq!(second.task_id, "t-001");
+        assert_eq!(second.task_id, CURRENT_TASK_ID);
 
         teardown(previous);
     }
@@ -4522,7 +4470,7 @@ mod tests {
         let first = runs.iter().find(|run| run.id == first_run.id).unwrap();
         let second = runs.iter().find(|run| run.id == second_run.id).unwrap();
         assert_eq!(first.task_id, "t-008");
-        assert_eq!(second.task_id, "t-001");
+        assert_eq!(second.task_id, CURRENT_TASK_ID);
 
         teardown(previous);
     }

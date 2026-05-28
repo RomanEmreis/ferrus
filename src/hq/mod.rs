@@ -18,11 +18,7 @@ use crate::config::{Config, HqConfig, HqRole, update_hq_agent_config};
 use crate::platform;
 use crate::project::{ProjectSelection, TaskRecord};
 use crate::specs::{self, MilestoneReadiness, SelectedMilestone};
-use crate::state::{
-    agents,
-    machine::{StateData, TaskState},
-    store,
-};
+use crate::state::{agents, store};
 use crate::update_check;
 use commands::{ModelTarget, ShellCommand, parse_command};
 use display::Display;
@@ -96,21 +92,10 @@ pub async fn run(debug: bool) -> Result<()> {
                 }
             }
             changed = ctx.state_rx.changed() => {
-                if changed.is_ok() {
-                    let snap = ctx.state_rx.borrow_and_update().clone();
-                    if let Some(watched) = snap {
-                        let prev = ctx.last_task_state.clone();
-                        if prev.as_ref() != Some(&watched.state.state) {
-                            if let Some(ref transition) = watched.transition {
-                                ctx.display.transition(transition);
-                            }
-                            ctx.on_state_change(&watched.state).await;
-                        }
-                        ctx.last_task_state = Some(watched.state.state.clone());
-                    }
-                } else {
+                if changed.is_err() {
                     break Ok(());
                 }
+                let _ = ctx.state_rx.borrow_and_update();
             }
             maybe_cmd = cmd_rx.recv() => {
                 match maybe_cmd {
@@ -215,9 +200,6 @@ async fn dispatch(line: &str, ctx: &mut HqContext) -> Result<()> {
                 watched
             } else {
                 WatchedState {
-                    state: StateData::default(),
-                    state_elapsed: std::time::Duration::default(),
-                    transition: None,
                     selected_spec_display: None,
                     selected_milestones: Vec::new(),
                 }
@@ -504,7 +486,6 @@ pub(crate) struct HqContext {
     pub(crate) executor: Option<std::sync::Arc<dyn ExecutorAgent>>,
     /// Headless agent handles — executor and reviewer both run without a PTY.
     pub(crate) headless: std::collections::HashMap<String, agent_manager::HeadlessHandle>,
-    pub(crate) last_task_state: Option<TaskState>,
     debug: bool,
     state_rx: watch::Receiver<Option<WatchedState>>,
     pub(crate) display: Display,
@@ -516,7 +497,6 @@ impl HqContext {
             supervisor: None,
             executor: None,
             headless: std::collections::HashMap::new(),
-            last_task_state: None,
             debug,
             state_rx,
             display,
@@ -590,130 +570,6 @@ impl HqContext {
                 .info(format!("{} model cleared", target.display_name()));
         }
         Ok(())
-    }
-
-    pub(crate) async fn on_state_change(&mut self, state: &StateData) {
-        if self.last_task_state.is_none() {
-            self.last_task_state = Some(state.state.clone());
-            return;
-        }
-        let Some(ref prev) = self.last_task_state else {
-            return;
-        };
-
-        let action = transition_action(prev, &state.state);
-
-        let result = match action {
-            TransitionAction::SpawnExecutor => self.handle_spawn_executor_transition().await,
-            TransitionAction::SpawnReviewer => self.handle_spawn_reviewer_transition().await,
-            TransitionAction::SpawnConsultant => self.handle_spawn_consultant_transition().await,
-            TransitionAction::KillReviewerSpawnExecutor => {
-                self.handle_restart_executor_transition().await
-            }
-            TransitionAction::TaskComplete => {
-                self.handle_terminal_tip(
-                    "Tip: Use /spec to create a new spec or /task to start a new task.",
-                )
-                .await
-            }
-            TransitionAction::TaskFailed => {
-                self.handle_terminal_tip("Tip: Use /status for details, /reset to try again.")
-                    .await
-            }
-            TransitionAction::PauseForHuman => self.handle_pause_for_human().await,
-            // (AwaitingHuman, Executing|Addressing|...) → NoOp: the executor either
-            // resumed via /wait_for_answer (alive path) or was relaunched by answer()
-            // (dead path). No further action needed from the state watcher.
-            TransitionAction::NoOp => Ok(()),
-        };
-
-        if let Err(err) = result {
-            self.display.error(err.to_string());
-        }
-    }
-
-    async fn handle_spawn_executor_transition(&mut self) -> Result<()> {
-        let executor_id = self
-            .executor_agent_id_after_config()
-            .await
-            .context("Failed to load executor config")?;
-        self.spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
-            .await
-            .context("Failed to spawn executor")
-    }
-
-    async fn handle_spawn_reviewer_transition(&mut self) -> Result<()> {
-        let executor_id = self.executor_agent_id()?;
-        self.shutdown_headless(&executor_id).await;
-        let supervisor_id = self
-            .supervisor_agent_id_after_config()
-            .await
-            .context("Failed to load supervisor config")?;
-        self.spawn_headless_supervisor(&supervisor_id, agent_manager::reviewer_prompt())
-            .await
-            .context("Failed to spawn reviewer")
-    }
-
-    async fn handle_spawn_consultant_transition(&mut self) -> Result<()> {
-        let supervisor_id = self
-            .supervisor_agent_id_after_config()
-            .await
-            .context("Failed to load supervisor config")?;
-        self.spawn_headless_supervisor(&supervisor_id, agent_manager::consultant_prompt())
-            .await
-            .context("Failed to spawn consultation supervisor")
-    }
-
-    async fn handle_restart_executor_transition(&mut self) -> Result<()> {
-        let supervisor_id = self.supervisor_agent_id()?;
-        self.shutdown_headless(&supervisor_id).await;
-        let executor_id = self
-            .executor_agent_id_after_config()
-            .await
-            .context("Failed to load executor config")?;
-        self.spawn_headless_executor(&executor_id, agent_manager::executor_prompt())
-            .await
-            .context("Failed to spawn executor")
-    }
-
-    async fn handle_terminal_tip(&mut self, message: &str) -> Result<()> {
-        let agent_ids = [
-            self.executor_agent_id().ok(),
-            self.supervisor_agent_id().ok(),
-        ];
-        for name in agent_ids.into_iter().flatten() {
-            self.shutdown_headless(&name).await;
-        }
-        self.display.tip(message);
-        Ok(())
-    }
-
-    async fn handle_pause_for_human(&mut self) -> Result<()> {
-        let questions = crate::project::list_human_questions()
-            .await
-            .unwrap_or_default();
-        if let Some(question) = questions.first()
-            && !question.question.trim().is_empty()
-        {
-            self.display.info(format!(
-                "\n[AWAITING YOUR ANSWER]\n{}\n\nType your answer and press Enter.",
-                question.question
-            ));
-        } else {
-            self.display
-                .info("[AWAITING YOUR ANSWER] Type your response and press Enter.");
-        }
-        Ok(())
-    }
-
-    async fn executor_agent_id_after_config(&mut self) -> Result<String> {
-        self.ensure_hq_config().await?;
-        self.executor_agent_id()
-    }
-
-    async fn supervisor_agent_id_after_config(&mut self) -> Result<String> {
-        self.ensure_hq_config().await?;
-        self.supervisor_agent_id()
     }
 
     async fn mark_agent_running(
@@ -841,23 +697,6 @@ impl HqContext {
         self.headless.insert(name.to_string(), handle);
     }
 
-    async fn spawn_headless_supervisor(&mut self, name: &str, prompt: &str) -> Result<()> {
-        if !self.prepare_headless_slot(name).await {
-            return Ok(());
-        }
-
-        let agent = std::sync::Arc::clone(
-            self.supervisor
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Supervisor agent is not configured"))?,
-        );
-        let handle =
-            agent_manager::spawn_headless_supervisor(agent.as_ref(), name, prompt, self.debug)
-                .await?;
-        self.store_headless_handle(name, handle);
-        Ok(())
-    }
-
     async fn spawn_headless_supervisor_for_task(
         &mut self,
         name: &str,
@@ -882,41 +721,6 @@ impl HqContext {
                 (ENV_AGENT_ID, name.to_string()),
                 (ENV_TASK_ID, task_id.to_string()),
             ],
-        )
-        .await?;
-        self.store_headless_handle(name, handle);
-        Ok(())
-    }
-
-    async fn spawn_headless_executor(&mut self, name: &str, prompt: &str) -> Result<()> {
-        self.spawn_headless_executor_with_index(name, prompt, DEFAULT_AGENT_INDEX)
-            .await
-    }
-
-    async fn spawn_headless_executor_with_index(
-        &mut self,
-        name: &str,
-        prompt: &str,
-        index: u32,
-    ) -> Result<()> {
-        if !self.prepare_headless_slot(name).await {
-            return Ok(());
-        }
-
-        let agent = std::sync::Arc::clone(
-            self.executor
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Executor agent is not configured"))?,
-        );
-        agent.validate_interactive_launch(ROLE_EXECUTOR, index)?;
-        let handle = agent_manager::spawn_headless_executor_with_env(
-            agent.as_ref(),
-            name,
-            prompt,
-            index,
-            self.debug,
-            vec![(ENV_AGENT_ID, name.to_string())],
-            None,
         )
         .await?;
         self.store_headless_handle(name, handle);
@@ -1134,7 +938,6 @@ impl HqContext {
         )
         .await;
 
-        self.last_task_state = Some(TaskState::Idle);
         if prompt {
             self.display.info(format!(
                 "Runtime reset. {} non-terminal task(s) marked reset.",
@@ -1972,12 +1775,6 @@ impl HqContext {
         Ok(())
     }
 
-    async fn shutdown_headless(&mut self, name: &str) {
-        if let Some(handle) = self.headless.remove(name) {
-            handle.terminate().await;
-        }
-    }
-
     async fn reap_headless(&mut self, name: &str) {
         if let Some(handle) = self.headless.remove(name) {
             handle.reap().await;
@@ -2237,48 +2034,9 @@ fn is_executor_ready_task_status(status: &str) -> bool {
     matches!(status, "pending" | "executing" | "addressing")
 }
 
-#[allow(dead_code)]
-#[derive(Debug, PartialEq)]
-pub(crate) enum TransitionAction {
-    SpawnExecutor,
-    SpawnReviewer,
-    SpawnConsultant,
-    KillReviewerSpawnExecutor,
-    TaskComplete,
-    TaskFailed,
-    /// Executor asked a question; display it and wait for user input.
-    PauseForHuman,
-    NoOp,
-}
-
-#[allow(dead_code)]
-pub(crate) fn transition_action(from: &TaskState, to: &TaskState) -> TransitionAction {
-    use TaskState::*;
-
-    match (from, to) {
-        (Idle, Executing) => TransitionAction::SpawnExecutor,
-        (Executing | Addressing, Reviewing) => TransitionAction::SpawnReviewer,
-        (Executing | Addressing, Consultation) => TransitionAction::SpawnConsultant,
-        (Reviewing, Addressing) => TransitionAction::KillReviewerSpawnExecutor,
-        (Reviewing, Complete) => TransitionAction::TaskComplete,
-        (_, Failed) => TransitionAction::TaskFailed,
-        (Consultation, Executing | Addressing) => TransitionAction::NoOp,
-        // Active agent paused to ask the human a question.
-        (Executing | Addressing | Consultation | Reviewing, AwaitingHuman) => {
-            TransitionAction::PauseForHuman
-        }
-        // State restored after human answered:
-        //   - alive path: /wait_for_answer unblocked the still-running executor
-        //   - dead path: answer() in HqContext restored state; user will /execute
-        // Either way, no spawning needed here.
-        _ => TransitionAction::NoOp,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use TaskState::*;
 
     #[cfg(unix)]
     fn failed_exit_status() -> std::process::ExitStatus {
@@ -2305,38 +2063,6 @@ mod tests {
 
         assert!(message.contains("supervisor agent (codex) exited with"));
         assert!(message.contains("stderr:\nbroken config"));
-    }
-
-    #[test]
-    fn idle_to_executing_spawns_executor() {
-        assert_eq!(
-            transition_action(&Idle, &Executing),
-            TransitionAction::SpawnExecutor
-        );
-    }
-
-    #[test]
-    fn executing_to_reviewing_spawns_reviewer() {
-        assert_eq!(
-            transition_action(&Executing, &Reviewing),
-            TransitionAction::SpawnReviewer
-        );
-    }
-
-    #[test]
-    fn reviewing_to_addressing_kills_reviewer_spawns_executor() {
-        assert_eq!(
-            transition_action(&Reviewing, &Addressing),
-            TransitionAction::KillReviewerSpawnExecutor
-        );
-    }
-
-    #[test]
-    fn reviewing_to_complete() {
-        assert_eq!(
-            transition_action(&Reviewing, &Complete),
-            TransitionAction::TaskComplete
-        );
     }
 
     #[tokio::test]
@@ -2535,83 +2261,11 @@ mod tests {
         assert!(lines.contains("selected  : 1"));
     }
 
-    #[test]
-    fn any_to_failed() {
-        assert_eq!(
-            transition_action(&Executing, &Failed),
-            TransitionAction::TaskFailed
-        );
-    }
-
-    #[test]
-    fn executing_to_addressing_is_noop() {
-        assert_eq!(
-            transition_action(&Executing, &Addressing),
-            TransitionAction::NoOp
-        );
-    }
-
-    #[test]
-    fn executing_to_consultation_spawns_consultant() {
-        assert_eq!(
-            transition_action(&Executing, &Consultation),
-            TransitionAction::SpawnConsultant
-        );
-    }
-
-    #[test]
-    fn consultation_to_executing_is_noop() {
-        assert_eq!(
-            transition_action(&Consultation, &Executing),
-            TransitionAction::NoOp
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn stale_pid_detection() {
         assert!(platform::pid_is_alive(std::process::id()));
         assert!(!platform::pid_is_alive(999999));
-    }
-
-    #[test]
-    fn executing_to_awaiting_human_pauses() {
-        assert_eq!(
-            transition_action(&Executing, &AwaitingHuman),
-            TransitionAction::PauseForHuman
-        );
-    }
-
-    #[test]
-    fn addressing_to_awaiting_human_pauses() {
-        assert_eq!(
-            transition_action(&Addressing, &AwaitingHuman),
-            TransitionAction::PauseForHuman
-        );
-    }
-
-    #[test]
-    fn fixing_to_awaiting_human_pauses() {
-        assert_eq!(
-            transition_action(&Addressing, &AwaitingHuman),
-            TransitionAction::PauseForHuman
-        );
-    }
-
-    #[test]
-    fn reviewing_to_awaiting_human_pauses() {
-        assert_eq!(
-            transition_action(&Reviewing, &AwaitingHuman),
-            TransitionAction::PauseForHuman
-        );
-    }
-
-    #[test]
-    fn consultation_to_awaiting_human_pauses() {
-        assert_eq!(
-            transition_action(&Consultation, &AwaitingHuman),
-            TransitionAction::PauseForHuman
-        );
     }
 
     #[tokio::test]
@@ -2727,15 +2381,5 @@ mod tests {
         assert!(store::read_state().await.is_err());
 
         std::env::set_current_dir(previous).unwrap();
-    }
-
-    #[test]
-    fn awaiting_human_to_executing_is_noop() {
-        // Executor resumes via /wait_for_answer (alive) or is relaunched by answer()
-        // (dead). Either way, HQ doesn't spawn again from this transition.
-        assert_eq!(
-            transition_action(&AwaitingHuman, &Executing),
-            TransitionAction::NoOp
-        );
     }
 }

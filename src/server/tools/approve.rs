@@ -7,6 +7,7 @@ use tracing::info;
 use crate::{
     config::Config,
     project::{self, RuntimeTaskContext},
+    specs,
     state::store,
 };
 
@@ -33,6 +34,12 @@ async fn run(agent_id: &str) -> Result<String> {
 
     apply_approved_patch(&context).await?;
     project::record_task_status_best_effort(&context.task_id, &context.task_path, "complete").await;
+    if let (Some(spec_path), Some(milestone_id)) = (
+        context.spec_path.as_deref(),
+        context.milestone_id.as_deref(),
+    ) {
+        specs::complete_milestone(spec_path, milestone_id).await?;
+    }
     cleanup_approved_workspace_best_effort(&context).await;
     project::record_runtime_event_best_effort(
         context.run_id.clone(),

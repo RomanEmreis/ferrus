@@ -28,7 +28,7 @@ use crate::{
     project::{RunRecord, TaskRecord},
 };
 
-use super::state_watcher::{WatchedMilestone, WatchedState, format_elapsed};
+use super::state_watcher::{WatchedMilestone, WatchedState};
 use crate::specs::MilestoneReadiness;
 
 const MAX_HISTORY: usize = 100;
@@ -67,10 +67,6 @@ pub enum UiMessage {
     Tip(String),
     Muted(String),
     Error(String),
-    Transition {
-        from: Option<String>,
-        to: String,
-    },
     StatusUpdate(StatusSnapshot),
     Suspend {
         ack: oneshot::Sender<()>,
@@ -128,30 +124,14 @@ impl From<WatchedMilestone> for MilestoneSnapshot {
 
 impl StatusSnapshot {
     pub fn from_watched_state(watched: &WatchedState) -> StatusSnapshot {
-        let state = &watched.state;
-        let task_state_detail = if matches!(
-            state.state,
-            crate::state::machine::TaskState::Executing
-                | crate::state::machine::TaskState::Addressing
-                | crate::state::machine::TaskState::Consultation
-                | crate::state::machine::TaskState::Reviewing
-        ) {
-            format!(
-                "{:?} ({})",
-                state.state,
-                format_elapsed(watched.state_elapsed)
-            )
-        } else {
-            format!("{:?}", state.state)
-        };
         StatusSnapshot {
-            task_state: format!("{:?}", state.state),
-            task_state_detail,
-            claimed_by: state.claimed_by.clone(),
+            task_state: String::new(),
+            task_state_detail: String::new(),
+            claimed_by: None,
             directory: String::new(),
             branch: None,
-            retries: state.check_retries,
-            cycles: state.review_cycles,
+            retries: 0,
+            cycles: 0,
             supervisor_status: "none".to_string(),
             executor_status: "none".to_string(),
             selected_spec: watched.selected_spec_display.clone(),
@@ -194,7 +174,6 @@ enum TranscriptKind {
     Tip,
     Muted,
     Error,
-    Transition,
 }
 
 pub struct App {
@@ -981,20 +960,6 @@ fn handle_message(
                 app.redraw_on_resume = true;
             }
         }
-        UiMessage::Transition { from, to } => {
-            let line = TranscriptLine {
-                text: match from {
-                    Some(from) => format!("  • {from} -> {to}"),
-                    None => format!("  • {to}"),
-                },
-                kind: TranscriptKind::Transition,
-                continuation: false,
-            };
-            app.messages.push(line.clone());
-            if !app.suspended {
-                redraw_dashboard(stdout, app, ui)?;
-            }
-        }
         UiMessage::StatusUpdate(status) => {
             let mut next = status;
             if next.directory.is_empty() {
@@ -1708,7 +1673,7 @@ fn dashboard_prompt(app: &App, width: usize) -> DashboardPrompt {
         };
     }
 
-    let prefix = if app.status.task_state == "AwaitingHuman" {
+    let prefix = if app.question.is_some() {
         "Answer: > "
     } else {
         "> "
@@ -2248,7 +2213,6 @@ fn transcript_color(kind: TranscriptKind) -> Color {
         TranscriptKind::Tip => Color::Yellow,
         TranscriptKind::Muted => Color::DarkGrey,
         TranscriptKind::Error => Color::Red,
-        TranscriptKind::Transition => orange(),
     }
 }
 

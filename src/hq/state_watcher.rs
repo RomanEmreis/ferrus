@@ -1,24 +1,12 @@
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use tokio::sync::watch;
 
 use crate::project::{self, ProjectSelection};
 use crate::specs::{self, MilestoneReadiness};
-use crate::state::machine::{StateData, TaskState};
-
-#[derive(Clone, Debug)]
-pub struct TransitionSnapshot {
-    pub from: TaskState,
-    pub to: TaskState,
-    pub elapsed: Duration,
-    pub used_total: bool,
-}
 
 #[derive(Clone, Debug)]
 pub struct WatchedState {
-    pub state: StateData,
-    pub state_elapsed: Duration,
-    pub transition: Option<TransitionSnapshot>,
     pub selected_spec_display: Option<String>,
     pub selected_milestones: Vec<WatchedMilestone>,
 }
@@ -71,37 +59,24 @@ impl SelectedDisplayCache {
 }
 
 /// Watch project selection and spec milestone changes for the dashboard.
-///
-/// Task coordination lives in SQLite. The state-shaped payload remains only as a compact UI
-/// compatibility snapshot for widgets that still expect `StateData`.
 pub async fn watch(tx: watch::Sender<Option<WatchedState>>) {
-    let mut last_state: Option<StateData> = None;
     let mut selected_display_cache = SelectedDisplayCache::default();
-    let idle_state = StateData::default();
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
 
-        let state = idle_state.clone();
         let selection = project::read_project_selection()
             .await
             .unwrap_or(ProjectSelection {
                 selected_spec: None,
             });
 
-        let changed = last_state.as_ref().is_none_or(|previous| {
-            previous.updated_at != state.updated_at || previous.state != state.state
-        });
         let selected_display_changed = selected_display_cache.is_stale(&selection).await;
 
-        if changed || selected_display_changed {
-            last_state = Some(state.clone());
+        if selected_display_changed {
             let (selected_spec_display, selected_milestones) =
                 selected_display_cache.get(&selection).await;
             let _ = tx.send(Some(WatchedState {
-                state,
-                state_elapsed: Duration::ZERO,
-                transition: None,
                 selected_spec_display,
                 selected_milestones,
             }));
@@ -155,7 +130,8 @@ async fn selected_spec_display(
     (selected_spec_display, selected_milestones)
 }
 
-pub fn format_elapsed(duration: Duration) -> String {
+#[cfg(test)]
+pub fn format_elapsed(duration: std::time::Duration) -> String {
     let total = duration.as_secs();
     let hours = total / 3600;
     let minutes = (total % 3600) / 60;
