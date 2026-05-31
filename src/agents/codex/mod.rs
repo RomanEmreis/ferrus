@@ -5,8 +5,9 @@
 
 use super::{
     AgentRunMode, ExecutorAgent, HeadlessPromptTransport, SupervisorAgent, normalized_model,
+    validate_toml_mcp_server,
 };
-use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
+use crate::agent_id::{ROLE_EXECUTOR, ROLE_SUPERVISOR, legacy_mcp_server_name, mcp_server_name};
 use anyhow::Result;
 #[cfg(windows)]
 use anyhow::anyhow;
@@ -59,8 +60,8 @@ impl SupervisorAgent for Supervisor {
     }
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        codex_command(mode, self.model(), ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, index: u32) -> Result<Command> {
+        codex_command(mode, self.model(), ROLE_SUPERVISOR, index)
     }
 
     fn model(&self) -> Option<&str> {
@@ -69,6 +70,10 @@ impl SupervisorAgent for Supervisor {
 
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
         codex_headless_prompt_transport()
+    }
+
+    fn validate_interactive_launch(&self, role: &str, index: u32) -> Result<()> {
+        validate_interactive_launch(role, index)
     }
 }
 
@@ -79,8 +84,8 @@ impl ExecutorAgent for Executor {
     }
 
     /// Builds the Codex command used by Ferrus HQ or an interactive user.
-    fn spawn(&self, mode: AgentRunMode<'_>) -> Result<Command> {
-        codex_command(mode, self.model(), ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)
+    fn spawn_with_index(&self, mode: AgentRunMode<'_>, index: u32) -> Result<Command> {
+        codex_command(mode, self.model(), ROLE_EXECUTOR, index)
     }
 
     fn model(&self) -> Option<&str> {
@@ -89,6 +94,10 @@ impl ExecutorAgent for Executor {
 
     fn headless_prompt_transport(&self) -> HeadlessPromptTransport {
         codex_headless_prompt_transport()
+    }
+
+    fn validate_interactive_launch(&self, role: &str, index: u32) -> Result<()> {
+        validate_interactive_launch(role, index)
     }
 }
 
@@ -138,10 +147,27 @@ fn apply_opposite_role_mcp_override(command: &mut Command, role: &str, index: u3
         ROLE_EXECUTOR => ROLE_SUPERVISOR,
         _ => return,
     };
-    let opposite_server = mcp_server_name(opposite_role, index);
+    let opposite_server = mcp_server_name(opposite_role);
+    let legacy_opposite_server = legacy_mcp_server_name(opposite_role, index);
     command
         .arg("--config")
-        .arg(format!("mcp_servers.{opposite_server}.enabled=false"));
+        .arg(format!("mcp_servers.{opposite_server}.enabled=false"))
+        .arg("--config")
+        .arg(format!(
+            "mcp_servers.{legacy_opposite_server}.enabled=false"
+        ));
+}
+
+fn validate_interactive_launch(role: &str, index: u32) -> Result<()> {
+    let path = std::path::Path::new(".codex/config.toml");
+    let primary = mcp_server_name(role);
+    match validate_toml_mcp_server(path, &primary) {
+        Ok(()) => Ok(()),
+        Err(primary_err) => {
+            let legacy = legacy_mcp_server_name(role, index);
+            validate_toml_mcp_server(path, &legacy).map_err(|_| primary_err)
+        }
+    }
 }
 
 fn codex_headless_prompt_transport() -> HeadlessPromptTransport {
@@ -287,6 +313,7 @@ fn auto_approved_tools(role: &str) -> &'static [&'static str] {
         ],
         ROLE_SUPERVISOR => &[
             "create_task",
+            "enqueue_task",
             "create_spec",
             "wait_for_review",
             "review_pending",
@@ -294,6 +321,7 @@ fn auto_approved_tools(role: &str) -> &'static [&'static str] {
             "reject",
             "respond_consult",
             "ask_human",
+            "wait_for_answer",
             "answer",
             "status",
             "reset",
@@ -382,7 +410,7 @@ mod tests {
         );
         assert_eq!(
             args.len(),
-            4,
+            6,
             "expected codex.js + role override + --version args"
         );
         assert!(
@@ -391,8 +419,10 @@ mod tests {
             args[0]
         );
         assert_eq!(args[1], "--config");
-        assert_eq!(args[2], "mcp_servers.ferrus-executor-1.enabled=false");
-        assert_eq!(args[3], "--version");
+        assert_eq!(args[2], "mcp_servers.ferrus-executor.enabled=false");
+        assert_eq!(args[3], "--config");
+        assert_eq!(args[4], "mcp_servers.ferrus-executor-1.enabled=false");
+        assert_eq!(args[5], "--version");
     }
 
     #[test]
@@ -404,6 +434,8 @@ mod tests {
         let expected_args: &[&str] = &[
             "plan",
             "--config",
+            "mcp_servers.ferrus-executor.enabled=false",
+            "--config",
             "mcp_servers.ferrus-executor-1.enabled=false",
         ];
         #[cfg(windows)]
@@ -413,6 +445,8 @@ mod tests {
             }),
             &[
                 "plan",
+                "--config",
+                "mcp_servers.ferrus-executor.enabled=false",
                 "--config",
                 "mcp_servers.ferrus-executor-1.enabled=false",
             ],
@@ -439,6 +473,8 @@ mod tests {
             "exec",
             "run",
             "--config",
+            "mcp_servers.ferrus-supervisor.enabled=false",
+            "--config",
             "mcp_servers.ferrus-supervisor-1.enabled=false",
         ];
         #[cfg(windows)]
@@ -447,6 +483,8 @@ mod tests {
             &[
                 "exec",
                 "-",
+                "--config",
+                "mcp_servers.ferrus-supervisor.enabled=false",
                 "--config",
                 "mcp_servers.ferrus-supervisor-1.enabled=false",
             ],
@@ -473,6 +511,8 @@ mod tests {
             "gpt-5.4",
             "run",
             "--config",
+            "mcp_servers.ferrus-supervisor.enabled=false",
+            "--config",
             "mcp_servers.ferrus-supervisor-1.enabled=false",
         ];
         #[cfg(windows)]
@@ -483,6 +523,8 @@ mod tests {
                 "--model",
                 "gpt-5.4",
                 "-",
+                "--config",
+                "mcp_servers.ferrus-supervisor.enabled=false",
                 "--config",
                 "mcp_servers.ferrus-supervisor-1.enabled=false",
             ],
@@ -505,18 +547,10 @@ mod tests {
         assert!(!entry.command.is_empty());
         assert_eq!(
             entry.args,
-            vec![
-                "serve",
-                "--role",
-                "supervisor",
-                "--agent-name",
-                "codex",
-                "--agent-index",
-                "1",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            vec!["serve", "--role", "supervisor", "--agent-name", "codex",]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
         );
         assert_eq!(entry.model.as_deref(), Some("gpt-5.4"));
     }
@@ -527,20 +561,73 @@ mod tests {
         assert!(!entry.command.is_empty());
         assert_eq!(
             entry.args,
-            vec![
-                "serve",
-                "--role",
-                "executor",
-                "--agent-name",
-                "codex",
-                "--agent-index",
-                "3",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
+            vec!["serve", "--role", "executor", "--agent-name", "codex",]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
         );
         assert_eq!(entry.model, None);
+    }
+
+    #[test]
+    fn codex_interactive_preflight_reports_missing_config() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let agent = Supervisor::new(None);
+
+        let err = agent
+            .validate_interactive_launch(ROLE_SUPERVISOR, 1)
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("Invalid MCP configuration"));
+        assert!(message.contains(".codex/config.toml"));
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn codex_interactive_preflight_reports_missing_role_server() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::create_dir_all(".codex").unwrap();
+        std::fs::write(
+            ".codex/config.toml",
+            "[mcp_servers.ferrus-executor-1]\ncommand = \"ferrus\"\nargs = []\n",
+        )
+        .unwrap();
+        let agent = Supervisor::new(None);
+
+        let err = agent
+            .validate_interactive_launch(ROLE_SUPERVISOR, 1)
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("MCP server `ferrus-supervisor` not found"));
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[test]
+    fn codex_interactive_preflight_accepts_registered_role_server() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::create_dir_all(".codex").unwrap();
+        std::fs::write(
+            ".codex/config.toml",
+            "[mcp_servers.ferrus-supervisor]\ncommand = \"ferrus\"\nargs = []\n",
+        )
+        .unwrap();
+        let agent = Supervisor::new(None);
+
+        agent
+            .validate_interactive_launch(ROLE_SUPERVISOR, 1)
+            .unwrap();
+        std::env::set_current_dir(previous).unwrap();
     }
 
     #[test]
@@ -559,6 +646,7 @@ mod tests {
         apply_tool_approval_overrides("supervisor", &mut entry);
         let tools = entry.get("tools").and_then(toml::Value::as_table).unwrap();
         assert!(tools.contains_key("create_task"));
+        assert!(tools.contains_key("enqueue_task"));
         assert!(tools.contains_key("create_spec"));
         assert!(!tools.contains_key("submit"));
     }
@@ -573,6 +661,8 @@ mod tests {
             "exec",
             "line one\n\nline two",
             "--config",
+            "mcp_servers.ferrus-supervisor.enabled=false",
+            "--config",
             "mcp_servers.ferrus-supervisor-1.enabled=false",
         ];
         #[cfg(windows)]
@@ -583,6 +673,8 @@ mod tests {
             &[
                 "exec",
                 "-",
+                "--config",
+                "mcp_servers.ferrus-supervisor.enabled=false",
                 "--config",
                 "mcp_servers.ferrus-supervisor-1.enabled=false",
             ],
@@ -617,6 +709,8 @@ mod tests {
             agent.version_command().unwrap(),
             EXECUTABLE,
             &[
+                "--config",
+                "mcp_servers.ferrus-executor.enabled=false",
                 "--config",
                 "mcp_servers.ferrus-executor-1.enabled=false",
                 "--version",

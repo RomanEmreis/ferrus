@@ -26,3 +26,5 @@ target
 .claude/settings.local.json
 .mcp.json
 .codex/config.toml
+.claude/mcp-supervisor.json
+.claude/mcp-executor.json

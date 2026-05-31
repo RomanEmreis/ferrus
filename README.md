@@ -1,6 +1,6 @@
 # ferrus
 
-[![Ferrus version](https://img.shields.io/badge/ferrus-0.2.7--alpha.4-orange)](https://crates.io/crates/ferrus)
+[![Ferrus version](https://img.shields.io/badge/ferrus-0.3.0--alpha.1-orange)](https://crates.io/crates/ferrus)
 [![Rust version](https://img.shields.io/badge/rustc-1.95+-964B00)](https://releases.rs/docs/1.95.0/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/RomanEmreis/ferrus/blob/main/LICENSE)
 [![Rust](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml/badge.svg)](https://github.com/RomanEmreis/ferrus/actions/workflows/rust.yml)
@@ -78,7 +78,7 @@ iwr https://github.com/RomanEmreis/ferrus/releases/latest/download/install.ps1 -
 Run:
 
 ```sh
-ferrus init                                                # scaffold ferrus.toml + .ferrus/
+ferrus init                                                # scaffold ferrus.toml, .ferrus/, and ~/.ferrus project state
 ferrus register --supervisor claude-code --executor codex  # write agent configs and tool permissions
 ferrus                                                     # enter HQ
 ```
@@ -108,6 +108,9 @@ On Linux and macOS for `x86_64` and `aarch64`/`arm64`, `install.sh` downloads th
 | `/resume` | Manually resume the executor headlessly; also recovers Consultation by relaunching both supervisor and executor |
 | `/review` | Manually spawn supervisor in review mode (escape hatch when automatic spawning failed) |
 | `/status` | Show task state, agent list, and session log paths |
+| `/tasks` | List SQLite task runtime rows |
+| `/runs [--limit N]` | List SQLite run attempts |
+| `/events [--limit N] [--run <id>]` | List SQLite runtime events |
 | `/attach <name>` | Show log path for a running headless agent |
 | `/stop` | Stop all running agent sessions (prompts for confirmation) |
 | `/reset` | Reset state to Idle and clear task files (prompts for confirmation) |
@@ -174,6 +177,10 @@ Scaffolds ferrus in the current project (default `--agents-path .agents`):
 
 - Creates `ferrus.toml` with default limits and an empty check command list
 - Creates `.ferrus/` runtime directory with all state files and `logs/`
+- Registers the project in `~/.ferrus/projects/<project-id>/`
+- Writes `.ferrus/project.toml` with the project id and local data directory
+- Creates `~/.ferrus/projects/<project-id>/project.toml` with project metadata
+- Creates `~/.ferrus/projects/<project-id>/ferrus.db` with `tasks`, `runs`, and `events` tables
 - Creates `docs/specs/` for approved feature specifications
 - Creates skill files agents load to understand their role:
   - `<agents-path>/skills/ferrus/SKILL.md` — general overview
@@ -187,9 +194,11 @@ Starts the agent coordination server on stdio. Agents load this as an MCP server
 
 | `--role` | Tools exposed |
 |---|---|
-| `supervisor` | `create_task`, `create_spec`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
+| `supervisor` | `create_task`, `create_spec`, `wait_for_review`, `review_pending`, `approve`, `reject`, `respond_consult`, `ask_human`, `wait_for_answer`, `answer`, `status`, `reset`, `heartbeat` |
 | `executor` | `wait_for_task`, `check`, `consult`, `submit`, `wait_for_consult`, `wait_for_answer`, `ask_human`, `answer`, `status`, `reset`, `heartbeat` |
 | *(omitted)* | All tools |
+
+The `status` tool includes scoped SQLite task context when called by a running agent with a resolved runtime identity.
 
 ### `ferrus register [--supervisor <agent>] [--supervisor-model <model>] [--executor <agent>] [--executor-model <model>]`
 
@@ -200,6 +209,37 @@ Writes agent config files so they automatically load `ferrus serve` as a tool se
 | `claude-code` | `.claude/mcp-supervisor.json` or `.claude/mcp-executor.json` + `.claude/settings.local.json` permissions |
 | `codex` | `.codex/config.toml` |
 | `qwen-code` | `.qwen/settings.json` |
+
+### `ferrus doctor`
+
+Checks that `.ferrus/project.toml`, `~/.ferrus/projects/<project-id>/project.toml`, `STATE.json`, task artifacts, and `ferrus.db` agree with the current workspace. It also reports recoverable runtime drift that can be fixed with `ferrus recover`.
+
+### `ferrus projects list`
+
+Lists projects registered under `~/.ferrus/projects`, including project id, name, database presence, last opened timestamp, workspace path, and data directory.
+
+### `ferrus recover`
+
+Runs the same runtime recovery that HQ performs on startup: dead running rows are marked `interrupted`, expired task leases are released, and stale `STATE.json` lease mirrors are cleared.
+
+Use `ferrus recover --dry-run` to print the pending recovery counters without changing runtime state.
+Use `ferrus recover --worktrees` to also remove orphaned managed task worktrees that no active task or active run still owns. Combine it with `--dry-run` to preview the orphan count without removing anything.
+
+### `ferrus tasks list`
+
+Prints task runtime rows from `ferrus.db`, including task status, active claim owner, lease expiry, and artifact path.
+
+### `ferrus runs list [--limit N]`
+
+Prints recent run attempts from `ferrus.db`, including role, agent, status, PID, timestamps, and workspace path.
+
+### `ferrus events list [--limit N] [--run <id>]`
+
+Prints recent runtime events from `ferrus.db`. Use `--run <id>` or `--run-id <id>` to filter to one run attempt.
+
+### `ferrus migrate` / `ferrus upgrade`
+
+Registers an existing pre-registry project in `~/.ferrus/projects/<project-id>/`, initializes the SQLite database, creates `.ferrus/tasks/` and `.ferrus/runs/`, and copies non-empty legacy task/review/submission artifacts into the new artifact layout.
 
 ---
 
@@ -239,26 +279,48 @@ Check commands run in the directory where `ferrus serve` was started. Full outpu
 
 ---
 
-## Runtime files (`.ferrus/`)
+## Runtime files
+
+Ferrus now separates human-readable project artifacts from machine-local runtime state:
+
+| Path | Contents |
+|---|---|
+| `.ferrus/` | Project-local Markdown artifacts, templates, and current compatibility state files |
+| `~/.ferrus/projects/<project-id>/` | Machine-local project metadata, SQLite runtime database, and global logs |
+
+The current release still uses `.ferrus/STATE.json` as the compatibility state-machine snapshot for the single-task Supervisor/Executor loop. Executor task claims and heartbeat renewals are coordinated through `ferrus.db` task lease columns, with `STATE.json` updated as a mirror until the full cutover. `ferrus.db` also mirrors task status, lifecycle events, reset events, and HQ-spawned headless runs as the durable coordination substrate for the upcoming multi-task, multi-executor runtime. On HQ startup, global project metadata is touched, stale running DB rows whose PIDs are gone are marked `interrupted`, expired task leases are released, and stale `STATE.json` lease mirrors are cleared.
+
+### `.ferrus/`
 
 | File | Contents |
 |---|---|
-| `STATE.json` | Current state, lease fields, retry/cycle counters, schema version, timestamp |
+| `project.toml` | Local pointer to `~/.ferrus/projects/<project-id>/` |
+| `STATE.json` | Compatibility state snapshot, mirrored lease fields, retry/cycle counters, schema version, timestamp |
 | `STATE.lock` | Advisory lock file for atomic claiming (do not delete) |
 | `agents.json` | Runtime registry for agent sessions, statuses, PIDs, and log ownership |
-| `TASK.md` | Task description written by Supervisor |
-| `REVIEW.md` | Supervisor rejection notes |
-| `SUBMISSION.md` | Executor submission notes |
-| `QUESTION.md` | Pending human question (written by `/ask_human`) |
-| `ANSWER.md` | Human answer |
+| `TASK.md` | Compatibility mirror of the active task description |
+| `REVIEW.md` | Compatibility mirror of active review notes |
+| `SUBMISSION.md` | Compatibility mirror of active submission notes |
+| `QUESTION.md` | Compatibility mirror of the pending human question |
+| `ANSWER.md` | Compatibility mirror of the human answer |
 | `CONSULT_TEMPLATE.md` | Read-only consultation request template |
 | `SPEC_TEMPLATE.md` | Read-only feature specification template |
 | `LAST_SPEC_PATH` | Last path written by `/create_spec` for HQ handoff |
-| `CONSULT_REQUEST.md` | Pending supervisor consultation request |
-| `CONSULT_RESPONSE.md` | Supervisor consultation response |
+| `CONSULT_REQUEST.md` | Compatibility mirror of the pending supervisor consultation request |
+| `CONSULT_RESPONSE.md` | Compatibility mirror of the supervisor consultation response |
+| `tasks/` | Task descriptions such as `tasks/t-001.md`; active task files are cleared on reset |
+| `runs/` | Execution-attempt artifacts such as `runs/t-001/REVIEW.md`, `SUBMISSION.md`, `QUESTION.md`, `ANSWER.md`, and consultation files; active run files are cleared on reset |
 | `logs/` | Full stdout + stderr per check run; PTY session logs per agent |
 
 `STATE.json` is written atomically (write to `.tmp`, then rename) so a crash mid-write never leaves it corrupt. `.ferrus/` is gitignored by `ferrus init`.
+
+### `~/.ferrus/projects/<project-id>/`
+
+| File | Contents |
+|---|---|
+| `project.toml` | Project id, name, workspace path, `.ferrus` path, git metadata, timestamps, schema version |
+| `ferrus.db` | SQLite database with `tasks` lease fields plus mirrored `runs` and `events` runtime records |
+| `logs/` | Reserved for machine-local logs that should not be committed |
 
 ---
 

@@ -1,15 +1,19 @@
 use anyhow::Result;
 use neva::prelude::*;
+use std::path::Path;
+use tokio::process::Command;
 use tracing::info;
 
 use crate::{
+    agent_id::ENV_PROJECT_ROOT,
     config::Config,
-    state::{machine::TaskState, machine::TransitionError, store},
+    project::{self, RuntimeTaskContext, TaskCheckFailure},
+    state::store,
 };
 
 use super::{
     check_gate::{self, CheckGateResult},
-    tool_err,
+    ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err,
 };
 
 pub const DESCRIPTION: &str = "\
@@ -40,27 +44,41 @@ pub const INPUT_SCHEMA: &str = r#"{
     "required": ["content"]
 }"#;
 
-pub async fn handler(content: String) -> Result<String, Error> {
-    run(content).await.map_err(tool_err)
+pub async fn handler_for_agent(agent_id: &str, content: String) -> Result<String, Error> {
+    run(Some(agent_id), content).await.map_err(tool_err)
 }
 
-async fn run(content: String) -> Result<String> {
+async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
+    let Some(agent_id) = agent_id else {
+        anyhow::bail!("Cannot submit without an agent runtime context");
+    };
     let config = Config::load().await?;
-    let mut state = store::read_state().await?;
+    let context = require_runtime_task_context(agent_id).await?;
 
-    if !matches!(state.state, TaskState::Executing | TaskState::Addressing) {
+    if !context
+        .status
+        .parse::<project::TaskStatus>()?
+        .is_executor_working()
+    {
         anyhow::bail!(
-            "Cannot submit from state {:?}. Submit is only valid from Executing or Addressing after the implementation is ready.",
-            state.state
+            "Cannot submit from state {}. Submit is only valid from Executing or Addressing after the implementation is ready.",
+            context.status
         );
     }
+    ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
     if config.checks.commands.is_empty() {
         info!("No check commands configured; treating final check gate as pass");
-        state.check_passed()?;
-        state.submit()?;
-        store::write_submission(&content).await?;
-        store::write_state(&state).await?;
+        project::record_task_check_passed(&context.task_id).await?;
+        write_submission(&context, &content).await?;
+        write_submission_patch(&context).await?;
+        record_task_status(&context, project::TaskStatus::Reviewing).await;
+        project::record_runtime_event_best_effort(
+            context.run_id.clone(),
+            "submitted",
+            serde_json::json!({ "content_bytes": content.len(), "check_gate": "skipped" }),
+        )
+        .await;
 
         return Ok(
             "Submitted for review. Warning: no check commands are configured in ferrus.toml, so the final check gate was treated as a pass. State: Reviewing."
@@ -69,12 +87,19 @@ async fn run(content: String) -> Result<String> {
     }
 
     info!("Running final check gate before review submission");
-    match check_gate::run(&config, state.check_retries + 1).await? {
+    let attempt = context.check_retries + 1;
+    match check_gate::run(&config, attempt).await? {
         CheckGateResult::Passed => {
-            state.check_passed()?;
-            state.submit()?;
-            store::write_submission(&content).await?;
-            store::write_state(&state).await?;
+            project::record_task_check_passed(&context.task_id).await?;
+            write_submission(&context, &content).await?;
+            write_submission_patch(&context).await?;
+            record_task_status(&context, project::TaskStatus::Reviewing).await;
+            project::record_runtime_event_best_effort(
+                context.run_id.clone(),
+                "submitted",
+                serde_json::json!({ "content_bytes": content.len(), "check_gate": "passed" }),
+            )
+            .await;
 
             info!("Work submitted for review, state → Reviewing");
             Ok(
@@ -83,26 +108,304 @@ async fn run(content: String) -> Result<String> {
             )
         }
         CheckGateResult::Failed(failure) => {
-            match state.check_failed(failure.failure_reason, config.limits.max_check_retries) {
-                Ok(()) => {
-                    store::write_state(&state).await?;
+            match project::record_task_check_failed(
+                &context.task_id,
+                &failure.failure_reason,
+                config.limits.max_check_retries,
+            )
+            .await?
+            {
+                TaskCheckFailure::Failed { retries } => {
+                    project::record_runtime_event_best_effort(
+                        context.run_id.clone(),
+                        "submit_check_failed",
+                        serde_json::json!({
+                            "task_id": context.task_id,
+                            "retries": retries,
+                            "max_retries": config.limits.max_check_retries,
+                            "state": context.status,
+                        }),
+                    )
+                    .await;
                     Ok(format!(
-                        "Final review gate failed during /submit (retry {}/{}).\n\n{}\n\nState remains {:?}. Fix the issues and run /check or /submit again.",
-                        state.check_retries,
-                        config.limits.max_check_retries,
-                        failure.report,
-                        state.state,
+                        "Final review gate failed during /submit (retry {}/{}).\n\n{}\n\nState remains {}. Fix the issues and run /check or /submit again.",
+                        retries, config.limits.max_check_retries, failure.report, context.status,
                     ))
                 }
-                Err(TransitionError::CheckLimitExceeded { retries }) => {
-                    store::write_state(&state).await?;
+                TaskCheckFailure::LimitExceeded { retries } => {
+                    project::record_runtime_event_best_effort(
+                        context.run_id.clone(),
+                        "submit_check_limit_exceeded",
+                        serde_json::json!({
+                            "task_id": context.task_id,
+                            "retries": retries,
+                            "max_retries": config.limits.max_check_retries,
+                        }),
+                    )
+                    .await;
                     Ok(format!(
                         "Final review gate failed during /submit and hit the retry limit ({retries}/{}).\n\n{}\n\nState is now Failed. A human must call /reset to recover.",
                         config.limits.max_check_retries, failure.report,
                     ))
                 }
-                Err(e) => anyhow::bail!(e),
             }
         }
+    }
+}
+
+async fn write_submission(context: &RuntimeTaskContext, content: &str) -> Result<()> {
+    store::write_submission_for_run_dir(&context.run_dir, content).await
+}
+
+async fn write_submission_patch(context: &RuntimeTaskContext) -> Result<()> {
+    if !is_isolated_executor_workspace(context).await {
+        return Ok(());
+    }
+
+    let patch = workspace_patch().await?;
+    store::write_patch_for_run_dir(&context.run_dir, &patch).await
+}
+
+async fn is_isolated_executor_workspace(context: &RuntimeTaskContext) -> bool {
+    let Some(project_root) = std::env::var(ENV_PROJECT_ROOT)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let current_dir = std::env::current_dir().ok();
+    let workspace_path = context
+        .workspace_path
+        .as_deref()
+        .map(Path::new)
+        .map(|path| path.to_path_buf())
+        .or(current_dir);
+    let Some(workspace_path) = workspace_path else {
+        return false;
+    };
+    !equivalent_paths(&workspace_path, Path::new(&project_root)).await
+}
+
+async fn equivalent_paths(left: &Path, right: &Path) -> bool {
+    let left = tokio::fs::canonicalize(left)
+        .await
+        .unwrap_or_else(|_| left.to_path_buf());
+    let right = tokio::fs::canonicalize(right)
+        .await
+        .unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+async fn workspace_patch() -> Result<String> {
+    let _ = Command::new("git").args(["add", "-N", "."]).output().await;
+    let output = Command::new("git")
+        .args(["diff", "--binary", "HEAD", "--"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "Failed to capture executor workspace patch: {}",
+            if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+async fn record_task_status(context: &RuntimeTaskContext, status: project::TaskStatus) {
+    project::record_task_status_best_effort(&context.task_id, &context.task_path, status).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn setup() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ferrus")).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let data_dir = dir.path().join(".ferrus/projects/test-project");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        let local_ref = crate::project::LocalProjectRef {
+            project_id: "test-project".to_string(),
+            name: "test".to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+        };
+        tokio::fs::write(
+            ".ferrus/project.toml",
+            toml::to_string_pretty(&local_ref).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\ncommands = []\n\n[limits]\nmax_check_retries = 20\nmax_review_cycles = 3\nmax_feedback_lines = 30\nwait_timeout_secs = 60\n",
+        )
+        .await
+        .unwrap();
+        (dir, previous)
+    }
+
+    fn teardown(previous: std::path::PathBuf) {
+        std::env::set_current_dir(previous).unwrap();
+    }
+
+    #[tokio::test]
+    async fn submit_reclaims_expired_same_agent_lease_before_guarding() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 0)
+            .await
+            .unwrap();
+
+        run(
+            Some("executor:codex:1"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.claimed_by, None);
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-001/SUBMISSION.md")
+                .await
+                .unwrap(),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n"
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn submit_pass_clears_database_retry_metadata() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_check_failed("t-001", "fmt failed", 2)
+            .await
+            .unwrap();
+        crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
+            .await
+            .unwrap();
+
+        run(
+            Some("executor:codex:1"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        crate::test_support::assert_no_state_json();
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.failure_reason, None);
+        assert_eq!(task.claimed_by, None);
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn submit_writes_submission_to_agent_runtime_task_context() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run(
+            Some("executor:codex:7"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-007/SUBMISSION.md")
+                .await
+                .unwrap(),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n"
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.claimed_by, None);
+        crate::test_support::assert_no_state_json();
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn submit_uses_database_context_when_state_json_is_absent() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_check_failed("t-007", "fmt failed", 2)
+            .await
+            .unwrap();
+        crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
+            .await
+            .unwrap();
+
+        run(
+            Some("executor:codex:7"),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        crate::test_support::assert_no_state_json();
+        assert_eq!(
+            tokio::fs::read_to_string(".ferrus/runs/t-007/SUBMISSION.md")
+                .await
+                .unwrap(),
+            "## Summary\nDone.\n\n## How to verify manually\nInspect it.\n"
+        );
+        let tasks = crate::project::list_tasks().await.unwrap();
+        let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
+        assert_eq!(task.status, "reviewing");
+        assert_eq!(task.check_retries, 0);
+        assert_eq!(task.failure_reason, None);
+        assert_eq!(task.claimed_by, None);
+
+        teardown(previous);
     }
 }

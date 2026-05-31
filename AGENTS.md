@@ -34,19 +34,19 @@ src/
   templates.rs               # Embedded Markdown templates written by init/resource fallback
   specs.rs                   # Spec discovery, milestone parsing, selected milestone resolution
   agent_id.rs                # Stable agent IDs and MCP server names
+  legacy_state.rs            # Legacy STATE.json import shape used only by migrate
   agents/                    # Agent launcher/config adapters for Claude Code, Codex, Qwen Code
   agents/mod.rs              # SupervisorAgent/ExecutorAgent traits, AgentRunMode, MCP config entry helpers, agent parsing
   agents/claude/mod.rs       # Claude Code launchers, model override handling, MCP isolation, role-scoped config paths
   agents/codex/mod.rs        # Codex launchers, stdin prompt transport, TOML MCP config and tool approvals
   agents/qwen/mod.rs         # Qwen Code launchers, model override handling, JSON settings tool approvals
   platform/                  # OS-specific process, shell, and parent-lifecycle helpers
-  state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
-  state/store.rs             # Async read/write of .ferrus/ files; open_lock_file, claim_state
+  state/store.rs             # Async read/write of project-local .ferrus/ artifacts
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
   update_check.rs            # HQ startup version-check helper (crates.io sparse index + local cache)
   checks/runner.rs           # Spawn check subprocesses, collect output
   hq/mod.rs                  # HQ entry point; HqContext; tokio::select! loop; transition_action
-  hq/state_watcher.rs        # Background task: polls STATE.json every 250ms, watch channel
+  hq/state_watcher.rs        # Background task: watches selected spec/milestone display data
   hq/tui.rs                  # Terminal UI (crossterm): App event loop, UiMessage, StatusSnapshot; autocomplete, command history, spec/milestone status line, confirmation/selection dialogs, AwaitingHuman answer hint; double-Ctrl+C-to-quit
   hq/commands.rs             # ShellCommand enum, parse_command() via clap + shlex
   hq/display.rs              # Display wrapper: sends UiMessage to TUI channel (info, error, transition, status, suspend, resume, confirm)
@@ -61,17 +61,35 @@ src/
 
 **Tool files** expose `pub const DESCRIPTION: &str`, optionally `pub const INPUT_SCHEMA: &str`, and `pub async fn handler(...)`. Registered manually via `app.map_tool()` in `server/mod.rs` — no macros.
 
-**State reads/writes**: always read `STATE.json` at tool entry via `store::read_state()`, write at exit via `store::write_state()`. Never reconstruct `StateData::default()` mid-tool — use `..state.clone()` spread to preserve lease fields.
+**Runtime state**: SQLite is the runtime source of truth. MCP tools should resolve the caller’s `RuntimeTaskContext` from `ferrus.db`, update task/run rows transactionally, and write only scoped artifacts under `.ferrus/tasks/` and `.ferrus/runs/`.
 
-**Lease fields**: `claimed_by`, `lease_until`, `last_heartbeat` on `StateData`. Cleared by transition methods (`create_task`, `submit`, `approve`, `reject`) — not by tool files. Never clear them manually in a tool.
+**Per-task state machine**: The old single global `STATE.json` is gone, but each SQLite task row still follows the same Supervisor–Executor lifecycle. In `--limit 1` this is effectively the old flow, only DB-backed:
 
-**File locking**: `wait_for_task`, `wait_for_review`, and `/heartbeat` acquire an exclusive `flock` on `.ferrus/STATE.lock` (not `STATE.json`) for their read-check-write cycle. Use `store::open_lock_file()` + `tokio::task::spawn_blocking` for the blocking lock call.
+```
+pending
+ └─► executing      ← /wait_for_task claim
+       ├─► addressing ← /reject (Supervisor) → work loop
+       ├─► consultation ← /consult (Executor)
+       │     └─► (restore paused status) ← /wait_for_consult
+       ├─► awaiting_human ← /ask_human
+       │     └─► (restore paused status) ← /wait_for_answer
+       ├─► reviewing ← /submit final gate pass (Executor)
+       │     ├─► addressing → work loop
+       │     └─► complete ← /approve (Supervisor)
+       └─► failed ← /check, /submit, or /reject hits retry/cycle limit
+```
 
-**Spec selection**: `STATE.json` stores `selected_spec` and `selected_milestone` as UI references only. Active task progress uses `task_spec` and `task_milestone`, copied from `pending_task_*` when `/create_task` succeeds. Milestone display text is resolved from the spec Markdown by milestone `ID`. Keep milestone IDs stable across title edits.
+**Runtime artifacts**: `.ferrus/TASK.md`, `.ferrus/SPEC_TEMPLATE.md`, and `.ferrus/CONSULT_TEMPLATE.md` are templates. Task intent lives in `.ferrus/tasks/<task-id>.md`. Execution artifacts live under `.ferrus/runs/<task-id>/`, including `SUBMISSION.md`, `REVIEW.md`, `QUESTION.md`, `ANSWER.md`, `CONSULT_REQUEST.md`, `CONSULT_RESPONSE.md`, `PATCH.diff`, `INTEGRATION_ERROR.md`, and `logs/`. Do not write root `.ferrus/REVIEW.md`, `.ferrus/SUBMISSION.md`, `.ferrus/QUESTION.md`, `.ferrus/ANSWER.md`, `.ferrus/CONSULT_REQUEST.md`, or `.ferrus/CONSULT_RESPONSE.md`.
+
+**Lease fields**: `claimed_by`, `lease_until`, `last_heartbeat` live on SQLite task rows. Claim/renew/release through `project` helpers so ownership, TTL, and events stay consistent.
+
+**File locking**: task claiming and heartbeat renewal are SQLite operations. Do not add `.ferrus/STATE.lock` or file-lock based coordination.
+
+**Spec selection**: `project_runtime_state` stores the selected spec. Task rows store `spec_path` and `milestone_id`; milestone display text is resolved from spec Markdown by milestone `ID`. Keep milestone IDs stable across title edits.
 
 **Agent adapters**: keep backend-specific CLI behavior inside `src/agents/{claude,codex,qwen}`. Shared orchestration should depend on the `SupervisorAgent` and `ExecutorAgent` traits, not on a concrete agent CLI. When adding an agent, implement both role adapters, model normalization, headless prompt transport if needed, version/config entry behavior, registration wiring, and focused tests.
 
-**HQ checks**: `/check` calls the same MCP check handler as an Executor and therefore updates retry state. `/check --force` runs configured commands directly from HQ and does not modify `STATE.json`.
+**HQ checks**: HQ `/check` runs configured commands directly and does not mutate task state. Task retry accounting belongs to executor MCP `/check`.
 
 **HQ reset vs MCP reset**: HQ `/reset` force-resets from any state after confirmation when active agents may be running, clears task/answer/consultation files, and preserves selected spec/milestone. The MCP `/reset` tool is only valid from `Failed`.
 
