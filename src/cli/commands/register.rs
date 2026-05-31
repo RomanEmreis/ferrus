@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::agent_id::{DEFAULT_AGENT_INDEX, ROLE_EXECUTOR, ROLE_SUPERVISOR, mcp_server_name};
 use crate::agents::{McpConfigEntry, parse_executor_agent, parse_supervisor_agent};
-use crate::config::{HqRole, ensure_claude_mcp_isolation_default, update_hq_agent_config};
+use crate::config::{Config, HqRole, ensure_claude_mcp_isolation_default, update_hq_agent_config};
 
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
@@ -43,6 +43,7 @@ pub async fn run(
             ROLE_SUPERVISOR,
             agent,
             normalize_model(supervisor_model.as_deref()),
+            true,
         )
         .await?;
         update_hq_agent_config(
@@ -57,6 +58,7 @@ pub async fn run(
             ROLE_EXECUTOR,
             agent,
             normalize_model(executor_model.as_deref()),
+            true,
         )
         .await?;
         update_hq_agent_config(
@@ -90,20 +92,92 @@ pub(crate) async fn migrate_legacy_mcp_configs() -> Result<Vec<String>> {
     let mut messages = Vec::new();
     migrate_json_legacy_mcp_config(Path::new(".claude/mcp-supervisor.json"), &mut messages).await?;
     migrate_json_legacy_mcp_config(Path::new(".claude/mcp-executor.json"), &mut messages).await?;
+    migrate_json_enabled_mcp_servers(Path::new(".claude/settings.local.json"), &mut messages)
+        .await?;
     migrate_json_legacy_mcp_permissions(Path::new(".claude/settings.local.json"), &mut messages)
         .await?;
     migrate_json_legacy_mcp_config(Path::new(".qwen/settings.json"), &mut messages).await?;
+    migrate_json_enabled_mcp_servers(Path::new(".qwen/settings.json"), &mut messages).await?;
     migrate_json_legacy_mcp_permissions(Path::new(".qwen/settings.json"), &mut messages).await?;
     migrate_toml_legacy_mcp_config(Path::new(".codex/config.toml"), &mut messages).await?;
     Ok(messages)
 }
 
-async fn register_role(role: &str, agent: &Agent, model: Option<&str>) -> Result<()> {
+pub(crate) async fn ensure_configured_hq_mcp_configs() -> Result<()> {
+    let config = Config::load().await?;
+    let Some(hq) = config.hq else {
+        return Ok(());
+    };
+
+    let supervisor = agent_from_name(&hq.supervisor.agent)?;
+    register_role(
+        ROLE_SUPERVISOR,
+        &supervisor,
+        normalize_model(hq.supervisor.model.as_deref()),
+        false,
+    )
+    .await?;
+
+    let executor = agent_from_name(&hq.executor.agent)?;
+    register_role(
+        ROLE_EXECUTOR,
+        &executor,
+        normalize_model(hq.executor.model.as_deref()),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+pub(crate) async fn configured_hq_mcp_checks() -> Result<Vec<(bool, String)>> {
+    let config = Config::load().await?;
+    let Some(hq) = config.hq else {
+        return Ok(Vec::new());
+    };
+
+    let supervisor = hq.supervisor_agent()?;
+    let executor = hq.executor_agent()?;
+    Ok(vec![
+        mcp_launch_check(ROLE_SUPERVISOR, hq.supervisor_name(), || {
+            supervisor.validate_interactive_launch(ROLE_SUPERVISOR, DEFAULT_AGENT_INDEX)
+        }),
+        mcp_launch_check(ROLE_EXECUTOR, hq.executor_name(), || {
+            executor.validate_interactive_launch(ROLE_EXECUTOR, DEFAULT_AGENT_INDEX)
+        }),
+    ])
+}
+
+fn mcp_launch_check(role: &str, agent: &str, check: impl FnOnce() -> Result<()>) -> (bool, String) {
+    match check() {
+        Ok(()) => (true, format!("{role} MCP config is launchable for {agent}")),
+        Err(err) => (
+            false,
+            format!("{role} MCP config is launchable for {agent} ({err})"),
+        ),
+    }
+}
+
+fn agent_from_name(name: &str) -> Result<Agent> {
+    match name {
+        crate::agents::claude::NAME => Ok(Agent::ClaudeCode),
+        crate::agents::codex::NAME => Ok(Agent::Codex),
+        crate::agents::qwen::NAME => Ok(Agent::QwenCode),
+        other => anyhow::bail!("Unknown ferrus agent '{other}'"),
+    }
+}
+
+async fn register_role(
+    role: &str,
+    agent: &Agent,
+    model: Option<&str>,
+    update_agent_docs: bool,
+) -> Result<()> {
     let agent_name = agent.name();
     match agent {
-        Agent::ClaudeCode => register_claude_code(role, agent_name, model).await,
-        Agent::Codex => register_codex(role, agent_name, model).await,
-        Agent::QwenCode => register_qwen_code(role, agent_name, model).await,
+        Agent::ClaudeCode => register_claude_code(role, agent_name, model, update_agent_docs).await,
+        Agent::Codex => register_codex(role, agent_name, model, update_agent_docs).await,
+        Agent::QwenCode => register_qwen_code(role, agent_name, model, update_agent_docs).await,
     }
 }
 
@@ -120,7 +194,12 @@ fn config_entry(
     }
 }
 
-async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
+async fn register_claude_code(
+    role: &str,
+    agent_name: &str,
+    model: Option<&str>,
+    update_agent_docs: bool,
+) -> Result<()> {
     ensure_claude_mcp_isolation_default().await?;
     let dir = std::path::Path::new(".claude");
     tokio::fs::create_dir_all(dir).await?;
@@ -172,11 +251,18 @@ async fn register_claude_code(role: &str, agent_name: &str, model: Option<&str>)
         ".claude/settings.local.json",
     ])
     .await?;
-    append_to_claude_md(role).await?;
+    if update_agent_docs {
+        append_to_claude_md(role).await?;
+    }
     Ok(())
 }
 
-async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
+async fn register_codex(
+    role: &str,
+    agent_name: &str,
+    model: Option<&str>,
+    update_agent_docs: bool,
+) -> Result<()> {
     let dir = std::path::Path::new(".codex");
     tokio::fs::create_dir_all(dir).await?;
     let path = dir.join("config.toml");
@@ -223,11 +309,18 @@ async fn register_codex(role: &str, agent_name: &str, model: Option<&str>) -> Re
     tokio::fs::write(&path, content).await?;
 
     update_gitignore(&[".codex/config.toml"]).await?;
-    append_to_agents_md(role).await?;
+    if update_agent_docs {
+        append_to_agents_md(role).await?;
+    }
     Ok(())
 }
 
-async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -> Result<()> {
+async fn register_qwen_code(
+    role: &str,
+    agent_name: &str,
+    model: Option<&str>,
+    update_agent_docs: bool,
+) -> Result<()> {
     let dir = std::path::Path::new(".qwen");
     tokio::fs::create_dir_all(dir).await?;
     let path = dir.join("settings.json");
@@ -272,7 +365,9 @@ async fn register_qwen_code(role: &str, agent_name: &str, model: Option<&str>) -
 
     crate::agents::qwen::allow_mcp_server_tools(&key).await?;
     update_gitignore(&[".qwen/settings.json"]).await?;
-    append_to_qwen_md(role).await?;
+    if update_agent_docs {
+        append_to_qwen_md(role).await?;
+    }
     Ok(())
 }
 
@@ -406,6 +501,57 @@ async fn collect_json_legacy_mcp_permission_warnings(
             "{} contains legacy MCP tool permission `{permission}`; run `ferrus migrate` to rewrite it as `{canonical}`",
             path.display()
         ));
+    }
+    Ok(())
+}
+
+async fn migrate_json_enabled_mcp_servers(path: &Path, messages: &mut Vec<String>) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = tokio::fs::read_to_string(path).await?;
+    let mut root: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    let Some(enabled) = root
+        .get_mut("enabledMcpjsonServers")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+
+    let mut changed = false;
+    for role in [ROLE_SUPERVISOR, ROLE_EXECUTOR] {
+        let legacy_servers = enabled
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|server| legacy_mcp_role(server) == Some(role))
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if legacy_servers.is_empty() {
+            continue;
+        }
+
+        let canonical = mcp_server_name(role);
+        if !enabled
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(|server| server == canonical)
+        {
+            enabled.push(serde_json::Value::String(canonical.clone()));
+        }
+        enabled.retain(|server| server.as_str().and_then(legacy_mcp_role) != Some(role));
+        changed = true;
+        messages.push(format!(
+            "Migrated legacy enabled MCP servers in {}: {} -> {canonical}",
+            path.display(),
+            legacy_servers.join(", ")
+        ));
+    }
+
+    if changed {
+        let content = serde_json::to_string_pretty(&root)?;
+        tokio::fs::write(path, content).await?;
     }
     Ok(())
 }
@@ -614,7 +760,10 @@ fn legacy_mcp_index(key: &str) -> Option<u32> {
 }
 
 fn legacy_mcp_permission_role(permission: &str) -> Option<&'static str> {
-    let server = permission.strip_prefix("mcp__")?.strip_suffix("__*")?;
+    let rest = permission.strip_prefix("mcp__")?;
+    let server = rest
+        .strip_suffix("__*")
+        .or_else(|| rest.split_once("__").map(|(server, _)| server))?;
     legacy_mcp_role(server)
 }
 
@@ -845,10 +994,10 @@ mod tests {
             .await
             .unwrap();
 
-        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
-        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
 
@@ -874,13 +1023,13 @@ mod tests {
             .await
             .unwrap();
 
-        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
-        register_claude_code(ROLE_EXECUTOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_EXECUTOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
-        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
 
@@ -926,7 +1075,7 @@ mod tests {
             .await
             .unwrap();
 
-        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_SUPERVISOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
 
@@ -947,7 +1096,7 @@ mod tests {
         .await
         .unwrap();
 
-        register_claude_code(ROLE_EXECUTOR, crate::agents::claude::NAME, None)
+        register_claude_code(ROLE_EXECUTOR, crate::agents::claude::NAME, None, true)
             .await
             .unwrap();
 
@@ -1110,5 +1259,110 @@ mod tests {
                 .iter()
                 .any(|permission| { permission.as_str() == Some("mcp__ferrus-supervisor-1__*") })
         );
+    }
+
+    #[tokio::test]
+    async fn migrate_legacy_mcp_configs_updates_enabled_servers_and_specific_permissions() {
+        let _lock = crate::test_support::cwd_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+        tokio::fs::create_dir_all(".claude").await.unwrap();
+        tokio::fs::write(
+            ".claude/settings.local.json",
+            r#"{
+  "enabledMcpjsonServers": ["ferrus-supervisor-1", "unrelated"],
+  "permissions": {
+    "allow": [
+      "mcp__ferrus-supervisor-1__status",
+      "mcp__ferrus-supervisor-1__create_task",
+      "mcp__unrelated__status"
+    ]
+  }
+}"#,
+        )
+        .await
+        .unwrap();
+
+        let messages = migrate_legacy_mcp_configs().await.unwrap();
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("enabled MCP servers"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("legacy MCP tool permissions"))
+        );
+
+        let content = tokio::fs::read_to_string(".claude/settings.local.json")
+            .await
+            .unwrap();
+        let root: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let enabled = root
+            .get("enabledMcpjsonServers")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert!(enabled.iter().any(|server| server == "ferrus-supervisor"));
+        assert!(!enabled.iter().any(|server| server == "ferrus-supervisor-1"));
+
+        let allow = root
+            .get("permissions")
+            .and_then(|permissions| permissions.get("allow"))
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert!(
+            allow
+                .iter()
+                .any(|permission| permission == "mcp__ferrus-supervisor__*")
+        );
+        assert!(
+            !allow
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|permission| permission.starts_with("mcp__ferrus-supervisor-1__"))
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_configured_hq_mcp_configs_creates_missing_role_configs() {
+        let _lock = crate::test_support::cwd_lock().lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CurrentDirGuard::change_to(temp.path());
+        tokio::fs::write(
+            "ferrus.toml",
+            "[checks]\n[limits]\n[hq.supervisor]\nagent = \"claude-code\"\nmodel = \"\"\n[hq.executor]\nagent = \"codex\"\nmodel = \"\"\n",
+        )
+        .await
+        .unwrap();
+
+        ensure_configured_hq_mcp_configs().await.unwrap();
+
+        let claude_content = tokio::fs::read_to_string(".claude/mcp-supervisor.json")
+            .await
+            .unwrap();
+        let claude_root: serde_json::Value = serde_json::from_str(&claude_content).unwrap();
+        assert!(
+            claude_root
+                .get("mcpServers")
+                .and_then(serde_json::Value::as_object)
+                .unwrap()
+                .contains_key("ferrus-supervisor")
+        );
+
+        let codex_content = tokio::fs::read_to_string(".codex/config.toml")
+            .await
+            .unwrap();
+        let codex_root: toml::Table = codex_content.parse().unwrap();
+        assert!(
+            codex_root
+                .get("mcp_servers")
+                .and_then(toml::Value::as_table)
+                .unwrap()
+                .contains_key("ferrus-executor")
+        );
+        assert!(!std::path::Path::new("AGENTS.md").exists());
+        assert!(!std::path::Path::new("CLAUDE.md").exists());
     }
 }

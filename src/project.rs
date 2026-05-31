@@ -342,6 +342,7 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
         )
         .await?;
     }
+    retire_legacy_current_task_row().await?;
     remove_legacy_state_files().await?;
     Ok(registration)
 }
@@ -537,7 +538,7 @@ async fn add_runtime_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path:
     });
     for task in task_rows
         .iter()
-        .filter(|task| task.status != TaskStatus::Reset.as_str())
+        .filter(|task| runtime_artifacts_expected_for_status(&task.status))
     {
         checks.push(DoctorCheck {
             ok: tokio::fs::metadata(&task.path).await.is_ok(),
@@ -556,6 +557,13 @@ async fn add_runtime_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path:
             ),
         });
     }
+}
+
+fn runtime_artifacts_expected_for_status(status: &str) -> bool {
+    !matches!(
+        status.parse::<TaskStatus>().ok(),
+        Some(TaskStatus::Reset | TaskStatus::Unknown)
+    )
 }
 
 pub async fn list_registered_projects() -> Result<Vec<ProjectListEntry>> {
@@ -3231,6 +3239,98 @@ async fn copy_legacy_artifacts() -> Result<()> {
     Ok(())
 }
 
+async fn retire_legacy_current_task_row() -> Result<()> {
+    let database_path = current_database_path().await?;
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut connection = open_runtime_database(&database_path)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = transaction
+            .query_row(
+                r#"
+                SELECT status, paused_status, spec_path, milestone_id, check_retries,
+                       review_cycles, failure_reason, awaiting_human_by
+                FROM tasks
+                WHERE id = ?1
+                "#,
+                [CURRENT_TASK_ID],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some((
+            status,
+            paused_status,
+            spec_path,
+            milestone_id,
+            check_retries,
+            review_cycles,
+            failure_reason,
+            awaiting_human_by,
+        )) = current
+        {
+            let parsed = status.parse::<TaskStatus>().unwrap_or(TaskStatus::Unknown);
+            if !matches!(parsed, TaskStatus::Unknown | TaskStatus::Reset) {
+                transaction.execute(
+                    r#"
+                    INSERT INTO tasks (
+                        id, path, status, paused_status, spec_path, milestone_id,
+                        check_retries, review_cycles, failure_reason, awaiting_human_by
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    ON CONFLICT(id) DO NOTHING
+                    "#,
+                    params![
+                        "t-001",
+                        ".ferrus/tasks/t-001.md",
+                        status,
+                        paused_status,
+                        spec_path,
+                        milestone_id,
+                        check_retries,
+                        review_cycles,
+                        failure_reason,
+                        awaiting_human_by,
+                    ],
+                )?;
+                transaction.execute(
+                    "UPDATE runs SET task_id = ?1, updated_at = ?2 WHERE task_id = ?3",
+                    params!["t-001", timestamp(), CURRENT_TASK_ID],
+                )?;
+            }
+
+            transaction.execute(
+                r#"
+                UPDATE tasks
+                SET status = ?1,
+                    paused_status = NULL,
+                    claimed_by = NULL,
+                    lease_until = NULL,
+                    last_heartbeat = NULL,
+                    failure_reason = NULL,
+                    awaiting_human_by = NULL
+                WHERE id = ?2
+                "#,
+                params![TaskStatus::Reset.as_str(), CURRENT_TASK_ID],
+            )?;
+        }
+
+        transaction.commit()?;
+        Ok(())
+    })
+    .await?
+}
+
 async fn remove_legacy_state_files() -> Result<()> {
     for path in [".ferrus/STATE.json", ".ferrus/STATE.lock"] {
         match tokio::fs::remove_file(path).await {
@@ -4222,6 +4322,72 @@ mod tests {
                 .map(|check| check.message.as_str())
                 .collect::<Vec<_>>()
         );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn runtime_doctor_ignores_unknown_current_compatibility_task() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        tokio::fs::create_dir_all(".ferrus/tasks").await.unwrap();
+        tokio::fs::write(".ferrus/tasks/t-001.md", "task")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(".ferrus/runs/t-001")
+            .await
+            .unwrap();
+        record_run_started("supervisor", "supervisor:codex", std::process::id())
+            .await
+            .unwrap();
+        let database_path = current_database_path().await.unwrap();
+        let mut checks = Vec::new();
+
+        add_runtime_doctor_checks(&mut checks, &database_path).await;
+
+        assert!(
+            checks.iter().all(|check| check.ok),
+            "unexpected failed checks: {:?}",
+            checks
+                .iter()
+                .filter(|check| !check.ok)
+                .map(|check| check.message.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        teardown(previous);
+    }
+
+    #[tokio::test]
+    async fn migrate_retires_legacy_current_task_row() {
+        let _guard = crate::test_support::cwd_lock().lock().unwrap();
+        let (_dir, previous) = setup_project().await;
+        record_task_status(
+            CURRENT_TASK_ID,
+            CURRENT_TASK_PATH,
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        let run = record_run_started("supervisor", "supervisor:codex", std::process::id())
+            .await
+            .unwrap();
+        assert_eq!(run.task_id, CURRENT_TASK_ID);
+
+        retire_legacy_current_task_row().await.unwrap();
+
+        let tasks = list_tasks().await.unwrap();
+        let current = tasks
+            .iter()
+            .find(|task| task.id == CURRENT_TASK_ID)
+            .unwrap();
+        assert_eq!(current.status, TaskStatus::Reset.as_str());
+        let runs = list_runs(10).await.unwrap();
+        let run = runs
+            .iter()
+            .find(|candidate| candidate.id == run.id)
+            .unwrap();
+        assert_eq!(run.task_id, "t-001");
 
         teardown(previous);
     }

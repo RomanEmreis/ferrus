@@ -388,10 +388,9 @@ fn clear_primary_screen() {
     let _ = stdout.flush();
 }
 
-fn tee_interactive_stderr(
+fn capture_interactive_stderr(
     child: &mut tokio::process::Child,
 ) -> Option<tokio::task::JoinHandle<String>> {
-    use std::io::Write as _;
     use tokio::io::AsyncReadExt as _;
 
     let mut stderr = child.stderr.take()?;
@@ -404,8 +403,6 @@ fn tee_interactive_stderr(
                 break;
             }
             let chunk = &buf[..read];
-            let _ = std::io::stderr().write_all(chunk);
-            let _ = std::io::stderr().flush();
             captured.extend_from_slice(chunk);
             if captured.len() > 8192 {
                 let extra = captured.len() - 8192;
@@ -626,7 +623,7 @@ impl HqContext {
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
-        let stderr = tee_interactive_stderr(&mut child);
+        let stderr = capture_interactive_stderr(&mut child);
         self.mark_agent_running(role, agent_type, name, child.id())
             .await?;
 
@@ -1606,7 +1603,7 @@ impl HqContext {
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("Failed to spawn {program}"))?;
-        let stderr = tee_interactive_stderr(&mut child);
+        let stderr = capture_interactive_stderr(&mut child);
         let supervisor_id = self.supervisor_agent_id()?;
         self.mark_agent_running(
             ROLE_SUPERVISOR,

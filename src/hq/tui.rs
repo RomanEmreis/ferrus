@@ -1602,7 +1602,7 @@ fn question_lines(app: &App, width: usize) -> Vec<DashboardLine> {
 
 fn error_lines(error: &str, width: usize) -> Vec<DashboardLine> {
     let mut lines = vec![DashboardLine::new(StyledLine::bold("  Error", Color::Red))];
-    for line in error.lines().take(3) {
+    for line in error.lines().filter(|line| !line.trim().is_empty()).take(8) {
         lines.push(DashboardLine::new(StyledLine::plain(
             truncate_to_width(&format!("  {line}"), width),
             Color::Red,
@@ -3039,6 +3039,30 @@ mod tui_tests {
             .position(|line| line.contains("status output"))
             .unwrap();
         assert_eq!(rendered[activity_idx - 1], "");
+    }
+
+    #[test]
+    fn error_panel_keeps_interactive_stderr_detail() {
+        let rendered = error_lines(
+            "supervisor agent (codex) exited with exit status: 1\n\nstderr:\nError: Invalid MCP configuration",
+            120,
+        )
+        .into_iter()
+        .map(|line| {
+            line.line
+                .segments
+                .into_iter()
+                .map(|segment| segment.text)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Error: Invalid MCP configuration")),
+            "rendered error did not include stderr detail: {rendered:?}"
+        );
     }
 
     #[test]
