@@ -28,7 +28,7 @@ pub async fn handler_for_agent(agent_id: &str) -> Result<String, Error> {
 async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let context = require_runtime_task_context(agent_id).await?;
-    if context.status != "awaiting_human" {
+    if context.status.parse::<project::TaskStatus>()? != project::TaskStatus::AwaitingHuman {
         anyhow::bail!(
             "Cannot wait for answer from task status {:?}; expected awaiting_human",
             context.status
@@ -93,8 +93,7 @@ async fn read_answer(context: &RuntimeTaskContext) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::TaskState, store};
-    use chrono::Utc;
+    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -129,30 +128,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_answer_restores_scoped_runtime_task_without_touching_active_state() {
+    async fn wait_for_answer_restores_scoped_runtime_task() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = crate::state::machine::StateData {
-            state: TaskState::Executing,
-            claimed_by: Some("executor:codex:1".to_string()),
-            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            ..Default::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
         crate::project::record_task_human_question_requested(
             "t-007",
-            "executing",
+            crate::project::TaskStatus::Executing,
             "executor:codex:7",
         )
         .await
@@ -167,8 +158,7 @@ mod tests {
         assert_eq!(response["status"], "answered");
         assert_eq!(response["answer"], "Use the stable path.");
         assert_eq!(response["resumed_state"], "executing");
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Executing);
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "executing");
@@ -187,15 +177,19 @@ mod tests {
     async fn wait_for_answer_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
         crate::project::record_task_human_question_requested(
             "t-007",
-            "executing",
+            crate::project::TaskStatus::Executing,
             "executor:codex:7",
         )
         .await
@@ -210,7 +204,7 @@ mod tests {
         assert_eq!(response["status"], "answered");
         assert_eq!(response["answer"], "Use the stable path.");
         assert_eq!(response["resumed_state"], "executing");
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "executing");
@@ -226,32 +220,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_answer_prefers_database_context_over_active_state_mirror() {
+    async fn wait_for_answer_restores_database_paused_status() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = crate::state::machine::StateData {
-            state: TaskState::AwaitingHuman,
-            paused_state: Some(TaskState::Addressing),
-            awaiting_human_by: Some("executor:codex:1".to_string()),
-            claimed_by: Some("executor:codex:1".to_string()),
-            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            ..Default::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "addressing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Addressing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
             .await
             .unwrap();
         crate::project::record_task_human_question_requested(
             "t-001",
-            "addressing",
+            crate::project::TaskStatus::Addressing,
             "executor:codex:1",
         )
         .await
@@ -266,8 +250,7 @@ mod tests {
         assert_eq!(response["status"], "answered");
         assert_eq!(response["answer"], "Use the stable path.");
         assert_eq!(response["resumed_state"], "addressing");
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::AwaitingHuman);
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "addressing");
@@ -286,12 +269,13 @@ mod tests {
     async fn wait_for_answer_rejects_scoped_agent_that_did_not_ask_question() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        store::write_state(&crate::state::machine::StateData::default())
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "consultation")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Consultation,
+        )
+        .await
+        .unwrap();
         crate::project::record_run_started("supervisor", "supervisor:codex:7", std::process::id())
             .await
             .unwrap();
@@ -304,7 +288,7 @@ mod tests {
         .unwrap();
         crate::project::record_task_human_question_requested(
             "t-007",
-            "consultation",
+            crate::project::TaskStatus::Consultation,
             "supervisor:codex:1",
         )
         .await

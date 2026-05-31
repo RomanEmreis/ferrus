@@ -21,7 +21,7 @@ async fn run_for_agent(agent_id: Option<&str>) -> Result<String> {
 }
 
 async fn reset_runtime_task(context: &RuntimeTaskContext) -> Result<String> {
-    if context.status != "failed" {
+    if context.status.parse::<project::TaskStatus>()? != project::TaskStatus::Failed {
         anyhow::bail!(
             "Cannot reset task {} from status {}. Reset is only available for failed tasks.",
             context.task_id,
@@ -32,7 +32,7 @@ async fn reset_runtime_task(context: &RuntimeTaskContext) -> Result<String> {
     project::record_task_status_with_origin(
         &context.task_id,
         &context.task_path,
-        "reset",
+        project::TaskStatus::Reset,
         None,
         None,
     )
@@ -81,9 +81,13 @@ mod tests {
     async fn reset_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "failed")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Failed,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
@@ -91,7 +95,7 @@ mod tests {
         let response = run_for_agent(Some("executor:codex:7")).await.unwrap();
 
         assert!(response.contains("Task t-007 reset"));
-        assert!(crate::state::store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         assert_eq!(tasks[0].status, "reset");
 
@@ -102,9 +106,13 @@ mod tests {
     async fn reset_rejects_non_failed_database_task() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();

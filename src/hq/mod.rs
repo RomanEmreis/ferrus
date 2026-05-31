@@ -734,7 +734,7 @@ impl HqContext {
         let tasks = crate::project::list_tasks().await?;
         if !tasks.iter().any(|task| {
             is_executor_ready_task_status(&task.status)
-                || matches!(task.status.as_str(), "reviewing" | "consultation")
+                || is_review_or_consultation_task_status(&task.status)
         }) {
             return Ok(());
         }
@@ -805,7 +805,7 @@ impl HqContext {
         let tasks = crate::project::list_tasks().await?;
         let has_runtime_work = tasks.iter().any(|task| {
             is_executor_ready_task_status(&task.status)
-                || matches!(task.status.as_str(), "reviewing" | "consultation")
+                || is_review_or_consultation_task_status(&task.status)
         });
         if has_runtime_work {
             self.ensure_hq_config().await?;
@@ -833,7 +833,10 @@ impl HqContext {
 
     async fn review(&mut self) -> Result<()> {
         let tasks = crate::project::list_tasks().await?;
-        if tasks.iter().any(|task| task.status == "reviewing") {
+        if tasks
+            .iter()
+            .any(|task| task.status == crate::project::TaskStatus::Reviewing.as_str())
+        {
             self.ensure_hq_config().await?;
             let config = Config::load().await?;
             let max_parallel = config.limits.max_parallel_tasks.max(1);
@@ -922,7 +925,7 @@ impl HqContext {
             crate::project::record_task_status_with_origin(
                 &task.id,
                 &task.path,
-                "reset",
+                crate::project::TaskStatus::Reset,
                 task.spec_path.as_deref(),
                 task.milestone_id.as_deref(),
             )
@@ -1192,7 +1195,7 @@ impl HqContext {
     ) -> Result<usize> {
         let reviewing_count = tasks
             .iter()
-            .filter(|task| task.status == "reviewing")
+            .filter(|task| task.status == crate::project::TaskStatus::Reviewing.as_str())
             .count();
         if reviewing_count == 0 {
             return Ok(0);
@@ -1211,7 +1214,7 @@ impl HqContext {
         let mut spawn_error = None;
         let review_tasks = tasks
             .iter()
-            .filter(|task| task.status == "reviewing")
+            .filter(|task| task.status == crate::project::TaskStatus::Reviewing.as_str())
             .filter(|task| !task_has_active_external_claim(task, now))
             .take(slots)
             .cloned()
@@ -1264,7 +1267,7 @@ impl HqContext {
     ) -> Result<usize> {
         let consultation_count = tasks
             .iter()
-            .filter(|task| task.status == "consultation")
+            .filter(|task| task.status == crate::project::TaskStatus::Consultation.as_str())
             .count();
         if consultation_count == 0 {
             return Ok(0);
@@ -1282,7 +1285,7 @@ impl HqContext {
         let mut spawn_error = None;
         let consultation_tasks = tasks
             .iter()
-            .filter(|task| task.status == "consultation")
+            .filter(|task| task.status == crate::project::TaskStatus::Consultation.as_str())
             .take(slots)
             .cloned()
             .collect::<Vec<_>>();
@@ -2027,11 +2030,22 @@ fn task_has_active_external_claim(task: &TaskRecord, now: chrono::DateTime<chron
 }
 
 fn is_resettable_task_status(status: &str) -> bool {
-    !matches!(status, "idle" | "reset" | "complete" | "failed")
+    status
+        .parse::<crate::project::TaskStatus>()
+        .is_ok_and(crate::project::TaskStatus::is_resettable)
 }
 
 fn is_executor_ready_task_status(status: &str) -> bool {
-    matches!(status, "pending" | "executing" | "addressing")
+    status
+        .parse::<crate::project::TaskStatus>()
+        .is_ok_and(crate::project::TaskStatus::is_executor_ready)
+}
+
+fn is_review_or_consultation_task_status(status: &str) -> bool {
+    matches!(
+        status.parse::<crate::project::TaskStatus>().ok(),
+        Some(crate::project::TaskStatus::Reviewing | crate::project::TaskStatus::Consultation)
+    )
 }
 
 #[cfg(test)]
@@ -2107,7 +2121,7 @@ mod tests {
         crate::project::record_task_status_with_origin(
             "t-002",
             ".ferrus/tasks/t-002.md",
-            "pending",
+            crate::project::TaskStatus::Pending,
             Some(spec_path),
             Some("m1.2"),
         )
@@ -2151,22 +2165,34 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "pending")
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "complete")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Pending,
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status(
+            "t-003",
+            ".ferrus/tasks/t-003.md",
+            crate::project::TaskStatus::Complete,
+        )
+        .await
+        .unwrap();
 
         let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
         let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut ctx = HqContext::new(state_rx, Display(msg_tx), false);
         ctx.do_reset(false).await.unwrap();
 
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let status = |id: &str| {
             tasks
@@ -2202,9 +2228,13 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "complete")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Complete,
+        )
+        .await
+        .unwrap();
 
         let (_state_tx, state_rx) = watch::channel::<Option<WatchedState>>(None);
         let (msg_tx, _msg_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2212,7 +2242,7 @@ mod tests {
 
         ctx.reconcile_runtime_schedule().await.unwrap();
 
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         std::env::set_current_dir(previous).unwrap();
     }
 
@@ -2290,12 +2320,16 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_human_question_requested(
             "t-007",
-            "executing",
+            crate::project::TaskStatus::Executing,
             "executor:codex:7",
         )
         .await
@@ -2310,7 +2344,7 @@ mod tests {
 
         dispatch("Use option A", &mut ctx).await.unwrap();
 
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         assert_eq!(
             store::read_answer_for_run_dir(".ferrus/runs/t-007")
                 .await
@@ -2352,12 +2386,16 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::project::record_task_status("t-009", ".ferrus/tasks/t-009.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-009",
+            ".ferrus/tasks/t-009.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_human_question_requested(
             "t-009",
-            "executing",
+            crate::project::TaskStatus::Executing,
             "executor:codex:9",
         )
         .await
@@ -2378,7 +2416,7 @@ mod tests {
                 .unwrap(),
             "Use scoped answer"
         );
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
 
         std::env::set_current_dir(previous).unwrap();
     }

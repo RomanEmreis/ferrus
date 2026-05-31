@@ -29,7 +29,11 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
     let config = Config::load().await?;
     let context = require_runtime_task_context(agent_id).await?;
 
-    if !matches!(context.status.as_str(), "executing" | "addressing") {
+    if !context
+        .status
+        .parse::<project::TaskStatus>()?
+        .is_executor_working()
+    {
         anyhow::bail!(
             "Cannot run checks from state {}. \
              Checks are only valid in Executing or Addressing state.",
@@ -128,10 +132,6 @@ async fn run(agent_id: Option<&str>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        machine::{StateData, TaskState},
-        store,
-    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -166,24 +166,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_pass_prefers_database_context_over_active_state_mirror() {
+    async fn check_pass_clears_database_retry_metadata() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Executing,
-            check_retries: 1,
-            failure_reason: Some("fmt failed".to_string()),
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_check_failed("t-001", "fmt failed", 2)
             .await
             .unwrap();
@@ -193,9 +185,7 @@ mod tests {
 
         run(Some("executor:codex:1")).await.unwrap();
 
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.check_retries, 1);
-        assert_eq!(state.failure_reason.as_deref(), Some("fmt failed"));
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "executing");
@@ -210,9 +200,13 @@ mod tests {
     async fn check_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_check_failed("t-007", "fmt failed", 2)
             .await
             .unwrap();
@@ -222,7 +216,7 @@ mod tests {
 
         run(Some("executor:codex:7")).await.unwrap();
 
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "executing");

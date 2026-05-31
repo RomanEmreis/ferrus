@@ -36,8 +36,14 @@ async fn run(description: String) -> Result<String> {
         .await
         .with_context(|| format!("Failed to create {}", artifact.run_dir))?;
 
-    project::record_task_status_with_origin(&artifact.id, &artifact.path, "pending", None, None)
-        .await?;
+    project::record_task_status_with_origin(
+        &artifact.id,
+        &artifact.path,
+        project::TaskStatus::Pending,
+        None,
+        None,
+    )
+    .await?;
     project::record_runtime_event_best_effort(
         None,
         "task_created",
@@ -98,7 +104,7 @@ mod tests {
 
         run("Build the thing".to_string()).await.unwrap();
 
-        assert!(crate::state::store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/tasks/t-001.md")
                 .await

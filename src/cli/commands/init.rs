@@ -238,33 +238,40 @@ If this file conflicts with them, follow the prompt and tools.
 | Supervisor | Writes tasks, reviews Executor submissions, approves or rejects |
 | Executor | Implements tasks, runs checks during development, and submits when ready |
 
-Two separate `ferrus serve` processes run side-by-side (one per role), coordinating through `.ferrus/` on disk.
+Agents run one-shot sessions under HQ and coordinate through SQLite runtime rows plus scoped artifacts
+under `.ferrus/tasks/` and `.ferrus/runs/`.
 
-Under HQ, agents are usually **one-shot sessions**:
-- Executor starts on `Idle → Executing`, claims work via `wait_for_task`, implements, uses `/check` as needed during development, runs `/check` again immediately before final handoff, then calls `/submit` for the final review gate
-- HQ then terminates that Executor session and starts the Supervisor in review mode
-- If review is rejected, HQ terminates the reviewer and starts a fresh Executor session for `Addressing`
-- That new Executor begins again with `wait_for_task` and receives the latest review context
+Under HQ:
+- Executors call `/wait_for_task` to claim a ready SQLite task row, implement, use `/check` during development, then call `/submit` for the final review gate.
+- Supervisors call `/wait_for_review` to claim reviewing task rows, then `/approve` or `/reject`.
+- Rejected tasks return to `addressing` and can be claimed again by an executor.
 
-## State machine
+## Runtime Model
 
+SQLite task rows are the runtime source of truth. Typical statuses are `pending`, `executing`,
+`addressing`, `consultation`, `awaiting_human`, `reviewing`, `complete`, and `failed`.
+Consultation and human-answer flows store paused status and requester metadata in SQLite, with
+request/response artifacts scoped under `.ferrus/runs/<task-id>/`.
+
+## Per-Task State Machine
+
+The old single global `STATE.json` is gone, but every SQLite task row still follows the same
+Supervisor-Executor lifecycle. With `--limit 1`, the flow is effectively the original single-task
+workflow, only DB-backed:
+
+```text
+pending
+ └─► executing      ← /wait_for_task claim
+       ├─► addressing ← /reject (Supervisor) → work loop
+       ├─► consultation ← /consult (Executor)
+       │     └─► (restore paused status) ← /wait_for_consult
+       ├─► awaiting_human ← /ask_human
+       │     └─► (restore paused status) ← /wait_for_answer
+       ├─► reviewing ← /submit final gate pass (Executor)
+       │     ├─► addressing → work loop
+       │     └─► complete ← /approve (Supervisor)
+       └─► failed ← /check, /submit, or /reject hits retry/cycle limit
 ```
-Idle
- └─► Executing      ← /create_task (Supervisor)
-       ├─► Addressing ← /reject (Supervisor) → work loop
-       ├─► Consultation ← /consult (Executor)
-       │     └─► (restore previous state) ← /wait_for_consult
-       ├─► Reviewing ← /submit final gate pass (Executor)
-       │     ├─► [REJECT] Addressing → work loop
-       │     └─► Complete ← /approve (Supervisor)
-       └─► Failed   ← /check or /submit hits retry limit
-```
-
-Any active Executor work state can pause to `Consultation` via `/consult` (executor then calls `/wait_for_consult`
-to block until the Supervisor responds via `/respond_consult`, which records `CONSULT_RESPONSE.md`).
-Any active state, including `Consultation`, can pause to `AwaitingHuman` via `/ask_human` (the asking agent then calls `/wait_for_answer`
-to block until the human responds). The human types their answer in the HQ terminal.
-`/reset` moves `Failed → Idle`.
 
 ## CLI
 

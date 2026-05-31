@@ -71,14 +71,12 @@ async fn run(agent_id: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
         let dir = TempDir::new().unwrap();
         let previous = std::env::current_dir().unwrap();
         std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
-        std::fs::write(dir.path().join(".ferrus/STATE.lock"), "").unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         tokio::fs::write(
             "ferrus.toml",
@@ -109,13 +107,14 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.lock"))
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
@@ -125,7 +124,7 @@ mod tests {
 
         assert_eq!(response["status"], "renewed");
         assert_eq!(response["task_id"], "t-007");
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.claimed_by.as_deref(), Some("executor:codex:7"));

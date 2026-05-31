@@ -24,7 +24,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let context = require_runtime_task_context(agent_id).await?;
 
-    if context.status != "reviewing" {
+    if context.status.parse::<project::TaskStatus>()? != project::TaskStatus::Reviewing {
         anyhow::bail!(
             "Cannot approve from state {}. Call /review_pending first.",
             context.status
@@ -33,7 +33,12 @@ async fn run(agent_id: &str) -> Result<String> {
     ensure_lease_owner_or_reclaim(agent_id, config.lease.ttl_secs).await?;
 
     apply_approved_patch(&context).await?;
-    project::record_task_status_best_effort(&context.task_id, &context.task_path, "complete").await;
+    project::record_task_status_best_effort(
+        &context.task_id,
+        &context.task_path,
+        project::TaskStatus::Complete,
+    )
+    .await;
     if let (Some(spec_path), Some(milestone_id)) = (
         context.spec_path.as_deref(),
         context.milestone_id.as_deref(),
@@ -174,10 +179,7 @@ fn is_managed_workspace_path(path: &Path, managed_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        machine::{StateData, TaskState},
-        store,
-    };
+    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -212,29 +214,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approve_updates_agent_review_task_without_resetting_active_state() {
+    async fn approve_updates_agent_review_task_in_database() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Executing,
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
         run("supervisor:codex:7").await.unwrap();
 
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Executing);
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-007").unwrap();
         assert_eq!(task.status, "complete");
@@ -246,13 +241,14 @@ mod tests {
     #[tokio::test]
     async fn approve_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap_or(());
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -299,13 +295,16 @@ mod tests {
         tokio::fs::write("file.txt", "old\n").await.unwrap();
         assert!(!patch.trim().is_empty());
 
-        store::write_state(&StateData::default()).await.unwrap();
         store::write_patch_for_run_dir(".ferrus/runs/t-007", &patch)
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -355,13 +354,16 @@ mod tests {
             .unwrap();
         assert!(!patch.trim().is_empty());
 
-        store::write_state(&StateData::default()).await.unwrap();
         store::write_patch_for_run_dir(".ferrus/runs/t-007", &patch)
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -429,10 +431,13 @@ mod tests {
         );
         assert!(workspace_path.is_dir());
 
-        store::write_state(&StateData::default()).await.unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         let run_record = crate::project::record_run_started_with_workspace(
             "supervisor-run-t-007",
             "supervisor",

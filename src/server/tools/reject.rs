@@ -32,7 +32,7 @@ async fn run(agent_id: &str, notes: String) -> Result<String> {
     let config = Config::load().await?;
     let context = require_runtime_task_context(agent_id).await?;
 
-    if context.status != "reviewing" {
+    if context.status.parse::<project::TaskStatus>()? != project::TaskStatus::Reviewing {
         anyhow::bail!(
             "Cannot reject from state {}. Call /review_pending first.",
             context.status
@@ -102,10 +102,6 @@ async fn write_review(context: &RuntimeTaskContext, notes: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        machine::{StateData, TaskState},
-        store,
-    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -143,19 +139,13 @@ mod tests {
     async fn reject_updates_agent_review_task_and_scoped_review_notes() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Executing,
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -164,8 +154,7 @@ mod tests {
             .await
             .unwrap();
 
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Executing);
+        crate::test_support::assert_no_state_json();
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/runs/t-007/REVIEW.md")
                 .await
@@ -185,13 +174,14 @@ mod tests {
     #[tokio::test]
     async fn reject_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap_or(());
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -216,22 +206,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reject_prefers_database_context_over_active_state_mirror() {
+    async fn reject_resets_database_retry_counters() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Reviewing,
-            review_cycles: 1,
-            check_retries: 4,
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_check_failed("t-001", "fmt failed", 3)
             .await
             .unwrap();
         crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "supervisor:codex:1", 60)
@@ -242,10 +227,7 @@ mod tests {
             .await
             .unwrap();
 
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Reviewing);
-        assert_eq!(state.review_cycles, 1);
-        assert_eq!(state.check_retries, 4);
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "addressing");

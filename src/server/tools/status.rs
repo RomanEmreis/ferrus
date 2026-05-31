@@ -65,19 +65,34 @@ async fn sqlite_status_lines() -> Result<Vec<String>> {
         .iter()
         .filter(|task| {
             matches!(
-                task.status.as_str(),
-                "executing" | "addressing" | "consultation" | "checking" | "reviewing"
+                task.status.parse::<project::TaskStatus>().ok(),
+                Some(
+                    project::TaskStatus::Executing
+                        | project::TaskStatus::Addressing
+                        | project::TaskStatus::Consultation
+                        | project::TaskStatus::Reviewing
+                )
             )
         })
         .count();
     let awaiting_human = tasks
         .iter()
-        .filter(|task| task.status == "awaiting_human")
+        .filter(|task| {
+            task.status.parse::<project::TaskStatus>().ok()
+                == Some(project::TaskStatus::AwaitingHuman)
+        })
         .count();
-    let pending = tasks.iter().filter(|task| task.status == "pending").count();
+    let pending = tasks
+        .iter()
+        .filter(|task| {
+            task.status.parse::<project::TaskStatus>().ok() == Some(project::TaskStatus::Pending)
+        })
+        .count();
     let complete = tasks
         .iter()
-        .filter(|task| task.status == "complete")
+        .filter(|task| {
+            task.status.parse::<project::TaskStatus>().ok() == Some(project::TaskStatus::Complete)
+        })
         .count();
 
     let mut lines = vec![
@@ -87,10 +102,9 @@ async fn sqlite_status_lines() -> Result<Vec<String>> {
         ),
     ];
     for task in tasks.iter().filter(|task| {
-        !matches!(
-            task.status.as_str(),
-            "idle" | "reset" | "complete" | "failed"
-        )
+        task.status
+            .parse::<project::TaskStatus>()
+            .is_ok_and(|status| !status.is_terminal())
     }) {
         let claim = task
             .claimed_by
@@ -108,7 +122,6 @@ async fn sqlite_status_lines() -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::StateData, store};
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -116,7 +129,6 @@ mod tests {
         let previous = std::env::current_dir().unwrap();
         std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
-        store::write_state(&StateData::default()).await.unwrap();
         let data_dir = dir.path().join(".ferrus/projects/test-project");
         tokio::fs::create_dir_all(&data_dir).await.unwrap();
         let local_ref = crate::project::LocalProjectRef {
@@ -141,9 +153,13 @@ mod tests {
     async fn status_includes_agent_runtime_task_context() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
@@ -161,13 +177,14 @@ mod tests {
     #[tokio::test]
     async fn status_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "addressing")
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Addressing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
@@ -182,13 +199,14 @@ mod tests {
     #[tokio::test]
     async fn status_reports_sqlite_summary_when_state_json_and_agent_context_are_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "pending")
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Pending,
+        )
+        .await
+        .unwrap();
 
         let output = run(None).await.unwrap();
 

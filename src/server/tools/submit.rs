@@ -55,7 +55,11 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
     let config = Config::load().await?;
     let context = require_runtime_task_context(agent_id).await?;
 
-    if !matches!(context.status.as_str(), "executing" | "addressing") {
+    if !context
+        .status
+        .parse::<project::TaskStatus>()?
+        .is_executor_working()
+    {
         anyhow::bail!(
             "Cannot submit from state {}. Submit is only valid from Executing or Addressing after the implementation is ready.",
             context.status
@@ -68,7 +72,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
         project::record_task_check_passed(&context.task_id).await?;
         write_submission(&context, &content).await?;
         write_submission_patch(&context).await?;
-        record_task_status(&context, "reviewing").await;
+        record_task_status(&context, project::TaskStatus::Reviewing).await;
         project::record_runtime_event_best_effort(
             context.run_id.clone(),
             "submitted",
@@ -89,7 +93,7 @@ async fn run(agent_id: Option<&str>, content: String) -> Result<String> {
             project::record_task_check_passed(&context.task_id).await?;
             write_submission(&context, &content).await?;
             write_submission_patch(&context).await?;
-            record_task_status(&context, "reviewing").await;
+            record_task_status(&context, project::TaskStatus::Reviewing).await;
             project::record_runtime_event_best_effort(
                 context.run_id.clone(),
                 "submitted",
@@ -213,18 +217,13 @@ async fn workspace_patch() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-async fn record_task_status(context: &RuntimeTaskContext, status: &str) {
+async fn record_task_status(context: &RuntimeTaskContext, status: project::TaskStatus) {
     project::record_task_status_best_effort(&context.task_id, &context.task_path, status).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        machine::{StateData, TaskState},
-        store,
-    };
-    use chrono::Utc;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -262,9 +261,13 @@ mod tests {
     async fn submit_reclaims_expired_same_agent_lease_before_guarding() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 0)
             .await
             .unwrap();
@@ -291,27 +294,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_pass_prefers_database_context_over_active_state_mirror() {
+    async fn submit_pass_clears_database_retry_metadata() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Executing,
-            check_retries: 1,
-            failure_reason: Some("fmt failed".to_string()),
-            claimed_by: Some("executor:codex:1".to_string()),
-            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            last_heartbeat: Some(Utc::now()),
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_check_failed("t-001", "fmt failed", 2)
             .await
             .unwrap();
@@ -326,10 +318,7 @@ mod tests {
         .await
         .unwrap();
 
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Executing);
-        assert_eq!(state.check_retries, 1);
-        assert_eq!(state.failure_reason.as_deref(), Some("fmt failed"));
+        crate::test_support::assert_no_state_json();
         let tasks = crate::project::list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
         assert_eq!(task.status, "reviewing");
@@ -344,25 +333,16 @@ mod tests {
     async fn submit_writes_submission_to_agent_runtime_task_context() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
-        let mut state = StateData {
-            state: TaskState::Executing,
-            claimed_by: Some("executor:codex:1".to_string()),
-            lease_until: Some(Utc::now() + chrono::Duration::seconds(60)),
-            last_heartbeat: Some(Utc::now()),
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
 
         run(
             Some("executor:codex:7"),
@@ -382,9 +362,7 @@ mod tests {
         assert_eq!(task.status, "reviewing");
         assert_eq!(task.check_retries, 0);
         assert_eq!(task.claimed_by, None);
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, TaskState::Executing);
-        assert_eq!(state.active_task_id.as_deref(), Some("t-001"));
+        crate::test_support::assert_no_state_json();
 
         teardown(previous);
     }
@@ -393,9 +371,13 @@ mod tests {
     async fn submit_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_check_failed("t-007", "fmt failed", 2)
             .await
             .unwrap();
@@ -410,7 +392,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/runs/t-007/SUBMISSION.md")
                 .await

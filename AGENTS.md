@@ -34,13 +34,13 @@ src/
   templates.rs               # Embedded Markdown templates written by init/resource fallback
   specs.rs                   # Spec discovery, milestone parsing, selected milestone resolution
   agent_id.rs                # Stable agent IDs and MCP server names
+  legacy_state.rs            # Legacy STATE.json import shape used only by migrate
   agents/                    # Agent launcher/config adapters for Claude Code, Codex, Qwen Code
   agents/mod.rs              # SupervisorAgent/ExecutorAgent traits, AgentRunMode, MCP config entry helpers, agent parsing
   agents/claude/mod.rs       # Claude Code launchers, model override handling, MCP isolation, role-scoped config paths
   agents/codex/mod.rs        # Codex launchers, stdin prompt transport, TOML MCP config and tool approvals
   agents/qwen/mod.rs         # Qwen Code launchers, model override handling, JSON settings tool approvals
   platform/                  # OS-specific process, shell, and parent-lifecycle helpers
-  state/machine.rs           # TaskState enum + StateData + transition methods + lease helpers
   state/store.rs             # Async read/write of project-local .ferrus/ artifacts
   state/agents.rs            # AgentEntry, AgentsRegistry — .ferrus/agents.json lifecycle tracking
   update_check.rs            # HQ startup version-check helper (crates.io sparse index + local cache)
@@ -62,6 +62,22 @@ src/
 **Tool files** expose `pub const DESCRIPTION: &str`, optionally `pub const INPUT_SCHEMA: &str`, and `pub async fn handler(...)`. Registered manually via `app.map_tool()` in `server/mod.rs` — no macros.
 
 **Runtime state**: SQLite is the runtime source of truth. MCP tools should resolve the caller’s `RuntimeTaskContext` from `ferrus.db`, update task/run rows transactionally, and write only scoped artifacts under `.ferrus/tasks/` and `.ferrus/runs/`.
+
+**Per-task state machine**: The old single global `STATE.json` is gone, but each SQLite task row still follows the same Supervisor–Executor lifecycle. In `--limit 1` this is effectively the old flow, only DB-backed:
+
+```
+pending
+ └─► executing      ← /wait_for_task claim
+       ├─► addressing ← /reject (Supervisor) → work loop
+       ├─► consultation ← /consult (Executor)
+       │     └─► (restore paused status) ← /wait_for_consult
+       ├─► awaiting_human ← /ask_human
+       │     └─► (restore paused status) ← /wait_for_answer
+       ├─► reviewing ← /submit final gate pass (Executor)
+       │     ├─► addressing → work loop
+       │     └─► complete ← /approve (Supervisor)
+       └─► failed ← /check, /submit, or /reject hits retry/cycle limit
+```
 
 **Runtime artifacts**: `.ferrus/TASK.md`, `.ferrus/SPEC_TEMPLATE.md`, and `.ferrus/CONSULT_TEMPLATE.md` are templates. Task intent lives in `.ferrus/tasks/<task-id>.md`. Execution artifacts live under `.ferrus/runs/<task-id>/`, including `SUBMISSION.md`, `REVIEW.md`, `QUESTION.md`, `ANSWER.md`, `CONSULT_REQUEST.md`, `CONSULT_RESPONSE.md`, `PATCH.diff`, `INTEGRATION_ERROR.md`, and `logs/`. Do not write root `.ferrus/REVIEW.md`, `.ferrus/SUBMISSION.md`, `.ferrus/QUESTION.md`, `.ferrus/ANSWER.md`, `.ferrus/CONSULT_REQUEST.md`, or `.ferrus/CONSULT_RESPONSE.md`.
 

@@ -80,7 +80,7 @@ fn runtime_task_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::TaskState, store};
+    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -118,28 +118,25 @@ mod tests {
     async fn wait_for_consultation_attaches_supervisor_run_without_stealing_executor_lease() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = crate::state::machine::StateData {
-            state: TaskState::Executing,
-            ..Default::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
         tokio::fs::write(".ferrus/tasks/t-007.md", "task body")
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
-        crate::project::record_task_consultation_requested("t-007", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_consultation_requested(
+            "t-007",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         store::write_consult_request_for_run_dir(".ferrus/runs/t-007", "consult me")
             .await
             .unwrap();

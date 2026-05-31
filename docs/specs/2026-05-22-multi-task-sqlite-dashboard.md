@@ -273,11 +273,13 @@ Recovery is SQLite-first:
 - MCP `/wait_for_task`, `/wait_for_review`, and `/heartbeat` no longer use `.ferrus/STATE.lock`.
 - HQ state watching no longer polls `STATE.json`; it watches project selection/spec display data while task activity comes from SQLite rows.
 - Scoped DB tools no longer mirror run artifacts or leases into single-task files.
+- The old `state/machine.rs` / `StateData` runtime module has been removed. Only a minimal legacy
+  `STATE.json` reader remains for `ferrus migrate`, and runtime/test fixtures now exercise SQLite
+  rows directly.
 
 ## What Remains
 
 - Verify environment inheritance for stdio MCP servers in `claude-code`, `codex`, and `qwen`.
-- Remove the remaining test-only `StateData` scaffolding after all tests are rewritten around SQLite fixtures.
 
 ## Milestones
 

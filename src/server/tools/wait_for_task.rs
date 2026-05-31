@@ -130,10 +130,6 @@ fn state_name_for_task_status(status: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        machine::{StateData, TaskState},
-        store,
-    };
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -148,7 +144,6 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
         let data_dir = dir.path().join(".ferrus/projects/test-project");
         tokio::fs::create_dir_all(&data_dir).await.unwrap();
         let local_ref = crate::project::LocalProjectRef {
@@ -173,28 +168,26 @@ mod tests {
     async fn wait_for_task_claims_next_ready_database_task() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Executing,
-            ..StateData::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
         tokio::fs::write(".ferrus/tasks/t-001.md", "first task")
             .await
             .unwrap();
         tokio::fs::write(".ferrus/tasks/t-002.md", "second task")
             .await
             .unwrap();
-        crate::project::record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
-            .await
-            .unwrap();
-        crate::project::record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        crate::project::record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
             .await
             .unwrap();
@@ -218,19 +211,17 @@ mod tests {
     #[tokio::test]
     async fn wait_for_task_claims_database_task_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap_or(());
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.lock"))
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
         tokio::fs::write(".ferrus/tasks/t-002.md", "queued task")
             .await
             .unwrap();
-        crate::project::record_task_status("t-002", ".ferrus/tasks/t-002.md", "pending")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Pending,
+        )
+        .await
+        .unwrap();
 
         let response: serde_json::Value =
             serde_json::from_str(&run("executor:codex:2").await.unwrap()).unwrap();

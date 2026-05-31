@@ -15,7 +15,13 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::warn;
 
-use crate::{agent_id::ENV_PROJECT_ROOT, platform, state::machine::TaskState};
+pub use crate::runtime_status::TaskStatus;
+
+use crate::{
+    agent_id::ENV_PROJECT_ROOT,
+    legacy_state::{self, LegacyTaskState},
+    platform,
+};
 
 const PROJECT_VERSION: u32 = 1;
 const LOCAL_PROJECT_TOML: &str = ".ferrus/project.toml";
@@ -323,13 +329,14 @@ pub async fn migrate_current_project() -> Result<ProjectRegistration> {
         .await
         .context("Failed to create .ferrus/runs")?;
     copy_legacy_artifacts().await?;
-    if let Ok(state) = crate::state::store::read_state().await
-        && state.state != TaskState::Idle
+    if let Ok(state) = legacy_state::read_legacy_state(project_path(".ferrus/STATE.json")).await
+        && state.state() != LegacyTaskState::Idle
     {
+        let state_value = state.state();
         record_task_status_with_origin(
             "t-001",
             ".ferrus/tasks/t-001.md",
-            task_status_for_state(&state.state),
+            legacy_state::task_status_for_legacy_state(&state_value),
             state.task_spec.as_deref(),
             state.task_milestone.as_deref(),
         )
@@ -530,7 +537,7 @@ async fn add_runtime_doctor_checks(checks: &mut Vec<DoctorCheck>, database_path:
     });
     for task in task_rows
         .iter()
-        .filter(|task| !matches!(task.status.as_str(), "idle" | "reset"))
+        .filter(|task| task.status != TaskStatus::Reset.as_str())
     {
         checks.push(DoctorCheck {
             ok: tokio::fs::metadata(&task.path).await.is_ok(),
@@ -644,7 +651,7 @@ pub async fn list_human_questions() -> Result<Vec<HumanQuestion>> {
     let mut questions = Vec::new();
     for task in tasks
         .into_iter()
-        .filter(|task| task.status == "awaiting_human")
+        .filter(|task| task.status == TaskStatus::AwaitingHuman.as_str())
     {
         let run_dir = run_dir_for_task(&task.id);
         let question = crate::state::store::read_question_for_run_dir(&run_dir)
@@ -680,11 +687,17 @@ pub async fn find_non_terminal_task_by_origin(
                 FROM tasks
                 WHERE spec_path = ?1
                   AND milestone_id = ?2
-                  AND status NOT IN ('idle', 'reset', 'complete', 'failed')
+                  AND status NOT IN (?3, ?4, ?5)
                 ORDER BY id
                 LIMIT 1
                 "#,
-                params![spec_path, milestone_id],
+                params![
+                    spec_path,
+                    milestone_id,
+                    TaskStatus::Reset.as_str(),
+                    TaskStatus::Complete.as_str(),
+                    TaskStatus::Failed.as_str()
+                ],
                 task_record_from_row,
             )
             .optional()?;
@@ -861,7 +874,7 @@ fn task_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRecord>
 }
 
 #[cfg(test)]
-pub async fn record_current_task_status(status: &str) -> Result<()> {
+pub async fn record_current_task_status(status: TaskStatus) -> Result<()> {
     let task = current_task_record().await;
     record_task_status_with_origin(
         &task.id,
@@ -873,21 +886,20 @@ pub async fn record_current_task_status(status: &str) -> Result<()> {
     .await
 }
 
-pub async fn record_task_status(task_id: &str, task_path: &str, status: &str) -> Result<()> {
+pub async fn record_task_status(task_id: &str, task_path: &str, status: TaskStatus) -> Result<()> {
     record_task_status_with_origin(task_id, task_path, status, None, None).await
 }
 
 pub async fn record_task_status_with_origin(
     task_id: &str,
     task_path: &str,
-    status: &str,
+    status: TaskStatus,
     spec_path: Option<&str>,
     milestone_id: Option<&str>,
 ) -> Result<()> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
     let task_path = task_path.to_string();
-    let status = status.to_string();
     let spec_path = spec_path.map(str::to_string);
     let milestone_id = milestone_id.map(str::to_string);
     tokio::task::spawn_blocking(move || -> Result<()> {
@@ -896,11 +908,11 @@ pub async fn record_task_status_with_origin(
             &connection,
             &task_id,
             &task_path,
-            &status,
+            status,
             spec_path.as_deref(),
             milestone_id.as_deref(),
         )?;
-        if clears_task_lease_for_status(&status) {
+        if status.clears_lease() {
             clear_task_lease(&connection, &task_id)?;
         }
         insert_event(
@@ -909,7 +921,7 @@ pub async fn record_task_status_with_origin(
             "task_status_changed",
             &serde_json::json!({
                 "task_id": task_id,
-                "status": status,
+                "status": status.as_str(),
             }),
         )?;
         Ok(())
@@ -940,17 +952,16 @@ pub async fn record_task_check_passed(task_id: &str) -> Result<()> {
 #[cfg(test)]
 pub async fn mirror_task_check_state(
     task_id: &str,
-    status: &str,
+    status: TaskStatus,
     check_retries: u32,
     failure_reason: Option<&str>,
 ) -> Result<()> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
-    let status = status.to_string();
     let failure_reason = failure_reason.map(str::to_string);
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
-        if clears_task_lease_for_status(&status) {
+        if status.clears_lease() {
             connection.execute(
                 r#"
                 UPDATE tasks
@@ -958,12 +969,12 @@ pub async fn mirror_task_check_state(
                     claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
                 WHERE id = ?4
                 "#,
-                params![status, check_retries, failure_reason, task_id],
+                params![status.as_str(), check_retries, failure_reason, task_id],
             )?;
         } else {
             connection.execute(
                 "UPDATE tasks SET status = ?1, check_retries = ?2, failure_reason = ?3 WHERE id = ?4",
-                params![status, check_retries, failure_reason, task_id],
+                params![status.as_str(), check_retries, failure_reason, task_id],
             )?;
         }
         insert_event(
@@ -972,7 +983,7 @@ pub async fn mirror_task_check_state(
             "task_check_state_mirrored",
             &serde_json::json!({
                 "task_id": task_id,
-                "status": status,
+                "status": status.as_str(),
                 "check_retries": check_retries,
             }),
         )?;
@@ -1039,11 +1050,16 @@ pub async fn record_task_check_failed(
             transaction.execute(
                 r#"
                 UPDATE tasks
-                SET status = 'failed', check_retries = ?1, failure_reason = ?2,
+                SET status = ?1, check_retries = ?2, failure_reason = ?3,
                     claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
-                WHERE id = ?3
+                WHERE id = ?4
                 "#,
-                params![retries, limit_failure_reason, task_id],
+                params![
+                    TaskStatus::Failed.as_str(),
+                    retries,
+                    limit_failure_reason,
+                    task_id
+                ],
             )?;
             insert_event_in_transaction(
                 &transaction,
@@ -1093,12 +1109,13 @@ pub async fn record_task_review_rejected(
             transaction.execute(
                 r#"
                 UPDATE tasks
-                SET status = 'failed', review_cycles = ?1,
-                    failure_reason = ?2,
+                SET status = ?1, review_cycles = ?2,
+                    failure_reason = ?3,
                     claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
-                WHERE id = ?3
+                WHERE id = ?4
                 "#,
                 params![
+                    TaskStatus::Failed.as_str(),
                     cycles,
                     format!("Task rejected {max_cycles} times without resolution."),
                     task_id
@@ -1120,12 +1137,12 @@ pub async fn record_task_review_rejected(
             transaction.execute(
                 r#"
                 UPDATE tasks
-                SET status = 'addressing', review_cycles = ?1, check_retries = 0,
+                SET status = ?1, review_cycles = ?2, check_retries = 0,
                     failure_reason = NULL,
                     claimed_by = NULL, lease_until = NULL, last_heartbeat = NULL
-                WHERE id = ?2
+                WHERE id = ?3
                 "#,
-                params![cycles, task_id],
+                params![TaskStatus::Addressing.as_str(), cycles, task_id],
             )?;
             insert_event_in_transaction(
                 &transaction,
@@ -1144,15 +1161,21 @@ pub async fn record_task_review_rejected(
     .await?
 }
 
-pub async fn record_task_consultation_requested(task_id: &str, paused_status: &str) -> Result<()> {
+pub async fn record_task_consultation_requested(
+    task_id: &str,
+    paused_status: TaskStatus,
+) -> Result<()> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
-    let paused_status = paused_status.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
         connection.execute(
-            "UPDATE tasks SET status = 'consultation', paused_status = ?1 WHERE id = ?2",
-            params![paused_status, task_id],
+            "UPDATE tasks SET status = ?1, paused_status = ?2 WHERE id = ?3",
+            params![
+                TaskStatus::Consultation.as_str(),
+                paused_status.as_str(),
+                task_id
+            ],
         )?;
         insert_event(
             &connection,
@@ -1160,7 +1183,7 @@ pub async fn record_task_consultation_requested(task_id: &str, paused_status: &s
             "task_consultation_requested",
             &serde_json::json!({
                 "task_id": task_id,
-                "paused_status": paused_status,
+                "paused_status": paused_status.as_str(),
             }),
         )?;
         Ok(())
@@ -1185,11 +1208,12 @@ pub async fn restore_task_from_consultation(task_id: &str) -> Result<TaskConsult
             transaction.commit()?;
             return Ok(TaskConsultRestore::NotInConsultation);
         };
-        if status != "consultation" {
+        if status != TaskStatus::Consultation.as_str() {
             transaction.commit()?;
             return Ok(TaskConsultRestore::NotInConsultation);
         }
-        let resumed_status = paused_status.unwrap_or_else(|| "executing".to_string());
+        let resumed_status =
+            paused_status.unwrap_or_else(|| TaskStatus::Executing.as_str().to_string());
         transaction.execute(
             "UPDATE tasks SET status = ?1, paused_status = NULL WHERE id = ?2",
             params![resumed_status, task_id],
@@ -1213,22 +1237,26 @@ pub async fn restore_task_from_consultation(task_id: &str) -> Result<TaskConsult
 
 pub async fn record_task_human_question_requested(
     task_id: &str,
-    paused_status: &str,
+    paused_status: TaskStatus,
     awaiting_human_by: &str,
 ) -> Result<()> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
-    let paused_status = paused_status.to_string();
     let awaiting_human_by = awaiting_human_by.to_string();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let connection = open_runtime_database(&database_path)?;
         connection.execute(
             r#"
             UPDATE tasks
-            SET status = 'awaiting_human', paused_status = ?1, awaiting_human_by = ?2
-            WHERE id = ?3
+            SET status = ?1, paused_status = ?2, awaiting_human_by = ?3
+            WHERE id = ?4
             "#,
-            params![paused_status, awaiting_human_by, task_id],
+            params![
+                TaskStatus::AwaitingHuman.as_str(),
+                paused_status.as_str(),
+                awaiting_human_by,
+                task_id
+            ],
         )?;
         insert_event(
             &connection,
@@ -1236,7 +1264,7 @@ pub async fn record_task_human_question_requested(
             "task_human_question_requested",
             &serde_json::json!({
                 "task_id": task_id,
-                "paused_status": paused_status,
+                "paused_status": paused_status.as_str(),
                 "awaiting_human_by": awaiting_human_by,
             }),
         )?;
@@ -1280,11 +1308,12 @@ pub async fn restore_task_from_human_answer(task_id: &str) -> Result<TaskHumanAn
             transaction.commit()?;
             return Ok(TaskHumanAnswerRestore::NotAwaitingHuman);
         };
-        if status != "awaiting_human" {
+        if status != TaskStatus::AwaitingHuman.as_str() {
             transaction.commit()?;
             return Ok(TaskHumanAnswerRestore::NotAwaitingHuman);
         }
-        let resumed_status = paused_status.unwrap_or_else(|| "executing".to_string());
+        let resumed_status =
+            paused_status.unwrap_or_else(|| TaskStatus::Executing.as_str().to_string());
         transaction.execute(
             r#"
             UPDATE tasks
@@ -1310,13 +1339,6 @@ pub async fn restore_task_from_human_answer(task_id: &str) -> Result<TaskHumanAn
     .await?
 }
 
-fn clears_task_lease_for_status(status: &str) -> bool {
-    matches!(
-        status,
-        "idle" | "reset" | "reviewing" | "addressing" | "complete" | "failed"
-    )
-}
-
 pub async fn claim_task(
     task_id: &str,
     task_path: &str,
@@ -1339,7 +1361,11 @@ pub async fn claim_next_ready_task(agent_id: &str, ttl_secs: u64) -> Result<Read
     claim_next_task_with_statuses(
         agent_id,
         ttl_secs,
-        &["pending", "executing", "addressing"],
+        &[
+            TaskStatus::Pending,
+            TaskStatus::Executing,
+            TaskStatus::Addressing,
+        ],
         true,
     )
     .await
@@ -1354,7 +1380,11 @@ pub async fn claim_ready_task_by_id(
         task_id,
         agent_id,
         ttl_secs,
-        &["pending", "executing", "addressing"],
+        &[
+            TaskStatus::Pending,
+            TaskStatus::Executing,
+            TaskStatus::Addressing,
+        ],
         true,
     )
     .await
@@ -1365,23 +1395,21 @@ pub async fn claim_review_task_by_id(
     agent_id: &str,
     ttl_secs: u64,
 ) -> Result<ReadyTaskClaim> {
-    claim_task_by_id_with_statuses(task_id, agent_id, ttl_secs, &["reviewing"], false).await
+    claim_task_by_id_with_statuses(task_id, agent_id, ttl_secs, &[TaskStatus::Reviewing], false)
+        .await
 }
 
 async fn claim_task_by_id_with_statuses(
     task_id: &str,
     agent_id: &str,
     ttl_secs: u64,
-    allowed_statuses: &[&str],
+    allowed_statuses: &[TaskStatus],
     promote_pending: bool,
 ) -> Result<ReadyTaskClaim> {
     let database_path = current_database_path().await?;
     let task_id = task_id.to_string();
     let agent_id = agent_id.to_string();
-    let allowed_statuses = allowed_statuses
-        .iter()
-        .map(|status| status.to_string())
-        .collect::<Vec<_>>();
+    let allowed_statuses = allowed_statuses.to_vec();
     tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
         let mut connection = open_runtime_database(&database_path)?;
         let transaction = connection.transaction()?;
@@ -1393,13 +1421,13 @@ async fn claim_task_by_id_with_statuses(
 
         if !allowed_statuses
             .iter()
-            .any(|status| status == &candidate.status)
+            .any(|status| status.as_str() == candidate.status)
         {
             transaction.commit()?;
             return Ok(ReadyTaskClaim::NoAvailable);
         }
 
-        if promote_pending && candidate.status == "pending" {
+        if promote_pending && candidate.status == TaskStatus::Pending.as_str() {
             promote_pending_task_in_transaction(&transaction, &mut candidate)?;
         }
 
@@ -1446,21 +1474,18 @@ async fn claim_task_by_id_with_statuses(
 }
 
 pub async fn claim_next_review_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {
-    claim_next_task_with_statuses(agent_id, ttl_secs, &["reviewing"], false).await
+    claim_next_task_with_statuses(agent_id, ttl_secs, &[TaskStatus::Reviewing], false).await
 }
 
 async fn claim_next_task_with_statuses(
     agent_id: &str,
     ttl_secs: u64,
-    statuses: &[&str],
+    statuses: &[TaskStatus],
     promote_pending: bool,
 ) -> Result<ReadyTaskClaim> {
     let database_path = current_database_path().await?;
     let agent_id = agent_id.to_string();
-    let statuses = statuses
-        .iter()
-        .map(|status| status.to_string())
-        .collect::<Vec<_>>();
+    let statuses = statuses.to_vec();
     tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
         let mut connection = open_runtime_database(&database_path)?;
         let transaction = connection.transaction()?;
@@ -1473,7 +1498,7 @@ async fn claim_next_task_with_statuses(
                 .as_ref()
                 .is_some_and(|lease_until| now < *lease_until);
             if lease_active && candidate.claimed_by.as_deref() == Some(agent_id.as_str()) {
-                if promote_pending && candidate.status == "pending" {
+                if promote_pending && candidate.status == TaskStatus::Pending.as_str() {
                     promote_pending_task_in_transaction(&transaction, candidate)?;
                 }
                 transaction.commit()?;
@@ -1500,7 +1525,7 @@ async fn claim_next_task_with_statuses(
                 continue;
             }
 
-            if promote_pending && candidate.status == "pending" {
+            if promote_pending && candidate.status == TaskStatus::Pending.as_str() {
                 promote_pending_task_in_transaction(&transaction, &mut candidate)?;
             }
 
@@ -1532,8 +1557,12 @@ fn promote_pending_task_in_transaction(
     candidate: &mut ReadyTaskCandidate,
 ) -> Result<()> {
     transaction.execute(
-        "UPDATE tasks SET status = 'executing', paused_status = NULL WHERE id = ?1 AND status = 'pending'",
-        [&candidate.id],
+        "UPDATE tasks SET status = ?1, paused_status = NULL WHERE id = ?2 AND status = ?3",
+        params![
+            TaskStatus::Executing.as_str(),
+            candidate.id,
+            TaskStatus::Pending.as_str()
+        ],
     )?;
     insert_event_in_transaction(
         transaction,
@@ -1542,11 +1571,11 @@ fn promote_pending_task_in_transaction(
         &serde_json::json!({
             "task_id": candidate.id,
             "previous_status": candidate.status,
-            "status": "executing",
+            "status": TaskStatus::Executing.as_str(),
             "scheduled_at": timestamp(),
         }),
     )?;
-    candidate.status = "executing".to_string();
+    candidate.status = TaskStatus::Executing.as_str().to_string();
     candidate.paused_status = None;
     Ok(())
 }
@@ -1844,10 +1873,10 @@ fn consultation_context_for_run(
                    tasks.check_retries, tasks.review_cycles, tasks.failure_reason
             FROM runs
             JOIN tasks ON tasks.id = runs.task_id
-            WHERE runs.id = ?1 AND tasks.status = 'consultation'
+            WHERE runs.id = ?1 AND tasks.status = ?2
             LIMIT 1
             "#,
-            [run_id],
+            params![run_id, TaskStatus::Consultation.as_str()],
             |row| {
                 let task_id = row.get::<_, String>(0)?;
                 Ok(RuntimeTaskContext {
@@ -1873,9 +1902,9 @@ fn run_dir_for_task(task_id: &str) -> String {
     format!(".ferrus/runs/{task_id}")
 }
 
-pub async fn record_task_status_best_effort(task_id: &str, task_path: &str, status: &str) {
+pub async fn record_task_status_best_effort(task_id: &str, task_path: &str, status: TaskStatus) {
     if let Err(err) = record_task_status(task_id, task_path, status).await {
-        warn!(error = ?err, task_id, status, "failed to mirror task status into ferrus.db");
+        warn!(error = ?err, task_id, status = status.as_str(), "failed to mirror task status into ferrus.db");
     }
 }
 
@@ -2096,7 +2125,7 @@ pub async fn attach_running_run_to_next_consultation(
                 SELECT id, path, spec_path, milestone_id, status, paused_status,
                        check_retries, review_cycles, failure_reason
                 FROM tasks
-                WHERE status = 'consultation'
+                WHERE status = ?1
                   AND NOT EXISTS (
                       SELECT 1
                       FROM runs
@@ -2107,7 +2136,7 @@ pub async fn attach_running_run_to_next_consultation(
                 ORDER BY id
                 LIMIT 1
                 "#,
-                [],
+                [TaskStatus::Consultation.as_str()],
                 |row| {
                     Ok(RuntimeTaskContext {
                         task_id: row.get(0)?,
@@ -2194,7 +2223,7 @@ pub async fn attach_running_run_to_consultation(
                        check_retries, review_cycles, failure_reason
                 FROM tasks
                 WHERE id = ?1
-                  AND status = 'consultation'
+                  AND status = ?2
                   AND NOT EXISTS (
                       SELECT 1
                       FROM runs
@@ -2204,7 +2233,7 @@ pub async fn attach_running_run_to_consultation(
                   )
                 LIMIT 1
                 "#,
-                [&task_id],
+                params![task_id, TaskStatus::Consultation.as_str()],
                 |row| {
                     Ok(RuntimeTaskContext {
                         task_id: row.get(0)?,
@@ -2477,10 +2506,16 @@ async fn protected_worktree_task_ids(
     let database_path = database_path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<std::collections::HashSet<String>> {
         let connection = open_runtime_database(&database_path)?;
-        let mut statement = connection.prepare(
-            "SELECT id FROM tasks WHERE status NOT IN ('idle', 'reset', 'complete', 'failed')",
+        let mut statement =
+            connection.prepare("SELECT id FROM tasks WHERE status NOT IN (?1, ?2, ?3)")?;
+        let rows = statement.query_map(
+            params![
+                TaskStatus::Reset.as_str(),
+                TaskStatus::Complete.as_str(),
+                TaskStatus::Failed.as_str()
+            ],
+            |row| row.get::<_, String>(0),
         )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let mut task_ids = std::collections::HashSet::new();
         for row in rows {
             task_ids.insert(row?);
@@ -2568,19 +2603,6 @@ async fn preview_expired_task_leases(database_path: &Path) -> Result<usize> {
         Ok(expired)
     })
     .await?
-}
-
-pub fn task_status_for_state(state: &TaskState) -> &'static str {
-    match state {
-        TaskState::Idle => "idle",
-        TaskState::Executing => "executing",
-        TaskState::Consultation => "consultation",
-        TaskState::Reviewing => "reviewing",
-        TaskState::Addressing => "addressing",
-        TaskState::Complete => "complete",
-        TaskState::Failed => "failed",
-        TaskState::AwaitingHuman => "awaiting_human",
-    }
 }
 
 async fn initialize_database(path: &Path) -> Result<()> {
@@ -2801,7 +2823,7 @@ fn upsert_task(
     connection: &Connection,
     id: &str,
     path: &str,
-    status: &str,
+    status: TaskStatus,
     spec_path: Option<&str>,
     milestone_id: Option<&str>,
 ) -> Result<()> {
@@ -2815,15 +2837,15 @@ fn upsert_task(
             spec_path = COALESCE(excluded.spec_path, tasks.spec_path),
             milestone_id = COALESCE(excluded.milestone_id, tasks.milestone_id)
         "#,
-        params![id, path, status, spec_path, milestone_id],
+        params![id, path, status.as_str(), spec_path, milestone_id],
     )?;
     Ok(())
 }
 
 fn ensure_task_exists(connection: &Connection, id: &str, path: &str) -> Result<()> {
     connection.execute(
-        "INSERT OR IGNORE INTO tasks (id, path, status) VALUES (?1, ?2, 'unknown')",
-        params![id, path],
+        "INSERT OR IGNORE INTO tasks (id, path, status) VALUES (?1, ?2, ?3)",
+        params![id, path, TaskStatus::Unknown.as_str()],
     )?;
     Ok(())
 }
@@ -3013,7 +3035,7 @@ struct ReadyTaskCandidate {
 
 fn task_candidates_by_status(
     transaction: &Transaction<'_>,
-    statuses: &[String],
+    statuses: &[TaskStatus],
 ) -> Result<Vec<ReadyTaskCandidate>> {
     if statuses.is_empty() {
         return Ok(Vec::new());
@@ -3031,19 +3053,22 @@ fn task_candidates_by_status(
         "#
     );
     let mut statement = transaction.prepare(&sql)?;
-    let rows = statement.query_map(rusqlite::params_from_iter(statuses.iter()), |row| {
-        Ok(ReadyTaskCandidate {
-            id: row.get(0)?,
-            path: row.get(1)?,
-            status: row.get(2)?,
-            paused_status: row.get(3)?,
-            check_retries: row.get::<_, i64>(4)? as u32,
-            review_cycles: row.get::<_, i64>(5)? as u32,
-            failure_reason: row.get(6)?,
-            claimed_by: row.get(7)?,
-            lease_until: row.get(8)?,
-        })
-    })?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(statuses.iter().map(|status| status.as_str())),
+        |row| {
+            Ok(ReadyTaskCandidate {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                status: row.get(2)?,
+                paused_status: row.get(3)?,
+                check_retries: row.get::<_, i64>(4)? as u32,
+                review_cycles: row.get::<_, i64>(5)? as u32,
+                failure_reason: row.get(6)?,
+                claimed_by: row.get(7)?,
+                lease_until: row.get(8)?,
+            })
+        },
+    )?;
 
     let mut tasks = Vec::new();
     for row in rows {
@@ -3429,9 +3454,13 @@ mod tests {
             .await
             .unwrap();
 
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
 
         (dir, previous)
     }
@@ -3626,9 +3655,13 @@ mod tests {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
 
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         claim_task("t-002", ".ferrus/tasks/t-002.md", "executor:codex:2", 60)
             .await
             .unwrap();
@@ -3651,12 +3684,20 @@ mod tests {
     async fn sqlite_claim_next_ready_task_skips_active_claims_and_preserves_agent_lease() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
-        record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        record_task_status(
+            "t-003",
+            ".ferrus/tasks/t-003.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
 
         let first = claim_next_ready_task("executor:codex:1", 60).await.unwrap();
         match first {
@@ -3703,9 +3744,13 @@ mod tests {
     async fn sqlite_claim_ready_task_by_id_promotes_pending_task() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "pending")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Pending,
+        )
+        .await
+        .unwrap();
 
         let claim = claim_ready_task_by_id("t-002", "executor:codex:t-002", 60)
             .await
@@ -3733,12 +3778,20 @@ mod tests {
     async fn sqlite_claim_next_review_task_claims_reviewing_rows_only() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
-        record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        record_task_status(
+            "t-003",
+            ".ferrus/tasks/t-003.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
 
         let claim = claim_next_review_task("supervisor:codex:1", 60)
             .await
@@ -3767,12 +3820,20 @@ mod tests {
     async fn sqlite_claim_review_task_by_id_does_not_steal_another_review() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "reviewing")
-            .await
-            .unwrap();
-        record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
+        record_task_status(
+            "t-003",
+            ".ferrus/tasks/t-003.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
 
         let missing = claim_review_task_by_id("t-999", "supervisor:codex:t-999", 60)
             .await
@@ -3808,12 +3869,20 @@ mod tests {
     async fn list_human_questions_reads_scoped_awaiting_human_tasks() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
-        record_task_human_question_requested("t-002", "executing", "executor:codex:2")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        record_task_human_question_requested(
+            "t-002",
+            crate::project::TaskStatus::Executing,
+            "executor:codex:2",
+        )
+        .await
+        .unwrap();
         crate::state::store::write_question_for_run_dir(
             ".ferrus/runs/t-002",
             "Which option should I use?",
@@ -3857,7 +3926,9 @@ mod tests {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
 
-        record_current_task_status("executing").await.unwrap();
+        record_current_task_status(crate::project::TaskStatus::Executing)
+            .await
+            .unwrap();
 
         let tasks = list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
@@ -3874,16 +3945,20 @@ mod tests {
         record_task_status_with_origin(
             "t-001",
             ".ferrus/tasks/t-001.md",
-            "executing",
+            crate::project::TaskStatus::Executing,
             Some("docs/specs/spec.md"),
             Some("m1.0"),
         )
         .await
         .unwrap();
 
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
 
         let tasks = list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
@@ -3901,7 +3976,7 @@ mod tests {
         record_task_status_with_origin(
             "t-002",
             ".ferrus/tasks/t-002.md",
-            "pending",
+            crate::project::TaskStatus::Pending,
             Some("docs/specs/spec.md"),
             Some("m1.1"),
         )
@@ -3915,9 +3990,13 @@ mod tests {
 
         assert_eq!(task.id, "t-002");
 
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "complete")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Complete,
+        )
+        .await
+        .unwrap();
         let task = find_non_terminal_task_by_origin("docs/specs/spec.md", "m1.1")
             .await
             .unwrap();
@@ -3973,16 +4052,25 @@ mod tests {
     async fn mirrored_check_state_can_fail_task_and_clear_lease() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "executing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:1", 60)
             .await
             .unwrap();
 
-        mirror_task_check_state("t-001", "failed", 2, Some("tests failed"))
-            .await
-            .unwrap();
+        mirror_task_check_state(
+            "t-001",
+            crate::project::TaskStatus::Failed,
+            2,
+            Some("tests failed"),
+        )
+        .await
+        .unwrap();
 
         let tasks = list_tasks().await.unwrap();
         let task = tasks.iter().find(|task| task.id == "t-001").unwrap();
@@ -3998,9 +4086,13 @@ mod tests {
     async fn sqlite_task_review_rejections_use_per_task_cycle_budget() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         claim_task("t-001", ".ferrus/tasks/t-001.md", "supervisor:codex:1", 60)
             .await
             .unwrap();
@@ -4017,9 +4109,13 @@ mod tests {
         assert_eq!(tasks[0].check_retries, 0);
         assert_eq!(tasks[0].claimed_by, None);
 
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         let second = record_task_review_rejected("t-001", 2).await.unwrap();
         assert!(matches!(
             second,
@@ -4049,9 +4145,13 @@ mod tests {
             .await
             .unwrap();
 
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "reviewing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         let tasks = list_tasks().await.unwrap();
         assert_eq!(tasks[0].status, "reviewing");
         assert_eq!(tasks[0].claimed_by, None);
@@ -4061,9 +4161,13 @@ mod tests {
         claim_task("t-001", ".ferrus/tasks/t-001.md", "executor:codex:2", 60)
             .await
             .unwrap();
-        record_task_status("t-001", ".ferrus/tasks/t-001.md", "addressing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-001",
+            ".ferrus/tasks/t-001.md",
+            crate::project::TaskStatus::Addressing,
+        )
+        .await
+        .unwrap();
         let tasks = list_tasks().await.unwrap();
         assert_eq!(tasks[0].status, "addressing");
         assert_eq!(tasks[0].claimed_by, None);
@@ -4160,9 +4264,13 @@ mod tests {
         tokio::fs::write(dir.path().join(".ferrus/tasks/t-010.md"), "task")
             .await
             .unwrap();
-        record_task_status("t-010", ".ferrus/tasks/t-010.md", "executing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-010",
+            ".ferrus/tasks/t-010.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         let database_path = current_database_path().await.unwrap();
         let mut checks = Vec::new();
 
@@ -4204,9 +4312,13 @@ mod tests {
             .await
             .unwrap();
 
-        record_task_status("t-active", ".ferrus/tasks/t-active.md", "addressing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-active",
+            ".ferrus/tasks/t-active.md",
+            crate::project::TaskStatus::Addressing,
+        )
+        .await
+        .unwrap();
         let run = record_run_started_with_workspace(
             "executor-run-t-run",
             "executor",
@@ -4216,9 +4328,13 @@ mod tests {
         )
         .await
         .unwrap();
-        record_task_status("t-run", ".ferrus/tasks/t-run.md", "complete")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-run",
+            ".ferrus/tasks/t-run.md",
+            crate::project::TaskStatus::Complete,
+        )
+        .await
+        .unwrap();
         let attached =
             attach_running_run_to_task("executor:codex:t-run", "t-run", ".ferrus/tasks/t-run.md")
                 .await
@@ -4289,9 +4405,13 @@ mod tests {
         let run = record_run_started("executor", "executor:codex:1", std::process::id())
             .await
             .unwrap();
-        record_task_status("t-002", ".ferrus/tasks/t-002.md", "executing")
-            .await
-            .unwrap();
+        record_task_status(
+            "t-002",
+            ".ferrus/tasks/t-002.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         let attached =
             attach_running_run_to_task("executor:codex:1", "t-002", ".ferrus/tasks/t-002.md")
                 .await
@@ -4393,10 +4513,14 @@ mod tests {
     async fn consultation_attachment_is_exclusive_to_one_supervisor_run() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
-        record_task_consultation_requested("t-007", "executing")
+        record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        record_task_consultation_requested("t-007", crate::project::TaskStatus::Executing)
             .await
             .unwrap();
         let first_run = record_run_started("supervisor", "supervisor:codex:1", std::process::id())
@@ -4432,16 +4556,24 @@ mod tests {
     async fn targeted_consultation_attachment_does_not_steal_another_task() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup_project().await;
-        record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
+        record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        record_task_status(
+            "t-008",
+            ".ferrus/tasks/t-008.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
+        record_task_consultation_requested("t-007", crate::project::TaskStatus::Executing)
             .await
             .unwrap();
-        record_task_status("t-008", ".ferrus/tasks/t-008.md", "executing")
-            .await
-            .unwrap();
-        record_task_consultation_requested("t-007", "executing")
-            .await
-            .unwrap();
-        record_task_consultation_requested("t-008", "executing")
+        record_task_consultation_requested("t-008", crate::project::TaskStatus::Executing)
             .await
             .unwrap();
         let first_run =

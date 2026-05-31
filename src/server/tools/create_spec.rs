@@ -152,7 +152,6 @@ fn ensure_trailing_newline(mut markdown: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::store;
     use tempfile::TempDir;
 
     #[test]
@@ -225,7 +224,7 @@ commands = []
 
         assert!(response.contains("Spec created at docs/specs/"));
         assert!(response.contains("First incomplete milestone: m1.0."));
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         let selection = project::read_project_selection().await.unwrap();
         assert!(
             selection

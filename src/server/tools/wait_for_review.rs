@@ -125,7 +125,7 @@ fn run_dir_for_task(task_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::StateData, store};
+    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -140,8 +140,6 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
-        store::write_state(&StateData::default()).await.unwrap();
         let data_dir = dir.path().join(".ferrus/projects/test-project");
         tokio::fs::create_dir_all(&data_dir).await.unwrap();
         let local_ref = crate::project::LocalProjectRef {
@@ -175,9 +173,13 @@ mod tests {
         store::write_patch_for_run_dir(".ferrus/runs/t-003", "diff --git a/a b/a\n+change\n")
             .await
             .unwrap();
-        crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-003",
+            ".ferrus/tasks/t-003.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
 
         let response: serde_json::Value =
             serde_json::from_str(&run("supervisor:codex:1").await.unwrap()).unwrap();
@@ -197,22 +199,20 @@ mod tests {
     #[tokio::test]
     async fn wait_for_review_claims_database_task_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap();
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.lock"))
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
         tokio::fs::write(".ferrus/tasks/t-003.md", "review task")
             .await
             .unwrap();
         tokio::fs::write(".ferrus/runs/t-003/SUBMISSION.md", "submission")
             .await
             .unwrap();
-        crate::project::record_task_status("t-003", ".ferrus/tasks/t-003.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-003",
+            ".ferrus/tasks/t-003.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
 
         let response: serde_json::Value =
             serde_json::from_str(&run("supervisor:codex:3").await.unwrap()).unwrap();

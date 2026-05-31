@@ -73,7 +73,7 @@ async fn run(
     project::record_task_status_with_origin(
         &artifact.id,
         &artifact.path,
-        "pending",
+        project::TaskStatus::Pending,
         spec_path.as_deref(),
         milestone_id.as_deref(),
     )
@@ -127,10 +127,7 @@ fn parse_input(params: CallToolRequestParams) -> Result<(String, Option<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        project::LocalProjectRef,
-        state::{machine::StateData, store},
-    };
+    use crate::project::LocalProjectRef;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -148,7 +145,6 @@ mod tests {
         let local_ref = toml::to_string_pretty(&local_ref).unwrap();
         std::fs::write(dir.path().join(".ferrus/project.toml"), local_ref).unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
-        store::write_state(&StateData::default()).await.unwrap();
         (dir, previous)
     }
 
@@ -179,7 +175,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_task_writes_pending_artifact_without_changing_state() {
+    async fn enqueue_task_writes_pending_artifact_without_state_json() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
 
@@ -192,9 +188,7 @@ mod tests {
         .unwrap();
 
         assert!(response.contains("t-001"));
-        let state = store::read_state().await.unwrap();
-        assert_eq!(state.state, crate::state::machine::TaskState::Idle);
-        assert!(state.active_task_id.is_none());
+        crate::test_support::assert_no_state_json();
         assert_eq!(
             tokio::fs::read_to_string(".ferrus/tasks/t-001.md")
                 .await

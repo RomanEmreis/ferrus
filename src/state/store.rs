@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 
 use crate::agent_id::ENV_PROJECT_ROOT;
 
-use super::machine::StateData;
-
 const FERRUS_DIR: &str = ".ferrus";
 const LOGS_DIR: &str = ".ferrus/logs";
 
@@ -40,32 +38,6 @@ fn project_root_from_env() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub async fn read_state() -> Result<StateData> {
-    let p = path("STATE.json");
-    let contents = tokio::fs::read_to_string(&p)
-        .await
-        .with_context(|| format!("Cannot read {} — run `ferrus init` first", p.display()))?;
-    serde_json::from_str(&contents).context("Failed to parse STATE.json")
-}
-
-#[cfg(test)]
-pub async fn write_state(state: &StateData) -> Result<()> {
-    let stamped = StateData {
-        updated_at: chrono::Utc::now(),
-        owner_pid: std::process::id(),
-        ..state.clone()
-    };
-    let json = serde_json::to_string_pretty(&stamped).context("Failed to serialize state")?;
-    let tmp = path("STATE.json.tmp");
-    let dest = path("STATE.json");
-    tokio::fs::write(&tmp, &json)
-        .await
-        .with_context(|| format!("Failed to write {}", tmp.display()))?;
-    tokio::fs::rename(&tmp, &dest)
-        .await
-        .with_context(|| format!("Failed to rename {} → {}", tmp.display(), dest.display()))
-}
-
 pub async fn read_task() -> Result<String> {
     read_file("TASK.md").await
 }
@@ -76,22 +48,6 @@ pub async fn read_task_template() -> Result<String> {
 
 pub async fn read_task_at(task_path: &str) -> Result<String> {
     read_path(Path::new(task_path)).await
-}
-
-#[allow(dead_code)]
-pub async fn write_task_for_state(state: &StateData, content: &str) -> Result<()> {
-    if let Some(path) = state.active_task_path.as_deref() {
-        write_path(Path::new(path), content).await?;
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub async fn clear_task_for_state(state: &StateData) -> Result<()> {
-    if let Some(path) = state.active_task_path.as_deref() {
-        write_path(Path::new(path), "").await?;
-    }
-    Ok(())
 }
 
 #[allow(dead_code)]
@@ -400,13 +356,6 @@ mod tests {
     async fn scoped_artifact_reads_do_not_depend_on_active_state() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData::default();
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        write_state(&state).await.unwrap();
 
         write_path(Path::new(".ferrus/tasks/t-002.md"), "second task")
             .await

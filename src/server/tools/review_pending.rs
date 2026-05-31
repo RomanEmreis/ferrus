@@ -2,7 +2,11 @@ use anyhow::Result;
 use neva::prelude::*;
 use tracing::info;
 
-use crate::{config::Config, project::RuntimeTaskContext, state::store};
+use crate::{
+    config::Config,
+    project::{RuntimeTaskContext, TaskStatus},
+    state::store,
+};
 
 use super::{ensure_lease_owner_or_reclaim, require_runtime_task_context, tool_err};
 
@@ -18,7 +22,7 @@ async fn run(agent_id: &str) -> Result<String> {
     let config = Config::load().await?;
     let context = require_runtime_task_context(agent_id).await?;
 
-    if context.status != "reviewing" {
+    if context.status.parse::<TaskStatus>()? != TaskStatus::Reviewing {
         anyhow::bail!(
             "No submission pending review. Current state: {}. \
              Wait for the Executor to call /submit.",
@@ -89,7 +93,7 @@ async fn read_review_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{machine::StateData, store};
+    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -104,8 +108,6 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::fs::write(".ferrus/STATE.lock", "").await.unwrap();
-        store::write_state(&StateData::default()).await.unwrap();
         let data_dir = dir.path().join(".ferrus/projects/test-project");
         tokio::fs::create_dir_all(&data_dir).await.unwrap();
         let local_ref = crate::project::LocalProjectRef {
@@ -142,9 +144,13 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -171,9 +177,13 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -189,19 +199,20 @@ mod tests {
     #[tokio::test]
     async fn review_pending_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
         tokio::fs::write(".ferrus/tasks/t-007.md", "task body")
             .await
             .unwrap();
         store::write_submission_for_run_dir(".ferrus/runs/t-007", "submission")
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();

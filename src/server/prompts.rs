@@ -124,9 +124,6 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".ferrus/tasks")).unwrap();
         std::fs::create_dir_all(dir.path().join(".ferrus/runs/t-007")).unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
-        store::write_state(&crate::state::machine::StateData::default())
-            .await
-            .unwrap();
         let data_dir = dir.path().join(".ferrus/projects/test-project");
         tokio::fs::create_dir_all(&data_dir).await.unwrap();
         let local_ref = crate::project::LocalProjectRef {
@@ -167,9 +164,13 @@ mod tests {
         store::write_review_for_run_dir(".ferrus/runs/t-007", "scoped review")
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "addressing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Addressing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
@@ -201,9 +202,13 @@ mod tests {
         store::write_submission_for_run_dir(".ferrus/runs/t-007", "scoped submission")
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "reviewing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Reviewing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "supervisor:codex:7", 60)
             .await
             .unwrap();
@@ -225,16 +230,17 @@ mod tests {
     #[tokio::test]
     async fn executor_prompt_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
         tokio::fs::write(".ferrus/tasks/t-007.md", "scoped task")
             .await
             .unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
@@ -253,10 +259,7 @@ mod tests {
     #[tokio::test]
     async fn executor_prompt_without_task_context_does_not_require_state_json() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
-        let (dir, previous) = setup().await;
-        tokio::fs::remove_file(dir.path().join(".ferrus/STATE.json"))
-            .await
-            .unwrap();
+        let (_dir, previous) = setup().await;
         tokio::fs::write(".ferrus/TASK.md", "task template")
             .await
             .unwrap();

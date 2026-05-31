@@ -53,7 +53,7 @@ async fn run(agent_id: Option<&str>, response: String) -> Result<String> {
     let Some(context) = runtime_context else {
         anyhow::bail!("Cannot respond to consultation without a SQLite runtime task context.");
     };
-    if context.status != "consultation" {
+    if context.status.parse::<project::TaskStatus>()? != project::TaskStatus::Consultation {
         anyhow::bail!(
             "Cannot respond to consultation from state {}. /respond_consult is only valid in Consultation state.",
             context.status
@@ -72,10 +72,7 @@ async fn write_consult_response(context: &RuntimeTaskContext, response: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{
-        machine::{StateData, TaskState},
-        store,
-    };
+    use crate::state::store;
     use tempfile::TempDir;
 
     async fn setup() -> (TempDir, std::path::PathBuf) {
@@ -107,25 +104,22 @@ mod tests {
     async fn respond_consult_writes_scoped_response_for_attached_consultation_run() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        let mut state = StateData {
-            state: TaskState::Executing,
-            ..Default::default()
-        };
-        state.set_active_task_artifacts(
-            "t-001".to_string(),
-            ".ferrus/tasks/t-001.md".to_string(),
-            ".ferrus/runs/t-001".to_string(),
-        );
-        store::write_state(&state).await.unwrap();
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
-        crate::project::record_task_consultation_requested("t-007", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_consultation_requested(
+            "t-007",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_run_started("supervisor", "supervisor:codex:1", std::process::id())
             .await
             .unwrap();
@@ -157,15 +151,22 @@ mod tests {
     async fn respond_consult_uses_database_context_when_state_json_is_absent() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::claim_task("t-007", ".ferrus/tasks/t-007.md", "executor:codex:7", 60)
             .await
             .unwrap();
-        crate::project::record_task_consultation_requested("t-007", "executing")
-            .await
-            .unwrap();
+        crate::project::record_task_consultation_requested(
+            "t-007",
+            crate::project::TaskStatus::Executing,
+        )
+        .await
+        .unwrap();
         crate::project::record_run_started("supervisor", "supervisor:codex:1", std::process::id())
             .await
             .unwrap();
@@ -177,7 +178,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         assert_eq!(
             store::read_consult_response_for_run_dir(".ferrus/runs/t-007")
                 .await

@@ -78,12 +78,16 @@ mod tests {
     async fn answer_writes_first_scoped_human_answer_without_state_json() {
         let _guard = crate::test_support::cwd_lock().lock().unwrap();
         let (_dir, previous) = setup().await;
-        crate::project::record_task_status("t-007", ".ferrus/tasks/t-007.md", "addressing")
-            .await
-            .unwrap();
+        crate::project::record_task_status(
+            "t-007",
+            ".ferrus/tasks/t-007.md",
+            crate::project::TaskStatus::Addressing,
+        )
+        .await
+        .unwrap();
         crate::project::record_task_human_question_requested(
             "t-007",
-            "addressing",
+            crate::project::TaskStatus::Addressing,
             "executor:codex:7",
         )
         .await
@@ -101,7 +105,7 @@ mod tests {
                 .unwrap(),
             "Use the stable path."
         );
-        assert!(store::read_state().await.is_err());
+        crate::test_support::assert_no_state_json();
         teardown(previous);
     }
 }
