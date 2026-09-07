@@ -7,6 +7,9 @@ mod cli;
 mod config;
 mod hq;
 mod legacy_state;
+// Native session entry points are wired into the HQ launcher in nano PR 08 (#80).
+#[allow(dead_code)]
+mod nano;
 mod platform;
 mod project;
 mod project_memory_runtime;
