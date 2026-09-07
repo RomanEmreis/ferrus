@@ -2,6 +2,189 @@
 
 use super::*;
 
+/// Host-owned authority for one managed Executor run. Never deserialize tool arguments into this.
+#[derive(Debug, Clone)]
+pub(crate) struct ExecutorSessionScope {
+    pub database_path: PathBuf,
+    pub agent_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub workspace_path: PathBuf,
+}
+
+pub(crate) async fn claim_executor_session(
+    scope: &ExecutorSessionScope,
+    ttl_secs: u64,
+) -> Result<ReadyTaskClaim> {
+    with_executor_session(scope, true, move |transaction, scope, _| {
+        claim_ready_task_in_transaction(
+            transaction,
+            &scope.task_id,
+            &scope.agent_id,
+            ttl_secs,
+            &[
+                TaskStatus::Pending,
+                TaskStatus::Executing,
+                TaskStatus::Addressing,
+            ],
+            true,
+        )
+    })
+    .await
+}
+
+pub(crate) async fn executor_session_status(
+    scope: &ExecutorSessionScope,
+) -> Result<RuntimeTaskContext> {
+    with_executor_session(scope, false, |_, _, context| Ok(context)).await
+}
+
+pub(crate) async fn renew_executor_session_lease(
+    scope: &ExecutorSessionScope,
+    ttl_secs: u64,
+) -> Result<LeaseRenewal> {
+    with_executor_session(scope, true, move |transaction, scope, _| {
+        let task =
+            task_candidate_by_id(transaction, &scope.task_id)?.context("Bound task is missing")?;
+        if task.claimed_by.as_deref() != Some(&scope.agent_id) {
+            return Ok(LeaseRenewal::NotClaimed);
+        }
+        anyhow::ensure!(
+            matches!(
+                task.status.as_str(),
+                "executing" | "addressing" | "consultation" | "awaiting_human"
+            ),
+            "Bound task is outside the Executor work phase"
+        );
+        let Some(lease_until) = renew_task_lease_in_transaction(
+            transaction,
+            &scope.task_id,
+            &scope.agent_id,
+            ttl_secs,
+            task.lease_until.as_deref(),
+        )?
+        else {
+            return Ok(LeaseRenewal::Expired);
+        };
+        Ok(LeaseRenewal::Renewed {
+            task_id: task.id,
+            task_path: task.path,
+            claimed_by: scope.agent_id.clone(),
+            lease_until,
+        })
+    })
+    .await
+}
+
+// Validate the exact run in the same transaction as its effects. Looking up the
+// latest run or lease by agent alone can silently retarget an old child process.
+async fn with_executor_session<T, F>(
+    scope: &ExecutorSessionScope,
+    write: bool,
+    operation: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Transaction<'_>, &ExecutorSessionScope, RuntimeTaskContext) -> Result<T>
+        + Send
+        + 'static,
+{
+    let scope = scope.clone();
+    tokio::task::spawn_blocking(move || {
+        let flags = if write {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        };
+        // HQ owns database preparation. A missing or old database is not a cue
+        // for a child to create state or import legacy runtime artifacts.
+        let mut connection = Connection::open_with_flags(&scope.database_path, flags)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        let transaction = connection.transaction_with_behavior(if write {
+            TransactionBehavior::Immediate
+        } else {
+            TransactionBehavior::Deferred
+        })?;
+        validate_runtime_migration_history(&transaction)?;
+        anyhow::ensure!(
+            runtime_schema_version(&transaction)? == RUNTIME_SCHEMA_VERSION,
+            "Managed session requires the current runtime schema"
+        );
+        let context = executor_context_in_transaction(&transaction, &scope)?;
+        let result = operation(&transaction, &scope, context)?;
+        transaction.commit()?;
+        Ok(result)
+    })
+    .await?
+}
+
+fn executor_context_in_transaction(
+    transaction: &Transaction<'_>,
+    scope: &ExecutorSessionScope,
+) -> Result<RuntimeTaskContext> {
+    let run = transaction
+        .query_row(
+            "SELECT task_id, agent, role, status, workspace_path FROM runs WHERE id = ?1",
+            [&scope.run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .context("Bound run is missing")?;
+    anyhow::ensure!(run.0 == scope.task_id, "Run task binding mismatch");
+    anyhow::ensure!(run.1 == scope.agent_id, "Run agent binding mismatch");
+    anyhow::ensure!(
+        run.2 == crate::agent_id::ROLE_EXECUTOR,
+        "Run role must be executor"
+    );
+    anyhow::ensure!(
+        matches!(run.3.as_str(), "running" | "checking"),
+        "Bound run is no longer active"
+    );
+    anyhow::ensure!(
+        Path::new(&run.4).is_absolute() && std::fs::canonicalize(&run.4)? == scope.workspace_path,
+        "Run workspace binding mismatch"
+    );
+    transaction
+        .query_row(
+            "SELECT path, spec_path, milestone_id, status, paused_status, check_retries,
+                review_cycles, failure_reason, baseline_snapshot_id, overlay_revision_id,
+                repository_view_snapshot_id, repository_view_tree_algorithm,
+                repository_view_tree_digest, repository_view_lifecycle, repository_view_status
+         FROM tasks WHERE id = ?1",
+            [&scope.task_id],
+            |row| {
+                Ok(RuntimeTaskContext {
+                    task_id: scope.task_id.clone(),
+                    task_path: row.get(0)?,
+                    spec_path: row.get(1)?,
+                    milestone_id: row.get(2)?,
+                    status: row.get(3)?,
+                    paused_status: row.get(4)?,
+                    check_retries: row.get::<_, i64>(5)? as u32,
+                    review_cycles: row.get::<_, i64>(6)? as u32,
+                    failure_reason: row.get(7)?,
+                    run_dir: run_dir_for_task(&scope.task_id),
+                    run_id: Some(scope.run_id.clone()),
+                    run_role: Some(run.2.clone()),
+                    workspace_path: Some(run.4.clone()),
+                    repository_workspace_path: Some(run.4.clone()),
+                    repository_view: graph::repository_view_reference_from_row(row, 8)?,
+                })
+            },
+        )
+        .optional()?
+        .context("Bound task is missing")
+}
+
 pub async fn claim_task(
     task_id: &str,
     task_path: &str,
@@ -78,52 +261,52 @@ async fn claim_task_by_id_with_statuses(
     tokio::task::spawn_blocking(move || -> Result<ReadyTaskClaim> {
         let mut connection = open_runtime_database(&database_path)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let now = Utc::now();
-        let Some(mut candidate) = task_candidate_by_id(&transaction, &task_id)? else {
-            transaction.commit()?;
-            return Ok(ReadyTaskClaim::NoAvailable);
-        };
-
-        if !allowed_statuses
-            .iter()
-            .any(|status| status.as_str() == candidate.status)
-        {
-            transaction.commit()?;
-            return Ok(ReadyTaskClaim::NoAvailable);
-        }
-
-        if promote_pending && candidate.status == TaskStatus::Pending.as_str() {
-            promote_pending_task_in_transaction(&transaction, &mut candidate)?;
-        }
-
-        let lease_until = parse_lease_until(candidate.lease_until.as_deref());
-        let lease_active = lease_until
-            .as_ref()
-            .is_some_and(|lease_until| now < *lease_until);
-        if lease_active && candidate.claimed_by.as_deref() == Some(agent_id.as_str()) {
-            transaction.commit()?;
-            return Ok(ReadyTaskClaim::AlreadyClaimed(TaskLease {
-                task_id: candidate.id,
-                task_path: candidate.path,
-                status: candidate.status,
-                paused_status: candidate.paused_status,
-                check_retries: candidate.check_retries,
-                review_cycles: candidate.review_cycles,
-                failure_reason: candidate.failure_reason,
-                claimed_by: agent_id,
-                lease_until: lease_until.expect("active lease exists"),
-            }));
-        }
-        if lease_active {
-            transaction.commit()?;
-            return Ok(ReadyTaskClaim::NoAvailable);
-        }
-
-        let lease_until =
-            now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
-        claim_task_in_transaction(&transaction, &candidate.id, &agent_id, lease_until, now)?;
+        let claim = claim_ready_task_in_transaction(
+            &transaction,
+            &task_id,
+            &agent_id,
+            ttl_secs,
+            &allowed_statuses,
+            promote_pending,
+        )?;
         transaction.commit()?;
-        Ok(ReadyTaskClaim::Claimed(TaskLease {
+        Ok(claim)
+    })
+    .await?
+}
+
+fn claim_ready_task_in_transaction(
+    transaction: &Transaction<'_>,
+    task_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+    allowed_statuses: &[TaskStatus],
+    promote_pending: bool,
+) -> Result<ReadyTaskClaim> {
+    let now = Utc::now();
+    let Some(mut candidate) = task_candidate_by_id(transaction, task_id)? else {
+        return Ok(ReadyTaskClaim::NoAvailable);
+    };
+
+    if !allowed_statuses
+        .iter()
+        .any(|status| status.as_str() == candidate.status)
+    {
+        return Ok(ReadyTaskClaim::NoAvailable);
+    }
+
+    let lease_until = parse_lease_until(candidate.lease_until.as_deref());
+    let lease_active = lease_until
+        .as_ref()
+        .is_some_and(|lease_until| now < *lease_until);
+    if lease_active && candidate.claimed_by.as_deref() != Some(agent_id) {
+        return Ok(ReadyTaskClaim::NoAvailable);
+    }
+    if promote_pending && candidate.status == TaskStatus::Pending.as_str() {
+        promote_pending_task_in_transaction(transaction, &mut candidate)?;
+    }
+    if lease_active && candidate.claimed_by.as_deref() == Some(agent_id) {
+        return Ok(ReadyTaskClaim::AlreadyClaimed(TaskLease {
             task_id: candidate.id,
             task_path: candidate.path,
             status: candidate.status,
@@ -131,11 +314,24 @@ async fn claim_task_by_id_with_statuses(
             check_retries: candidate.check_retries,
             review_cycles: candidate.review_cycles,
             failure_reason: candidate.failure_reason,
-            claimed_by: agent_id,
-            lease_until,
-        }))
-    })
-    .await?
+            claimed_by: agent_id.to_string(),
+            lease_until: lease_until.expect("active lease exists"),
+        }));
+    }
+    let lease_until =
+        now + chrono::Duration::try_seconds(ttl_secs as i64).unwrap_or(chrono::Duration::MAX);
+    claim_task_in_transaction(transaction, &candidate.id, agent_id, lease_until, now)?;
+    Ok(ReadyTaskClaim::Claimed(TaskLease {
+        task_id: candidate.id,
+        task_path: candidate.path,
+        status: candidate.status,
+        paused_status: candidate.paused_status,
+        check_retries: candidate.check_retries,
+        review_cycles: candidate.review_cycles,
+        failure_reason: candidate.failure_reason,
+        claimed_by: agent_id.to_string(),
+        lease_until,
+    }))
 }
 
 pub async fn claim_next_review_task(agent_id: &str, ttl_secs: u64) -> Result<ReadyTaskClaim> {

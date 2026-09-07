@@ -3,7 +3,7 @@
 This document tracks the current direction for `ferrus` and the status of the
 major roadmap areas. It is not a date-based roadmap.
 
-Last reviewed against the repository: 2026-07-05.
+Last reviewed against the repository: 2026-09-07.
 
 ## Guiding principles
 
@@ -18,13 +18,14 @@ Last reviewed against the repository: 2026-07-05.
 | Area | Status | Notes |
 |---|---|---|
 | Windows support | Mostly implemented | Windows platform hooks, shell execution, installer, Windows CI, and smoke tests exist. Real agent-loop validation and support-policy docs still need tightening. |
-| Storage layer and SQLite backend | Done | SQLite is the runtime source of truth for tasks, runs, events, leases, counters, selected spec state, and recovery. Markdown remains scoped human-readable artifacts. |
+| Storage layer and SQLite backend | Done | Versioned SQLite migrations, tasks, runs, events, leases, counters, selected spec state, and recovery. Markdown remains scoped human-readable artifacts. |
 | Event log and observability | Baseline done | Runtime events, task/run/event CLI views, HQ dashboard panels, and recovery inspection are implemented. Replay/export and richer historical views remain future work. |
-| Pluggable agent adapters | Partially done | Shared `SupervisorAgent`/`ExecutorAgent` traits and adapters for Codex, Claude Code, Qwen Code, goose, and opencode exist. Capability contracts and native ferrus agents remain future work. |
-| Multi-agent flow | Partially done | `/run`, queued tasks, `max_parallel_tasks`, per-task leases, worktree isolation, independent review, patch application, and integration-error reporting exist. Full task graph, decomposition contracts, and final integration policy remain open. |
-| Spec closure and project memory | Baseline done | `/archive-spec` summarizes completed spec work into a durable `## Outcome` section and moves raw task/run artifacts into the machine-local project archive. `/spec` offers this archive step first when the selected spec is already complete. |
-| Repository graph and indexed context | Not started | No reusable repository index or query API exists yet. |
-| Ferrus nano-agent | Not started | Local-model-friendly external adapters exist, but no ferrus-native lightweight agent runtime exists yet. |
+| Pluggable agent adapters | Partially done | Shared `SupervisorAgent`/`ExecutorAgent` traits and adapters for Codex, Claude Code, Qwen Code, goose, and opencode exist. Explicit capability contracts and runnable native agents remain future work. |
+| Multi-agent flow | Partially done | `/run`, queued tasks, `max_parallel_tasks`, per-task leases, worktree isolation, independent review, frozen submissions, three-way integration with rollback, and integration-error reporting exist. Full task graph, decomposition contracts, and final integration policy remain open. |
+| Spec closure and project memory | Local baseline implemented | Outcome archival, curated memory indexing, revision-pinned queries, and evidence-backed repository links exist. Raw runtime bodies are excluded from default ingestion. |
+| Repository graph and indexed context | Local baseline implemented | Optional SQLite sidecar, incremental extraction, bounded CLI/MCP retrieval, task overlays, and frozen review views. Rust/Cargo and generic file structure are supported. |
+| Distributed context data plane | Prototype implemented | Opt-in contracts and local prototype adapters for authorized jobs, encrypted storage, publication, queries, and maintenance. No deployed remote service is implied. |
+| Ferrus nano-agent | Foundation implemented; runtime planned | #73 adds native managed-session binding and claim/status/heartbeat. Provider, engine, HQ launch, interactive UI, and standalone delivery remain later slices. |
 
 ## Milestone 1: Windows Support
 
@@ -62,39 +63,54 @@ What is implemented:
 - `.ferrus/tasks/<task-id>.md` and `.ferrus/runs/<task-id>/` are scoped human-readable artifacts, not the runtime state machine;
 - `ferrus init`, `migrate`, `doctor`, `recover`, `projects list`, `tasks list`, `runs list`, and `events list` operate on the SQLite-backed runtime;
 - MCP tools resolve scoped runtime task context from SQLite and update task rows transactionally;
-- legacy `STATE.json` is only an import source for migration and is removed by migration paths.
+- legacy `STATE.json` is only an import source for migration and is removed by migration paths;
+- ordered SQLite schema migrations record their history and validate the current schema version.
 
 What remains:
 
-- schema versioning and migrations should become explicit before the database grows much further;
 - richer event querying, export, and replay remain future observability work.
 
 ## Milestone 3: Repository Graph and Indexed Context
 
-Status: not started.
+Status: local baseline implemented; broader language coverage and operational evaluation continue.
 
-Goal: build a repository graph during initialization and keep it available as reusable structured context
-so agents can navigate the codebase faster and spend fewer tokens rediscovering the same information.
+Goal: reuse structured repository context through bounded queries, with explicit identity and
+freshness, while keeping source files and Git authoritative.
 
-What the repository graph should eventually capture:
+What is implemented:
 
-- file and module structure;
-- symbols and their relationships where available;
-- dependency edges between components;
-- documentation and configuration entry points;
-- a compact representation that can be queried incrementally rather than regenerated from scratch every run.
+- backend-neutral graph contracts and a rebuildable `repo-graph.db` sidecar independent of `ferrus.db`;
+- incremental indexing with Rust, Cargo, and generic file/document/configuration extraction;
+- CLI index/status/show/neighbors/search/context commands and read-only MCP retrieval tools;
+- bounded responses and pagination, evidence-backed relationships, and hash-verified snippets;
+- task baseline plus changed-file overlays, refresh after checks, and frozen submission/review views;
+- scoped refresh leases, retention, recovery, and best-effort refresh after canonical integration;
+- local retrieval fixtures and performance/evaluation tooling.
 
-Open architectural direction:
+What remains:
 
-- add a stable indexing abstraction first, then decide whether the initial backend is SQLite tables, a sidecar file index, or a hybrid;
-- expose context through Ferrus MCP resources/tools instead of embedding index-specific behavior in agent prompts;
-- keep the index optional and rebuildable so `ferrus init` remains lightweight.
+- expand language-specific extraction and cross-file resolution beyond Rust/Cargo;
+- broaden task-level quality and token/cost evaluation on realistic repositories;
+- consume graph and memory APIs natively from nano in #78, then add working-set policy in #81;
+- keep graph failures independent of task lifecycle, and retain explicit fallback when context is unavailable.
 
-Definition of done:
+See [graph architecture](repository-graph-architecture.md),
+[retrieval](repository-graph-retrieval.md), and [evaluations](repository-graph-evaluations.md).
+Missing graph relationships remain unknown, not proof that no relationship exists.
 
-- `ferrus init` or a follow-up indexing command can build repository context ahead of agent execution;
-- agents can query this context instead of rescanning the entire repo by default;
-- context retrieval is cheap enough to improve both token efficiency and practical task throughput.
+### Distributed context data plane
+
+Status: optional prototype implemented under `src/distributed/`.
+
+The prototype includes scoped identity and authorization, source packaging, encrypted object/fact
+storage, durable coordinator leases and retries, bounded workers, atomic publication, pinned query
+APIs, and resumable maintenance. Repository and memory revisions remain independent. Local HQ,
+indexing, and retrieval do not initialize cloud clients or implicitly upload source.
+
+Production network/storage adapters, deployment, credentials, enforced worker isolation, and
+operational validation remain separate work. The prototype's secure worker requirements are a
+contract for such adapters, not evidence of a deployed sandbox or cloud service.
+See [distributed contracts](distributed-indexing-architecture.md).
 
 ## Milestone 4: Multi-Agent Flow
 
@@ -113,8 +129,10 @@ What is implemented:
 - HQ schedules pending/executing/addressing tasks up to `limits.max_parallel_tasks`;
 - each task has its own lease, run records, scoped artifacts, and check logs;
 - executor sessions run in managed git worktrees under the project runtime directory;
-- submissions preserve `PATCH.diff`, review context exposes that patch, and approval applies it to the canonical checkout;
-- failed patch application or post-approve checks create scoped `INTEGRATION_ERROR.md`, update SQLite failure state, and are surfaced to review.
+- submissions preserve `PATCH.diff`, a reachable immutable Git tree, and best-effort frozen graph context;
+- approval integrates baseline, current canonical tree, and frozen submitted tree using three-way merge semantics;
+- conflicts and failed integration checks produce scoped `INTEGRATION_ERROR.md`; rollback restores the captured canonical tree;
+- Executor respawns are bounded per work phase by `max_executor_dispatches`.
 
 What remains:
 
@@ -132,30 +150,44 @@ Definition of done:
 
 ## Milestone 5: Ferrus Nano-Agent
 
-Status: not started.
+Status: native session foundation implemented (#73); the runnable harness is not available yet.
 
-Goal: add lightweight ferrus-native agents that `ferrus` can manage directly,
-using local or remote LLMs without depending only on external coding agents.
+Goal: build `ferrus-nano` (backend `nano`) as a minimal Rust coding-agent harness. Start with a
+headless managed Executor, using Ferrus operations, repository graph, and project memory through
+direct Rust calls. Use neva for external MCP extensions. Keep the engine independent of the UI
+so interactive HQ, standalone delivery, and additional roles can follow.
 
-What exists today:
+The accepted layout adds `src/nano/`. Existing project, checks, graph/memory adapters, and MCP
+tool files retain their responsibilities. Extract small typed helpers in place where needed;
+add `src/shared/` only for implementations actually shared by HQ and nano. No broad reorganization
+or mandatory library migration is part of this track.
 
-- the agent layer is already trait-based (`SupervisorAgent` and `ExecutorAgent`);
-- multiple external backends are supported, including local-model-friendly goose and opencode adapters;
-- goose can be useful with local providers, but it is still an external agent backend, not a ferrus-native nano-agent runtime;
-- opencode is currently reliable for supervisor/reviewer use only, not isolated executor workflows.
+Implemented foundation:
 
-What remains:
+- host-owned project/agent/task/run/workspace/baseline binding from launch data and registered runtime state;
+- native typed claim, status, and heartbeat, with exact run validation at transaction boundaries;
+- regression coverage for invalid bindings, lease ownership, existing claims, and MCP parity.
 
-- define a minimal ferrus-native agent runtime;
-- support local and remote model providers behind a clear provider interface;
-- define a capability model for what nano-agents can read, edit, check, or submit;
-- add evaluation and quality gates for small or specialized tasks;
-- integrate nano-agents as first-class orchestration participants without weakening the existing external-agent loop.
+Delivery is tracked in [Ferrus nano-agents](https://github.com/ferrus-dev/ferrus/milestone/6).
+The [architecture and complete PR index](ferrus-nano-architecture.md#planned-prs-and-github-issues)
+contains one issue per planned PR, dependencies, and acceptance criteria:
 
-Definition of done:
+| Stage | Issues | Remaining scope |
+| --- | --- | --- |
+| N0/N1: headless Executor | #74-#80 | Engine/journal, first streaming provider, coding tools, command sessions, native context, lifecycle operations, and HQ launch/events |
+| N2: context efficiency | #81-#82 | Working-set invalidation, budgets, and compaction |
+| N3: reliability and extensions | #83-#85 | External MCP via neva, resume/reconciliation, comparative evaluation, and headless release gates |
+| N4/N5: interactive and standalone | #86-#88 | HQ interaction, standalone host/binary, and shared UI |
+| N5: additional roles | #89-#90 | Supervisor planning/spec/archive, Reviewer, and Consultant |
 
-- `ferrus` can launch its own mini-agents as first-class orchestration participants;
-- there is at least one practical workflow where nano-agents improve cost, speed, or quality.
+Definition of done for the first headless release:
+
+- HQ can launch nano as an Executor, with existing checks, submit, review, lease, and workspace rules;
+- graph-disabled, stale-context, cancellation, and recovery cases have explicit behavior;
+- a fixed task suite measures quality, token use, cost, and elapsed time against external integrations.
+
+Lower cost, higher determinism, and better throughput are hypotheses until evaluated. Interactive
+and standalone delivery remain planned extensions, not requirements to ship the headless Executor.
 
 ## Supporting Tracks
 
@@ -186,8 +218,8 @@ can safely run as executor, reviewer, consultant, or nano-agent provider.
 Status: partially implemented.
 
 Spec milestones already provide a coarse decomposition model, and `/run` can turn ready milestones
-into queued tasks. Approval applies each accepted patch into the canonical checkout and records
-recoverable integration errors.
+into queued tasks. Approval merges each frozen submission into the current canonical tree and
+records recoverable integration errors, preserving unrelated canonical changes.
 
 Future work should define decomposition and integration as first-class policies, not just scheduler behavior:
 task contracts, file ownership hints, dependency edges, conflict routing, merge ordering, and how a supervisor
@@ -195,62 +227,38 @@ should re-plan when one parallel branch fails.
 
 ### Spec closure and project memory
 
-Status: not started.
+Status: local baseline implemented.
 
-Completed specs should leave behind compact project memory instead of forcing future agents to read every raw
-task and run artifact. The HQ command is `/archive-spec`.
+`/archive-spec` requires completed work, uses Supervisor spec-closure mode to prepare an approved
+`## Outcome`, and archives scoped task/run artifacts into machine-local project history. SQLite
+retains task/run provenance; the tracked spec retains the compact outcome. `/spec` offers archival
+before switching away from a completed selected spec.
 
-Implemented baseline:
-
-- require that the selected spec has no non-terminal tasks and all intended milestones are complete;
-- launch the Supervisor in a spec-closure mode that reviews related task descriptions, submissions, reviews,
-  integration errors, and check evidence;
-- append or update a `## Outcome` section in the spec with concise implementation notes, deviations from the
-  original spec, validation evidence, follow-up work, and useful context for future agents;
-- move raw task and run artifacts for that spec out of the checkout after user confirmation;
-- store archive metadata in SQLite so task/run history remains queryable even after files move.
-
-The archive should default to a machine-local directory tree, not a compressed file:
-
-```text
-~/.ferrus/projects/<project-id>/archive/specs/<spec-slug>-<closed-at>/
-  manifest.toml
-  spec.md
-  tasks/
-    <task-id>.md
-  runs/
-    <task-id>/
-      SUBMISSION.md
-      REVIEW.md
-      PATCH.diff
-      INTEGRATION_ERROR.md
-```
-
-This is portable across Windows, macOS, and Linux, easy to inspect by hand, and avoids depending on platform
-archive tools. Compression can be added later as an optional export format, with `.zip` as the most portable
-human-facing option if a single file is needed.
-
-By default, raw artifacts should move to `~/.ferrus/projects/<project-id>/archive/...` rather than stay under
-the repository's `.ferrus/` directory. The repository should keep the spec and its `## Outcome` memory, while
-machine-local runtime history keeps detailed forensic artifacts. A future option can support keeping archives
-inside the repository for teams that explicitly want to version task/run history.
+The independent `project-memory.db` sidecar indexes tracked specification structure, approved
+Outcomes, sanitized archive metadata, and read-only terminal runtime provenance. Default adapters
+exclude raw submissions, reviews, patches, logs, questions, answers, and consultations. Repository
+cross-links identify exact memory revision and graph snapshot pairs; similarity is not authority.
+CLI and MCP support memory and federated retrieval with independent freshness reporting. Memory
+refresh after archival is best-effort and cannot turn a completed archive into a failure.
 
 Remaining work:
 
-- add richer archive inspection commands;
-- support optional single-file export, most likely `.zip`;
-- decide whether repo-local archives should be a configurable team workflow;
-- connect `## Outcome` and archive manifests to the future repository context index.
+- richer archive inspection and optional portable export;
+- wider evaluation of retrieval quality and stale/unresolved cross-links;
+- native context consumption in nano (#78).
+
+See [project memory](project-memory.md), [architecture](project-memory-architecture.md), and
+[evaluations](project-memory-evaluations.md).
 
 ## Proposed order
 
-1. Close the Windows support gap: real agent-loop validation and support documentation.
-2. Add explicit SQLite schema versioning/migrations and richer runtime event queries.
-3. Finish the multi-agent integration policy around task graphs, conflicts, and partial failures.
-4. Build repository graph and indexed context on top of the SQLite/runtime abstractions, including `## Outcome` memory.
-5. Add archive inspection/export polish for `/archive-spec`.
-6. Formalize backend capability metadata for external agents.
-7. Design and prototype ferrus-native nano-agents.
+1. Complete the nano headless Executor sequence (#73-#85), then evaluate it before performance claims.
+2. Continue graph language coverage and repository/memory retrieval quality work alongside that sequence.
+3. Close real Windows agent-loop validation and support-documentation gaps.
+4. Define task dependency, decomposition, conflict-routing, and partial-failure policies beyond current milestone scheduling.
+5. Improve runtime history, archive inspection/export, and explicit external-backend capability metadata.
+6. Add nano interaction and standalone delivery (#86-#88), then additional roles (#89-#90).
+7. Evolve the distributed prototype only through explicit deployment and security/operational acceptance gates.
 
 ## Non-goals for now
 

@@ -317,6 +317,33 @@ pub async fn current_project_id() -> Result<String> {
     Ok(local_ref.project_id)
 }
 
+/// Resolve an explicit checkout without changing cwd or touching runtime state.
+pub(crate) async fn read_project_registration_at(workspace: &Path) -> Result<ProjectRegistration> {
+    let contents = tokio::fs::read_to_string(workspace.join(LOCAL_PROJECT_TOML)).await?;
+    let local_ref: LocalProjectRef = toml::from_str(&contents)?;
+    validate_project_id(&local_ref.project_id)?;
+    anyhow::ensure!(
+        Path::new(&local_ref.data_dir).is_absolute(),
+        "Registered data directory must be absolute"
+    );
+    let data_dir = tokio::fs::canonicalize(&local_ref.data_dir).await?;
+    let metadata = read_project_metadata_from(&data_dir.join("project.toml")).await?;
+    anyhow::ensure!(
+        Path::new(&metadata.workspace_dir).is_absolute(),
+        "Registered workspace must be absolute"
+    );
+    anyhow::ensure!(
+        metadata.id == local_ref.project_id,
+        "Project identity mismatch"
+    );
+    Ok(ProjectRegistration {
+        database_path: data_dir.join("ferrus.db"),
+        local_ref,
+        metadata,
+        data_dir,
+    })
+}
+
 pub async fn create_pending_task_artifact(
     description: &str,
     spec_path: Option<&str>,
