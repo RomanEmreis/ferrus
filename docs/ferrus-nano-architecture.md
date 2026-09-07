@@ -1,12 +1,12 @@
 # Ferrus Nano: Native Agent Harness
 
-Status: accepted implementation plan, updated 2026-09-07. The #73 session foundation is
-implemented; the engine, provider, launcher, and subsequent slices remain planned. No measured
+Status: accepted implementation plan, updated 2026-09-07. The #73 managed-session binding and
+#74 bounded engine/journal are implemented; live providers, launcher, and later slices remain planned. No measured
 performance claim.
 
 Working product name: `ferrus-nano`. Ferrus backend name: `nano`.
 
-Related documents: [roadmap](milestones.md), [repository graph](repository-graph-architecture.md),
+Related documents: [session engine and journal](ferrus-nano-sessions.md), [roadmap](milestones.md), [repository graph](repository-graph-architecture.md),
 [project memory](project-memory-architecture.md).
 
 ## 1. Decision
@@ -62,7 +62,7 @@ Audit base: Ferrus commit `4f52783d6f5efa64ea1a2adf48b55c8b27c565be`.
 | Agent adapters | `ExecutorAgent` and `SupervisorAgent`, model overrides, stdin prompts | Executor-only/headless-only capability declarations; native registration |
 | UI | Crossterm HQ, `UiMessage`, transcript and question handling | A session-event adapter and, later, a conversation view |
 | MCP | neva 0.5.6 with `server`, `di`, `legacy-spec` | Add client features for external tools, preserve protocol compatibility |
-| Agent engine | No Ferrus-owned inference loop or provider implementation | Provider streaming, tool execution, context budgeting, session recovery |
+| Agent engine | Sequential bounded core, provider/tool/host interfaces, durable journal, pure replay, and scripted tests | Live provider adapter, managed tool wiring, compaction, and live resume |
 | Instructions | Ferrus role prompts, project guidance, and embedded skill templates | A bounded native instruction loader with explicit precedence and provenance |
 | Coding tools | Graph source readers, check runner and process primitives | General bounded reads/search, patch editing, command sessions |
 
@@ -385,6 +385,9 @@ When a native operation commits a lifecycle effect, cancellation must reconcile 
 ending the session. A stop request cannot simply forget an in-flight submit transaction.
 
 ## 9. Session journal and crash recovery
+
+The #74 implementation and current defaults are documented in [session storage](ferrus-nano-sessions.md).
+Recorded replay is implemented; live resume and reconciliation remain #84.
 
 Use one versioned, single-writer JSONL journal per nano session plus bounded output artifacts.
 Managed location proposal:

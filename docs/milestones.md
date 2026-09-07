@@ -25,7 +25,7 @@ Last reviewed against the repository: 2026-09-07.
 | Spec closure and project memory | Local baseline implemented | Outcome archival, curated memory indexing, revision-pinned queries, and evidence-backed repository links exist. Raw runtime bodies are excluded from default ingestion. |
 | Repository graph and indexed context | Local baseline implemented | Optional SQLite sidecar, incremental extraction, bounded CLI/MCP retrieval, task overlays, and frozen review views. Rust/Cargo and generic file structure are supported. |
 | Distributed context data plane | Prototype implemented | Opt-in contracts and local prototype adapters for authorized jobs, encrypted storage, publication, queries, and maintenance. No deployed remote service is implied. |
-| Ferrus nano-agent | Foundation implemented; runtime planned | #73 adds native managed-session binding and claim/status/heartbeat. Provider, engine, HQ launch, interactive UI, and standalone delivery remain later slices. |
+| Ferrus nano-agent | Foundation implemented; runtime planned | #73 adds native binding and claim/status/heartbeat; #74 adds the bounded engine and durable journal. Live provider, HQ launch, interactive UI, and standalone delivery remain later slices. |
 
 ## Milestone 1: Windows Support
 
@@ -150,7 +150,7 @@ Definition of done:
 
 ## Milestone 5: Ferrus Nano-Agent
 
-Status: native session foundation implemented (#73); the runnable harness is not available yet.
+Status: native session and engine/journal foundations implemented (#73, #74); the runnable harness is not available yet.
 
 Goal: build `ferrus-nano` (backend `nano`) as a minimal Rust coding-agent harness. Start with a
 headless managed Executor, using Ferrus operations, repository graph, and project memory through
@@ -166,7 +166,8 @@ Implemented foundation:
 
 - host-owned project/agent/task/run/workspace/baseline binding from launch data and registered runtime state;
 - native typed claim, status, and heartbeat, with exact run validation at transaction boundaries;
-- regression coverage for invalid bindings, lease ownership, existing claims, and MCP parity.
+- sequential provider/tool/host boundaries, persisted budgets, cancellation, a private single-writer journal, and pure recorded replay;
+- regression coverage for bindings, lease ownership, MCP parity, engine limits, effect ordering, and journal recovery.
 
 Delivery is tracked in [Ferrus nano-agents](https://github.com/ferrus-dev/ferrus/milestone/6).
 The [architecture and complete PR index](ferrus-nano-architecture.md#planned-prs-and-github-issues)
@@ -174,7 +175,7 @@ contains one issue per planned PR, dependencies, and acceptance criteria:
 
 | Stage | Issues | Remaining scope |
 | --- | --- | --- |
-| N0/N1: headless Executor | #74-#80 | Engine/journal, first streaming provider, coding tools, command sessions, native context, lifecycle operations, and HQ launch/events |
+| N1: headless Executor | #75-#80 | First live streaming provider, coding tools, command sessions, native context, lifecycle operations, and HQ launch/events |
 | N2: context efficiency | #81-#82 | Working-set invalidation, budgets, and compaction |
 | N3: reliability and extensions | #83-#85 | External MCP via neva, resume/reconciliation, comparative evaluation, and headless release gates |
 | N4/N5: interactive and standalone | #86-#88 | HQ interaction, standalone host/binary, and shared UI |
