@@ -126,6 +126,49 @@ fn interrupted_tail_is_removed_but_complete_corruption_is_not_rewritten() {
 }
 
 #[test]
+fn overlong_complete_records_are_rejected_without_rewriting_the_journal() {
+    let quotas = Quotas {
+        record_bytes: 2048,
+        ..Default::default()
+    };
+    for extra_bytes in [0, 1, 2, 8192] {
+        let (_dir, mut journal) = create(quotas.clone());
+        let started = started(&mut journal);
+        let directory = journal.directory().to_path_buf();
+        let path = directory.join("events.jsonl");
+        let end = Record {
+            sequence: 2,
+            event: SessionEvent::Ended {
+                reason: EndReason::Cancelled,
+            },
+            ..started
+        };
+        drop(journal);
+
+        let mut line = serde_json::to_vec(&end).unwrap();
+        line.resize(quotas.record_bytes + extra_bytes, b' ');
+        line.push(b'\n');
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&line)
+            .unwrap();
+        let original = fs::read(&path).unwrap();
+        let result = FileJournal::recover(&directory, quotas.clone());
+        if extra_bytes == 0 {
+            assert_eq!(result.unwrap().0.state().end, Some(EndReason::Cancelled));
+        } else {
+            assert_eq!(
+                result.err().expect("Overlong record accepted").to_string(),
+                "Journal record exceeds quota"
+            );
+        }
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+}
+
+#[test]
 fn duplicate_writer_and_duplicate_session_creation_are_rejected() {
     let (dir, journal) = create(Quotas::default());
     assert!(FileJournal::recover(journal.directory(), Quotas::default()).is_err());

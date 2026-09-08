@@ -287,7 +287,7 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
                 return EndReason::ProviderProtocol;
             }
 
-            if response.calls.is_empty() && !response.text.trim().is_empty() {
+            if response.is_final() {
                 if self.journal.checkpoint().is_err() {
                     return EndReason::JournalFailed;
                 }

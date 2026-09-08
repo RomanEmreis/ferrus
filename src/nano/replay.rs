@@ -20,6 +20,7 @@ pub(crate) struct Replay {
     pub pending_effect: Option<String>,
     pub unknown_effects: Vec<String>,
     model_active: bool,
+    final_response_ready: bool,
     calls: VecDeque<ToolCall>,
 }
 
@@ -142,6 +143,7 @@ impl Replay {
                     "Invalid model turn"
                 );
                 self.model_active = true;
+                self.final_response_ready = false;
             }
             SessionEvent::ModelCompleted { response, .. } => {
                 ensure!(
@@ -149,6 +151,7 @@ impl Replay {
                     "Unexpected model response"
                 );
                 self.model_active = false;
+                self.final_response_ready = response.is_final();
                 self.calls = response.calls.clone().into();
                 self.messages.push(Message::Assistant {
                     response: response.clone(),
@@ -157,6 +160,7 @@ impl Replay {
             SessionEvent::ModelFailed { .. } => {
                 ensure!(self.model_active, "Unexpected provider failure");
                 self.model_active = false;
+                self.final_response_ready = false;
             }
             SessionEvent::ToolIntent { call_id, call } => {
                 ensure!(
@@ -190,6 +194,10 @@ impl Replay {
                     ensure!(
                         self.checkpoint_ready(),
                         "Model finish inside an unfinished group"
+                    );
+                    ensure!(
+                        self.final_response_ready,
+                        "Model finish requires a completed final response"
                     );
                 }
                 self.end = Some(reason.clone());

@@ -594,6 +594,115 @@ async fn recorded_replay_is_deterministic_preserves_budgets_and_has_no_effect_po
 }
 
 #[tokio::test]
+async fn replay_requires_a_final_response_from_the_latest_model_attempt() {
+    for case in [
+        "started",
+        "failed",
+        "empty",
+        "whitespace",
+        "length",
+        "tool_calls",
+        "tools_done",
+        "stale",
+        "valid",
+    ] {
+        let (_dir, mut engine) = setup(
+            scripted(vec![
+                response("", vec![call("a", 1)]),
+                response("Done", vec![]),
+            ]),
+            limits(),
+        );
+        run(&mut engine, &Cancellation::default()).await;
+        let mut records = engine.host.records.clone();
+        records.pop(); // Replace the engine's ending with an owner-written one.
+        match case {
+            "started" => records.truncate(1),
+            "tools_done" => {
+                let next = records
+                    .iter()
+                    .position(|r| matches!(r.event, SessionEvent::ModelStarted { turn: 2 }))
+                    .unwrap();
+                records.truncate(next);
+            }
+            "stale" => {
+                let mut next = records.last().unwrap().clone();
+                next.sequence += 1;
+                next.budget.model_turns += 1;
+                next.budget.reserved_input_tokens = 10;
+                next.budget.reserved_output_tokens = 5;
+                next.event = SessionEvent::ModelStarted {
+                    turn: next.budget.model_turns,
+                };
+                records.push(next.clone());
+                next.sequence += 1;
+                next.budget.reserved_input_tokens = 0;
+                next.budget.reserved_output_tokens = 0;
+                let usage = Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    reported: true,
+                };
+                next.budget.charge(&usage);
+                next.event = SessionEvent::ModelFailed {
+                    retryable: false,
+                    usage,
+                };
+                records.push(next);
+            }
+            "valid" => (),
+            _ => {
+                let record = records.last_mut().unwrap();
+                let SessionEvent::ModelCompleted { response, usage } = &mut record.event else {
+                    panic!("Expected final response")
+                };
+                match case {
+                    "failed" => {
+                        record.event = SessionEvent::ModelFailed {
+                            retryable: false,
+                            usage: usage.clone(),
+                        }
+                    }
+                    "empty" => response.text.clear(),
+                    "whitespace" => response.text = " \t\n".into(),
+                    "length" => response.finish = FinishReason::Length,
+                    "tool_calls" => response.finish = FinishReason::ToolCalls,
+                    _ => unreachable!(),
+                }
+            }
+        }
+        // The prefix remains valid; only the fabricated successful ending is invalid.
+        Replay::from_records(&records).unwrap();
+        let mut end = records.last().unwrap().clone();
+        end.sequence += 1;
+        end.event = SessionEvent::Ended {
+            reason: EndReason::ModelFinished,
+        };
+        records.push(end);
+        assert_eq!(
+            Replay::from_records(&records).is_ok(),
+            case == "valid",
+            "{case}"
+        );
+        let directory = engine.journal.directory().to_path_buf();
+        drop(engine);
+        let mut bytes = Vec::new();
+        for record in &records {
+            serde_json::to_writer(&mut bytes, record).unwrap();
+            bytes.push(b'\n');
+        }
+        let path = directory.join("events.jsonl");
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            FileJournal::recover(&directory, Quotas::default()).is_ok(),
+            case == "valid",
+            "{case}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[tokio::test]
 async fn truncated_or_duplicate_call_responses_never_execute() {
     for truncated in [false, true] {
         let mut event = response("Partial", vec![call("duplicate", 1), call("duplicate", 2)]);

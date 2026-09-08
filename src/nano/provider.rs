@@ -32,6 +32,12 @@ pub(crate) struct ModelResponse {
     pub continuation: Option<serde_json::Value>,
 }
 
+impl ModelResponse {
+    pub(crate) fn is_final(&self) -> bool {
+        self.finish == FinishReason::Stop && self.calls.is_empty() && !self.text.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub(crate) enum Message {
