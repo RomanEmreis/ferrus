@@ -2,7 +2,9 @@
 
 use super::{
     journal::{Journal, encode, valid_id},
-    provider::{FinishReason, Message, ModelRequest, Provider, ProviderEvent, Usage},
+    provider::{
+        FinishReason, Message, ModelRequest, Provider, ProviderErrorKind, ProviderEvent, Usage,
+    },
     session::{
         Budget, EndReason, LimitKind, Limits, SessionCommand, SessionEnd, SessionEvent,
         SessionIdentity,
@@ -92,6 +94,7 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
             identity: self.identity.clone(),
             limits: self.limits.clone(),
             input: input.clone(),
+            provider: self.provider.settings().map(Box::new),
         }) {
             return Ok(self.journal_failure());
         }
@@ -99,6 +102,7 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
         self.messages.push(Message::User { text: input });
 
         let reason = self.drive(cancellation, deadline).await;
+        self.provider.cancel();
         if reason == EndReason::JournalFailed {
             return Ok(self.journal_failure());
         }
@@ -217,14 +221,37 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
                     if retry {
                         self.budget.retries += 1;
                     }
-                    if !self.record_model_failure(error.retryable) {
+                    if !self.record_failure(error.retryable, Some(error.kind.clone())) {
                         return EndReason::JournalFailed;
                     }
                     if !error.retryable {
-                        return EndReason::ProviderFailed;
+                        return match error.kind {
+                            ProviderErrorKind::ContextOverflow => {
+                                EndReason::Limit(LimitKind::ContextTokens)
+                            }
+                            ProviderErrorKind::ResponseLimit => {
+                                EndReason::Limit(LimitKind::ResponseBytes)
+                            }
+                            ProviderErrorKind::Protocol | ProviderErrorKind::Unsupported => {
+                                EndReason::ProviderProtocol
+                            }
+                            _ => EndReason::ProviderFailed,
+                        };
                     }
                     if !retry {
                         return EndReason::Limit(LimitKind::Retries);
+                    }
+                    let backoff = (250u64.saturating_mul(1 << self.budget.retries.min(6)))
+                        .max(error.retry_after_ms)
+                        .min(30_000);
+                    if let Err(reason) = interrupt(
+                        tokio::time::sleep(Duration::from_millis(backoff)),
+                        cancellation,
+                        deadline,
+                    )
+                    .await
+                    {
+                        return reason;
                     }
                     continue;
                 }
@@ -422,6 +449,10 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
     }
 
     fn record_model_failure(&mut self, retryable: bool) -> bool {
+        self.record_failure(retryable, None)
+    }
+
+    fn record_failure(&mut self, retryable: bool, error: Option<ProviderErrorKind>) -> bool {
         let usage = Usage {
             input_tokens: self.budget.reserved_input_tokens,
             output_tokens: self.budget.reserved_output_tokens,
@@ -432,7 +463,11 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
         self.budget.reserved_output_tokens = 0;
         self.budget.charge(&usage);
 
-        self.commit(SessionEvent::ModelFailed { retryable, usage })
+        self.commit(SessionEvent::ModelFailed {
+            retryable,
+            usage,
+            error,
+        })
     }
 
     fn stop(&self, cancellation: &Cancellation, deadline: Instant) -> Option<EndReason> {

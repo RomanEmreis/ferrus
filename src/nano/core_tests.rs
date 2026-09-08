@@ -31,7 +31,7 @@ impl Provider for ScriptedProvider {
         self.active = self
             .turns
             .pop_front()
-            .unwrap_or(Err(ProviderError { retryable: false }))?;
+            .unwrap_or(Err(ProviderError::new(ProviderErrorKind::Transport, false)))?;
         Ok(())
     }
 
@@ -404,7 +404,8 @@ async fn turn_tool_token_retry_and_context_limits_are_enforced() {
             LimitKind::Tokens => budget.tokens = 1,
             LimitKind::Retries => {
                 budget.retries = 0;
-                provider.turns = VecDeque::from([Err(ProviderError { retryable: true })]);
+                provider.turns =
+                    VecDeque::from([Err(ProviderError::new(ProviderErrorKind::Transport, true))]);
             }
             LimitKind::ContextBytes => budget.context_bytes = 1,
             LimitKind::ResponseBytes => budget.response_bytes = 1,
@@ -426,7 +427,7 @@ async fn retries_charge_estimates_and_successful_usage_stays_distinct() {
     let mut provider = scripted(vec![response("Done", vec![])]);
     provider
         .turns
-        .push_front(Err(ProviderError { retryable: true }));
+        .push_front(Err(ProviderError::new(ProviderErrorKind::Transport, true)));
     let (_dir, mut engine) = setup(provider, limits());
     let end = run(&mut engine, &Cancellation::default()).await;
     assert_eq!(end.reason, EndReason::ModelFinished);
@@ -645,6 +646,7 @@ async fn replay_requires_a_final_response_from_the_latest_model_attempt() {
                 };
                 next.budget.charge(&usage);
                 next.event = SessionEvent::ModelFailed {
+                    error: None,
                     retryable: false,
                     usage,
                 };
@@ -659,6 +661,7 @@ async fn replay_requires_a_final_response_from_the_latest_model_attempt() {
                 match case {
                     "failed" => {
                         record.event = SessionEvent::ModelFailed {
+                            error: None,
                             retryable: false,
                             usage: usage.clone(),
                         }

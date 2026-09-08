@@ -1,7 +1,8 @@
 # Nano Session Engine and Journal
 
-Status: implemented foundation for #74. There is no live provider, CLI command, HQ launcher,
-or automatic effect resume in this slice. See the [architecture and PR index](ferrus-nano-architecture.md).
+Status: implemented foundation for #74. #75 adds an opt-in
+[Chat Completions provider](ferrus-nano-provider.md). CLI commands, HQ launch, and automatic
+effect resume remain later work. See the [architecture and PR index](ferrus-nano-architecture.md).
 
 ## Boundaries
 

@@ -23,6 +23,7 @@ fn started(journal: &mut FileJournal) -> Record {
     journal
         .append(
             SessionEvent::Started {
+                provider: None,
                 identity: SessionIdentity {
                     session_id: "s-1".into(),
                     project_id: "p-1".into(),
@@ -494,6 +495,7 @@ fn record_and_total_byte_quotas_fail_before_writing() {
             journal
                 .append(
                     SessionEvent::Started {
+                        provider: None,
                         identity: SessionIdentity {
                             session_id: "s-1".into(),
                             project_id: "p".into(),

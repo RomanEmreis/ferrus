@@ -1,12 +1,12 @@
 # Ferrus Nano: Native Agent Harness
 
-Status: accepted implementation plan, updated 2026-09-07. The #73 managed-session binding and
-#74 bounded engine/journal are implemented; live providers, launcher, and later slices remain planned. No measured
-performance claim.
+Status: accepted implementation plan, updated 2026-09-08. The #73 managed-session binding,
+#74 bounded engine/journal, and #75 opt-in Chat Completions adapter are implemented. Live model
+validation, launcher, and later slices remain planned. No measured performance claim.
 
 Working product name: `ferrus-nano`. Ferrus backend name: `nano`.
 
-Related documents: [session engine and journal](ferrus-nano-sessions.md), [roadmap](milestones.md), [repository graph](repository-graph-architecture.md),
+Related documents: [session engine and journal](ferrus-nano-sessions.md), [first provider](ferrus-nano-provider.md), [roadmap](milestones.md), [repository graph](repository-graph-architecture.md),
 [project memory](project-memory-architecture.md).
 
 ## 1. Decision
@@ -62,7 +62,7 @@ Audit base: Ferrus commit `4f52783d6f5efa64ea1a2adf48b55c8b27c565be`.
 | Agent adapters | `ExecutorAgent` and `SupervisorAgent`, model overrides, stdin prompts | Executor-only/headless-only capability declarations; native registration |
 | UI | Crossterm HQ, `UiMessage`, transcript and question handling | A session-event adapter and, later, a conversation view |
 | MCP | neva 0.5.6 with `server`, `di`, `legacy-spec` | Add client features for external tools, preserve protocol compatibility |
-| Agent engine | Sequential bounded core, provider/tool/host interfaces, durable journal, pure replay, and scripted tests | Live provider adapter, managed tool wiring, compaction, and live resume |
+| Agent engine | Sequential bounded core, provider/tool/host interfaces, durable journal, pure replay, and scripted tests | Live model validation, managed tool wiring, compaction, and live resume |
 | Instructions | Ferrus role prompts, project guidance, and embedded skill templates | A bounded native instruction loader with explicit precedence and provenance |
 | Coding tools | Graph source readers, check runner and process primitives | General bounded reads/search, patch editing, command sessions |
 
@@ -208,10 +208,11 @@ usage, context limits, and provider-specific continuation data. Keep provider wi
 adapters; preserve opaque signed/reasoning blocks where the provider requires them. Do not invent
 a common format that silently loses tool-call IDs or continuation requirements.
 
-Choose one real provider for the first end-to-end slice, plus a scripted provider for tests. The
-first production provider is still open. A second adapter is a later compatibility check, not a
-prerequisite for the engine. An OpenAI-compatible endpoint is a candidate adapter, not a guarantee
-that local servers implement identical tool calling, streaming, usage, or context limits.
+The first adapter targets LM Studio through OpenAI-compatible Chat Completions streaming,
+with optional Bearer authentication. See [provider configuration and verification](ferrus-nano-provider.md).
+A scripted provider remains available for engine tests. A second adapter is a later compatibility
+check; compatible endpoints still require explicit validation of tool calling, streaming, usage,
+and context limits with the selected model.
 
 Load credentials through host configuration or environment references. Keep credentials out of
 project files, command arguments, transcript events, tool children, and MCP child environments.
@@ -657,8 +658,7 @@ Read on 2026-09-06. These are sources for design ideas, not dependencies or copi
 
 ## 16. Decisions still open
 
-- First production provider/model and its credential configuration. The engine contract can be
-  designed now; select and test the wire adapter before claiming N1 complete.
+- Validate the first loaded model against the opt-in LM Studio smoke test before claiming N1 complete.
 - Concrete token/time/output defaults, calibrated with the task suite rather than guessed savings.
 - Which platform gets the first enforced command sandbox after the trusted-local MVP.
 - Whether standalone first ships a shared terminal UI or a headless executable before that UI.
