@@ -1,0 +1,212 @@
+//! Pure journal replay. It has no provider, tool, filesystem, or Ferrus effect ports.
+
+use super::{
+    provider::Message,
+    session::{Budget, EndReason, Record, SessionEvent},
+    tools::{ToolCall, ToolOutcome},
+};
+use anyhow::{Result, ensure};
+use std::collections::VecDeque;
+
+pub(crate) const JOURNAL_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Replay {
+    pub sequence: u64,
+    pub session_id: String,
+    pub budget: Budget,
+    pub messages: Vec<Message>,
+    pub end: Option<EndReason>,
+    pub pending_effect: Option<String>,
+    pub unknown_effects: Vec<String>,
+    model_active: bool,
+    final_response_ready: bool,
+    calls: VecDeque<ToolCall>,
+}
+
+impl Replay {
+    pub(crate) fn from_records(records: &[Record]) -> Result<Self> {
+        let mut state = Self::default();
+        for record in records {
+            state.apply(record)?;
+        }
+
+        Ok(state)
+    }
+
+    pub(crate) fn checkpoint_ready(&self) -> bool {
+        self.sequence > 0
+            && !self.model_active
+            && self.pending_effect.is_none()
+            && self.calls.is_empty()
+    }
+
+    pub(crate) fn apply(&mut self, record: &Record) -> Result<()> {
+        ensure!(
+            record.version == JOURNAL_VERSION,
+            "Unsupported nano journal version"
+        );
+
+        ensure!(
+            record.sequence == self.sequence + 1,
+            "Non-contiguous journal sequence"
+        );
+
+        ensure!(self.end.is_none(), "Event after session end");
+
+        if self.sequence == 0 {
+            ensure!(
+                matches!(&record.event, SessionEvent::Started { identity, .. } if identity.session_id == record.session_id),
+                "Journal must start with its session identity"
+            );
+            self.session_id = record.session_id.clone();
+        }
+
+        ensure!(
+            self.session_id == record.session_id,
+            "Journal session mismatch"
+        );
+
+        let before = &self.budget;
+        let after = &record.budget;
+
+        ensure!(
+            after.model_turns >= before.model_turns
+                && after.tool_calls >= before.tool_calls
+                && after.retries >= before.retries
+                && after.elapsed_ms >= before.elapsed_ms
+                && after.reported_input_tokens >= before.reported_input_tokens
+                && after.reported_output_tokens >= before.reported_output_tokens
+                && after.estimated_input_tokens >= before.estimated_input_tokens
+                && after.estimated_output_tokens >= before.estimated_output_tokens,
+            "Budget consumption regressed"
+        );
+
+        let mut expected = before.clone();
+        expected.elapsed_ms = after.elapsed_ms;
+        expected.no_progress = after.no_progress;
+
+        match &record.event {
+            SessionEvent::ModelStarted { .. } => {
+                ensure!(
+                    before.reserved_input_tokens == 0
+                        && before.reserved_output_tokens == 0
+                        && after.reserved_input_tokens > 0
+                        && after.reserved_output_tokens > 0,
+                    "Invalid provider usage reservation"
+                );
+                expected.model_turns += 1;
+                expected.reserved_input_tokens = after.reserved_input_tokens;
+                expected.reserved_output_tokens = after.reserved_output_tokens;
+            }
+            SessionEvent::ModelCompleted { usage, .. }
+            | SessionEvent::ModelFailed { usage, .. } => {
+                expected.reserved_input_tokens = 0;
+                expected.reserved_output_tokens = 0;
+                expected.charge(usage);
+                if let SessionEvent::ModelFailed { retryable, .. } = &record.event {
+                    ensure!(
+                        after.retries == before.retries
+                            || (*retryable && after.retries == before.retries + 1),
+                        "Invalid retry charge"
+                    );
+                    expected.retries = after.retries;
+                }
+            }
+            SessionEvent::ToolIntent { .. } => expected.tool_calls += 1,
+            _ => (),
+        }
+
+        ensure!(
+            &expected == after,
+            "Budget does not match recorded consumption"
+        );
+
+        match &record.event {
+            SessionEvent::Started { limits, input, .. } => {
+                ensure!(
+                    self.sequence == 0 && after == &Budget::default(),
+                    "Duplicate or charged session start"
+                );
+                limits.validate()?;
+                self.messages.push(Message::User {
+                    text: input.clone(),
+                });
+            }
+            SessionEvent::ModelStarted { turn } => {
+                ensure!(
+                    self.checkpoint_ready() && self.end.is_none(),
+                    "Model started inside an unfinished group"
+                );
+                ensure!(
+                    *turn == before.model_turns + 1 && after.model_turns == *turn,
+                    "Invalid model turn"
+                );
+                self.model_active = true;
+                self.final_response_ready = false;
+            }
+            SessionEvent::ModelCompleted { response, .. } => {
+                ensure!(
+                    self.model_active && self.calls.is_empty(),
+                    "Unexpected model response"
+                );
+                self.model_active = false;
+                self.final_response_ready = response.is_final();
+                self.calls = response.calls.clone().into();
+                self.messages.push(Message::Assistant {
+                    response: response.clone(),
+                });
+            }
+            SessionEvent::ModelFailed { .. } => {
+                ensure!(self.model_active, "Unexpected provider failure");
+                self.model_active = false;
+                self.final_response_ready = false;
+            }
+            SessionEvent::ToolIntent { call_id, call } => {
+                ensure!(
+                    self.pending_effect.is_none() && self.calls.front() == Some(call),
+                    "Tool intent out of model order"
+                );
+                ensure!(
+                    after.tool_calls == before.tool_calls + 1
+                        && *call_id == format!("call-{}", after.tool_calls),
+                    "Invalid tool call ID"
+                );
+                self.pending_effect = Some(call_id.clone());
+            }
+            SessionEvent::ToolResult { call_id, outcome } => {
+                ensure!(
+                    self.pending_effect.as_ref() == Some(call_id),
+                    "Tool result has no matching intent"
+                );
+                let call = self.calls.pop_front().expect("intent checked call queue");
+                self.messages.push(Message::Tool {
+                    provider_call_id: call.provider_call_id,
+                    outcome: outcome.clone(),
+                });
+                if matches!(outcome, ToolOutcome::Unknown(_)) {
+                    self.unknown_effects.push(call_id.clone());
+                }
+                self.pending_effect = None;
+            }
+            SessionEvent::Ended { reason } => {
+                if *reason == EndReason::ModelFinished {
+                    ensure!(
+                        self.checkpoint_ready(),
+                        "Model finish inside an unfinished group"
+                    );
+                    ensure!(
+                        self.final_response_ready,
+                        "Model finish requires a completed final response"
+                    );
+                }
+                self.end = Some(reason.clone());
+            }
+        }
+
+        self.budget = record.budget.clone();
+        self.sequence = record.sequence;
+
+        Ok(())
+    }
+}

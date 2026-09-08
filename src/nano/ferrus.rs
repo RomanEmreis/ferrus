@@ -33,6 +33,7 @@ impl LaunchContext {
                 .filter(|value| !value.trim().is_empty())
                 .with_context(|| format!("Missing managed launch context: {key}"))
         };
+
         let baseline_tree = get(ENV_BASELINE_TREE);
         ensure!(
             baseline_tree
@@ -40,6 +41,7 @@ impl LaunchContext {
                 .is_none_or(|value| !value.trim().is_empty()),
             "Empty managed baseline tree"
         );
+
         Ok(Self {
             project_root: PathBuf::from(required(ENV_PROJECT_ROOT)?),
             workspace,
@@ -69,10 +71,12 @@ impl FerrusSession {
                 && !launch.run_id.trim().is_empty(),
             "Missing managed launch identity"
         );
+
         ensure!(
             launch.project_root.is_absolute() && launch.workspace.is_absolute(),
             "Managed launch paths must be absolute"
         );
+
         let project_root = tokio::fs::canonicalize(&launch.project_root).await?;
         let workspace = tokio::fs::canonicalize(&launch.workspace).await?;
         let registration = project::read_project_registration_at(&project_root).await?;
@@ -91,10 +95,12 @@ impl FerrusSession {
                 && !launch.task_id.contains(['/', '\\']),
             "Invalid managed task ID"
         );
+
         let baseline_path = registration
             .data_dir
             .join("worktrees/.baseline-trees")
             .join(format!("{}.txt", launch.task_id));
+
         let session = Self {
             scope: ExecutorSessionScope {
                 database_path: registration.database_path,
@@ -109,6 +115,7 @@ impl FerrusSession {
             baseline_tree: launch.baseline_tree,
             baseline_path,
         };
+
         session.status().await?;
         Ok(session)
     }
@@ -116,9 +123,11 @@ impl FerrusSession {
     pub(crate) fn project_id(&self) -> &str {
         &self.project_id
     }
+
     pub(crate) fn project_root(&self) -> &std::path::Path {
         &self.project_root
     }
+
     pub(crate) fn baseline_tree(&self) -> Option<&str> {
         self.baseline_tree.as_deref()
     }
@@ -147,6 +156,7 @@ impl FerrusSession {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
+
         ensure!(
             recorded.as_ref().is_none_or(|value| !value.is_empty())
                 && recorded == self.baseline_tree,
@@ -159,6 +169,7 @@ impl FerrusSession {
                     && !tokio::fs::try_exists(self.project_root.join(".git")).await?),
             "Managed Git workspace requires a baseline tree"
         );
+
         Ok(())
     }
 }
