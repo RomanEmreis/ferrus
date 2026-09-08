@@ -546,7 +546,10 @@ async fn journal_failures_stop_unrecorded_effects_and_uncommitted_acknowledgment
             journal.state().pending_effect.as_deref(),
             after_effect.then_some("call-1")
         );
-        assert!(Replay::from_records(&records).unwrap().end.is_none());
+        assert_eq!(
+            Replay::from_records(&records).unwrap().end,
+            Some(EndReason::Limit(LimitKind::Elapsed))
+        );
     }
 }
 

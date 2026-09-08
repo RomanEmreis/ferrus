@@ -92,6 +92,14 @@ fn model_group(journal: &mut FileJournal) -> (Budget, Vec<ToolCall>) {
 fn interrupted_tail_is_removed_but_complete_corruption_is_not_rewritten() {
     let (_dir, mut journal) = create(Quotas::default());
     let record = started(&mut journal);
+    let ended = journal
+        .append(
+            SessionEvent::Ended {
+                reason: EndReason::Cancelled,
+            },
+            &Budget::default(),
+        )
+        .unwrap();
     let directory = journal.directory().to_path_buf();
     let path = directory.join("events.jsonl");
     let size = fs::metadata(&path).unwrap().len();
@@ -103,7 +111,7 @@ fn interrupted_tail_is_removed_but_complete_corruption_is_not_rewritten() {
         .write_all(b"{\"version\":1")
         .unwrap();
     let (journal, records) = FileJournal::recover(&directory, Quotas::default()).unwrap();
-    assert_eq!(records, [record]);
+    assert_eq!(records, [record, ended]);
     assert_eq!(fs::metadata(&path).unwrap().len(), size);
     drop(journal);
     OpenOptions::new()
@@ -214,6 +222,135 @@ fn crash_during_model_request_preserves_reserved_usage_and_pending_tool_is_not_r
     let (journal, _) = FileJournal::recover(&directory, Quotas::default()).unwrap();
     assert_eq!(journal.state().budget.tokens(), 60);
     assert!(!journal.state().checkpoint_ready());
+}
+
+#[test]
+fn recovery_charges_unfinished_elapsed_budget_once_and_preserves_pending_work() {
+    for phase in [
+        "started",
+        "provider",
+        "overrun",
+        "tool",
+        "checkpoint",
+        "ended",
+    ] {
+        let (_dir, mut journal) = create(Quotas::default());
+        started(&mut journal);
+        let mut budget = Budget::default();
+        match phase {
+            "provider" | "overrun" => {
+                budget.model_turns = 1;
+                budget.reserved_input_tokens = 12;
+                budget.reserved_output_tokens = 48;
+                budget.elapsed_ms = if phase == "overrun" {
+                    Limits::default().elapsed_ms + 1
+                } else {
+                    10
+                };
+                journal
+                    .append(SessionEvent::ModelStarted { turn: 1 }, &budget)
+                    .unwrap();
+            }
+            "tool" => {
+                let (model_budget, calls) = model_group(&mut journal);
+                budget = model_budget;
+                budget.tool_calls = 1;
+                budget.elapsed_ms = 20;
+                journal
+                    .append(
+                        SessionEvent::ToolIntent {
+                            call_id: "call-1".into(),
+                            call: calls[0].clone(),
+                        },
+                        &budget,
+                    )
+                    .unwrap();
+            }
+            "checkpoint" => journal.checkpoint().unwrap(),
+            "ended" => {
+                budget.elapsed_ms = 30;
+                journal
+                    .append(
+                        SessionEvent::Ended {
+                            reason: EndReason::Cancelled,
+                        },
+                        &budget,
+                    )
+                    .unwrap();
+            }
+            _ => (),
+        }
+        let directory = journal.directory().to_path_buf();
+        let prefix = fs::read(directory.join("events.jsonl")).unwrap();
+        drop(journal);
+
+        let (mut journal, records) = FileJournal::recover(&directory, Quotas::default()).unwrap();
+        let reason = if phase == "ended" {
+            EndReason::Cancelled
+        } else {
+            budget.elapsed_ms = budget.elapsed_ms.max(Limits::default().elapsed_ms);
+            EndReason::Limit(LimitKind::Elapsed)
+        };
+        assert_eq!(journal.state().budget, budget, "{phase}");
+        assert_eq!(journal.state().end, Some(reason.clone()), "{phase}");
+        assert_eq!(
+            journal.state().pending_effect.as_deref(),
+            (phase == "tool").then_some("call-1")
+        );
+        assert_eq!(
+            super::replay::Replay::from_records(&records)
+                .unwrap()
+                .budget,
+            budget
+        );
+        assert!(
+            journal
+                .append(SessionEvent::ModelStarted { turn: 2 }, &budget)
+                .is_err()
+        );
+        let recovered = fs::read(directory.join("events.jsonl")).unwrap();
+        assert!(recovered.starts_with(&prefix));
+        drop(journal);
+        let (journal, repeated) = FileJournal::recover(&directory, Quotas::default()).unwrap();
+        assert_eq!(repeated, records);
+        assert_eq!(journal.state().end, Some(reason));
+        assert_eq!(fs::read(directory.join("events.jsonl")).unwrap(), recovered);
+    }
+}
+
+#[test]
+fn recovery_fails_if_the_elapsed_charge_cannot_be_persisted() {
+    let (_dir, mut journal) = create(Quotas::default());
+    started(&mut journal);
+    let directory = journal.directory().to_path_buf();
+    let path = directory.join("events.jsonl");
+    let prefix = fs::read(&path).unwrap();
+    drop(journal);
+
+    let quotas = Quotas {
+        journal_bytes: prefix.len() as u64,
+        ..Default::default()
+    };
+    assert!(FileJournal::recover(&directory, quotas).is_err());
+    assert_eq!(fs::read(&path).unwrap(), prefix);
+
+    // A torn recovery ending is retried from the same committed budget.
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"{\"version\":1")
+        .unwrap();
+    let (journal, records) = FileJournal::recover(&directory, Quotas::default()).unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        journal.state().budget.elapsed_ms,
+        Limits::default().elapsed_ms
+    );
+    assert_eq!(
+        journal.state().end,
+        Some(EndReason::Limit(LimitKind::Elapsed))
+    );
 }
 
 #[test]

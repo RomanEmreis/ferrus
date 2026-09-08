@@ -75,6 +75,13 @@ reservation as estimated usage, since actual billing is unknown. Counters, reser
 no-progress count, and elapsed time are persisted with records and checkpoints. Recovery does not
 reset budgets or treat estimates as provider billing data.
 
+The active attempt uses a process-local monotonic clock. After a crash, time since the last
+committed record is unknown. Recovery conservatively consumes the remaining elapsed allowance
+and durably ends an unfinished attempt with `Limit(Elapsed)`, including one at a complete
+checkpoint. This charge is a recovery bound, not a measured duration. Pending effects and token
+reservations remain available for reconciliation. Continuing work requires a new session;
+reopening an already ended session preserves its recorded duration and reason.
+
 ## Storage and recovery
 
 The host passes the registered machine-local project data directory:
@@ -106,6 +113,8 @@ copies; #82 and #84 add compaction and live recovery.
 `FileJournal::recover` acquires the writer lock, enforces quotas, validates version/identity/order,
 and removes only an unterminated final line. A malformed newline-terminated record is an error.
 It returns recorded state, pending intents, and unknown effects without invoking tools or providers.
+For an unfinished attempt it appends the elapsed-budget charge and ending before returning; if
+that write fails, recovery fails. Repeated recovery preserves the same ending and budget.
 `Replay::from_records` is pure and reconstructs messages, ordering, and budget state from recorded
 inputs; it has no external effect ports.
 

@@ -3,7 +3,7 @@
 use super::{
     private,
     replay::{JOURNAL_VERSION, Replay},
-    session::{Budget, Record, SessionEvent},
+    session::{Budget, EndReason, LimitKind, Record, SessionEvent},
 };
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -161,6 +161,7 @@ impl FileJournal {
     }
 
     /// Repair only an unterminated final line. Complete corrupt records fail closed.
+    /// Charge the remaining elapsed budget and end any interrupted attempt durably.
     /// Opening a journal never executes or resumes recorded effects.
     pub(crate) fn recover(directory: &Path, quotas: Quotas) -> Result<(Self, Vec<Record>)> {
         private::check(directory, true)?;
@@ -233,22 +234,41 @@ impl FileJournal {
 
         file.seek(SeekFrom::End(0))?;
 
-        Ok((
-            Self {
-                directory: directory.to_path_buf(),
-                _lock: lock,
-                file,
-                quotas,
-                state,
-                session_id,
-                journal_bytes: committed_bytes,
-                total_bytes,
-                files,
-                digest,
-                poisoned: false,
-            },
-            records,
-        ))
+        let mut journal = Self {
+            directory: directory.to_path_buf(),
+            _lock: lock,
+            file,
+            quotas,
+            state,
+            session_id,
+            journal_bytes: committed_bytes,
+            total_bytes,
+            files,
+            digest,
+            poisoned: false,
+        };
+
+        if journal.state.end.is_none()
+            && let Some(Record {
+                event: SessionEvent::Started { limits, .. },
+                ..
+            }) = records.first()
+        {
+            // The process-local clock cannot account for an uncommitted wait.
+            // Exhaust the remaining allowance even at a complete checkpoint;
+            // keep pending effects and token reservations for reconciliation.
+            let mut budget = journal.state.budget.clone();
+            budget.elapsed_ms = budget.elapsed_ms.max(limits.elapsed_ms);
+
+            records.push(journal.append(
+                SessionEvent::Ended {
+                    reason: EndReason::Limit(LimitKind::Elapsed),
+                },
+                &budget,
+            )?);
+        }
+
+        Ok((journal, records))
     }
 
     pub(crate) fn state(&self) -> &Replay {
