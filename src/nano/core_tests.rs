@@ -449,7 +449,7 @@ async fn cancellation_before_authorization_never_starts_an_effect() {
     assert!(engine.journal.state().unknown_effects.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cancellation_or_deadline_during_an_effect_records_unknown_outcome() {
     for cancel in [false, true] {
         let mut budget = limits();
@@ -484,8 +484,8 @@ async fn cancellation_or_deadline_during_an_effect_records_unknown_outcome() {
     }
 }
 
-#[tokio::test]
-async fn stalled_provider_is_cancellable_and_cannot_hide_elapsed_budget() {
+#[tokio::test(start_paused = true)]
+async fn stalled_provider_cannot_hide_elapsed_budget() {
     let mut budget = limits();
     budget.elapsed_ms = 20;
     let provider = ScriptedProvider {
@@ -497,6 +497,7 @@ async fn stalled_provider_is_cancellable_and_cannot_hide_elapsed_budget() {
     let end = run(&mut engine, &Cancellation::default()).await;
     assert_eq!(end.reason, EndReason::Limit(LimitKind::Elapsed));
     assert!(end.budget.elapsed_ms >= 20);
+    assert_eq!(engine.provider.requests.len(), 1);
     assert!(end.budget.estimated_input_tokens > 0);
 }
 

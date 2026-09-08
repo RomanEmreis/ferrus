@@ -236,6 +236,64 @@ fn bounded_artifacts_are_immutable_and_session_quotas_include_checkpoints() {
 }
 
 #[test]
+fn recovery_enforces_per_file_quotas_for_outputs_and_checkpoints() {
+    for checkpoint in [false, true] {
+        for lower_quota in [false, true] {
+            let mut quotas = Quotas {
+                artifact_bytes: 1024,
+                record_bytes: 2048,
+                ..Default::default()
+            };
+            let (_dir, mut journal) = create(quotas.clone());
+            started(&mut journal);
+            let directory = journal.directory().to_path_buf();
+            let (path, limit, error) = if checkpoint {
+                journal.checkpoint().unwrap();
+                (
+                    directory.join("checkpoints/1.json"),
+                    quotas.record_bytes,
+                    "Checkpoint exceeds quota",
+                )
+            } else {
+                (
+                    journal.artifact("output-1", b"private").unwrap(),
+                    quotas.artifact_bytes,
+                    "Artifact exceeds quota",
+                )
+            };
+            drop(journal);
+
+            // Whitespace padding keeps checkpoint JSON valid and makes its size
+            // larger than the journal record, isolating the checkpoint quota.
+            let mut bytes = fs::read(&path).unwrap();
+            bytes.resize(limit, b' ');
+            fs::write(&path, &bytes).unwrap();
+            drop(FileJournal::recover(&directory, quotas.clone()).unwrap());
+
+            if lower_quota {
+                if checkpoint {
+                    quotas.record_bytes -= 1;
+                } else {
+                    quotas.artifact_bytes -= 1;
+                }
+            } else {
+                bytes.push(b' ');
+                fs::write(&path, &bytes).unwrap();
+            }
+
+            let result = FileJournal::recover(&directory, quotas);
+            assert_eq!(
+                result.err().expect("Oversized file accepted").to_string(),
+                error
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            // A quota rejection must release the writer lock for a later reopen.
+            assert!(FileJournal::recover(&directory, Quotas::default()).is_ok());
+        }
+    }
+}
+
+#[test]
 fn record_and_total_byte_quotas_fail_before_writing() {
     for quotas in [
         Quotas {

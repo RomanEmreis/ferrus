@@ -406,10 +406,16 @@ fn measure(directory: &Path, quotas: &Quotas) -> Result<(u64, usize)> {
     let mut bytes = 0u64;
     let mut files = 0;
 
-    for dir in [
-        directory.to_path_buf(),
-        directory.join("outputs"),
-        directory.join("checkpoints"),
+    for (dir, per_file_quota) in [
+        (directory.to_path_buf(), None),
+        (
+            directory.join("outputs"),
+            Some((quotas.artifact_bytes, "Artifact exceeds quota")),
+        ),
+        (
+            directory.join("checkpoints"),
+            Some((quotas.record_bytes, "Checkpoint exceeds quota")),
+        ),
     ] {
         private::check(&dir, true)?;
         for entry in fs::read_dir(&dir)? {
@@ -423,8 +429,15 @@ fn measure(directory: &Path, quotas: &Quotas) -> Result<(u64, usize)> {
                 continue;
             }
             private::check(&path, false)?;
+
+            let size = fs::metadata(path)?.len();
+            if let Some((limit, message)) = per_file_quota {
+                ensure!(size <= limit as u64, "{message}");
+            }
+
             files += 1;
-            bytes = bytes.saturating_add(fs::metadata(path)?.len());
+            bytes = bytes.saturating_add(size);
+
             ensure!(
                 files <= quotas.files && bytes <= quotas.total_bytes,
                 "Session storage exceeds quota"
