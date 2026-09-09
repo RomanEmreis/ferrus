@@ -265,6 +265,34 @@ async fn context_overflow_ends_the_session_without_retrying_or_executing_tools()
 }
 
 #[test]
+fn advertised_tools_are_bounded_by_context_not_generated_call_count() {
+    for max_tool_calls in [1, 64] {
+        let mut cfg = config("http://127.0.0.1:1234/v1");
+        cfg.max_tool_calls = max_tool_calls;
+        let context_tokens = cfg.context_tokens;
+        let provider = OpenAi::new(cfg).unwrap();
+        let mut request = request();
+        request.tools = (0..=max_tool_calls)
+            .map(|index| ToolDescriptor {
+                name: format!("lookup_{index}"),
+                ..request.tools[0].clone()
+            })
+            .collect();
+        let body: Value = serde_json::from_slice(&provider.body(request.clone()).unwrap()).unwrap();
+        assert_eq!(body["tools"].as_array().unwrap().len(), max_tool_calls + 1);
+        for (tool, advertised) in request.tools.iter().zip(body["tools"].as_array().unwrap()) {
+            assert_eq!(advertised["function"]["name"], tool.name);
+            assert_eq!(advertised["function"]["parameters"], tool.input_schema);
+        }
+        request.tools[0].description = "x".repeat(context_tokens as usize);
+        assert_eq!(
+            provider.body(request).unwrap_err().kind,
+            ProviderErrorKind::ContextOverflow
+        );
+    }
+}
+
+#[test]
 fn configuration_and_transport_bounds_fail_explicitly() {
     for url in [
         "http://example.com/v1",
@@ -283,6 +311,12 @@ fn configuration_and_transport_bounds_fail_explicitly() {
         ProviderErrorKind::ContextOverflow
     );
     let mut settings = config("http://127.0.0.1:1234/v1").validate().unwrap().1;
+    settings.max_tool_calls = 1;
+    let mut decoder = Decoder::new(settings.clone());
+    assert_eq!(
+        decoder.push(TOOLS.as_bytes()).unwrap_err().kind,
+        ProviderErrorKind::ResponseLimit
+    );
     settings.event_bytes = 256;
     let mut decoder = Decoder::new(settings.clone());
     assert_eq!(

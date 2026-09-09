@@ -99,10 +99,6 @@ impl OpenAi {
         }
 
         if !request.tools.is_empty() {
-            if request.tools.len() > self.settings.max_tool_calls {
-                return Err(error(ProviderErrorKind::ResponseLimit));
-            }
-
             body["tools"] = Value::Array(request.tools.into_iter().map(|tool| json!({
                 "type":"function", "function":{"name":tool.name,"description":tool.description,"parameters":tool.input_schema}
             })).collect());
