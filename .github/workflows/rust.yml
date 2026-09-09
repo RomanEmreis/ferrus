@@ -52,7 +52,8 @@ jobs:
         run: cargo test --locked --features nano-openai
 
       - name: Test native inference provider without update notifications
-        run: cargo test --locked --no-default-features --features nano-openai nano::
+        run: |
+          cargo test --locked --no-default-features --features nano-openai nano::
 
   smoke:
     strategy:

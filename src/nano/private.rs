@@ -35,9 +35,22 @@ pub(crate) fn file(path: &Path, create: bool) -> Result<File> {
         check(path, false)?;
     }
 
-    let file = imp::file(path, create)?;
+    let file = imp::file(path, create, true)?;
     check(path, false)?;
 
+    Ok(file)
+}
+
+/// Open a host input without write access, then validate the opened object before reading.
+pub(crate) fn read_only_file(path: &Path) -> Result<File> {
+    ensure!(
+        fs::symlink_metadata(path)?.is_file(),
+        "Unexpected host input file type"
+    );
+    let file = imp::file(path, false, false)?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "Unexpected host input file type");
+    imp::check_input(&file, &metadata)?;
     Ok(file)
 }
 
@@ -52,6 +65,10 @@ mod imp {
     };
 
     pub(super) fn check(_path: &Path, metadata: &fs::Metadata) -> Result<()> {
+        check_owner(metadata)
+    }
+
+    fn check_owner(metadata: &fs::Metadata) -> Result<()> {
         // SAFETY: geteuid has no preconditions and returns the process identity.
         ensure!(
             metadata.uid() == unsafe { libc::geteuid() }
@@ -66,10 +83,14 @@ mod imp {
         DirBuilder::new().mode(0o700).create(path)
     }
 
-    pub(super) fn file(path: &Path, create: bool) -> std::io::Result<File> {
+    pub(super) fn check_input(_file: &File, metadata: &fs::Metadata) -> Result<()> {
+        check_owner(metadata)
+    }
+
+    pub(super) fn file(path: &Path, create: bool, writable: bool) -> std::io::Result<File> {
         OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(writable)
             .create_new(create)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -89,7 +110,11 @@ mod imp {
 mod imp {
     use super::*;
     use std::{
-        os::windows::{ffi::OsStrExt, io::FromRawHandle},
+        os::windows::{
+            ffi::OsStrExt,
+            fs::MetadataExt,
+            io::{AsRawHandle, FromRawHandle},
+        },
         ptr::{null, null_mut},
     };
 
@@ -98,14 +123,15 @@ mod imp {
         Security::{
             Authorization::{
                 ConvertSecurityDescriptorToStringSecurityDescriptorW,
-                ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+                SE_FILE_OBJECT,
             },
             DACL_SECURITY_INFORMATION, GetFileSecurityW, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         },
         Storage::FileSystem::{
             CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
         },
     };
 
@@ -125,7 +151,11 @@ mod imp {
 
     fn descriptor() -> std::io::Result<Descriptor> {
         // Protected DACL: full access only for the object's owner, no inherited grants.
-        let text: Vec<u16> = "D:P(A;;FA;;;OW)\0".encode_utf16().collect();
+        descriptor_from_text("D:P(A;;FA;;;OW)")
+    }
+
+    fn descriptor_from_text(sddl: &str) -> std::io::Result<Descriptor> {
+        let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut pointer = null_mut();
 
         if unsafe {
@@ -219,7 +249,39 @@ mod imp {
         Ok(())
     }
 
-    pub(super) fn file(path: &Path, create: bool) -> std::io::Result<File> {
+    pub(super) fn check_input(file: &File, metadata: &fs::Metadata) -> Result<()> {
+        ensure!(
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+            "Host input cannot be a reparse point"
+        );
+        let mut pointer = null_mut();
+        // Inspect the opened handle so a path replacement cannot substitute another DACL.
+        let result = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut pointer,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::from_raw_os_error(result as i32).into());
+        }
+        let descriptor = Descriptor(pointer);
+        let actual = text(descriptor.0)?;
+        for expected in ["D:P(A;;FA;;;OW)", "D:P(A;;FR;;;OW)", "D:P(A;;GR;;;OW)"] {
+            if actual == text(descriptor_from_text(expected)?.0)? {
+                return Ok(());
+            }
+        }
+        anyhow::bail!("Host input must have a protected owner-only DACL")
+    }
+
+    pub(super) fn file(path: &Path, create: bool, writable: bool) -> std::io::Result<File> {
         let descriptor = descriptor()?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -230,7 +292,7 @@ mod imp {
         let handle = unsafe {
             CreateFileW(
                 wide(path).as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
+                GENERIC_READ | if writable { GENERIC_WRITE } else { 0 },
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 if create { &attributes } else { null() },
                 if create { CREATE_NEW } else { OPEN_EXISTING },

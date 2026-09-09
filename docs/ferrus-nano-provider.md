@@ -12,8 +12,8 @@ Ferrus configuration, HQ, MCP, graph, and memory paths do not load these setting
 resolve credentials, or initialize the client. No model is selected automatically.
 
 Keep the settings file outside the project, for example in your private Ferrus
-configuration directory. The loader requires an existing owner-only file (0600 on
-Unix; protected owner-only DACL on Windows). Example:
+configuration directory. The loader opens inputs read-only and requires an existing
+owner-only file (0400 or 0600 on Unix; protected owner-only DACL on Windows). Example:
 
 ```toml
 base_url = "http://127.0.0.1:1234/v1"

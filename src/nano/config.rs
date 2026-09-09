@@ -166,7 +166,7 @@ impl Config {
 }
 
 fn read_private(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let file = private::file(path, false)
+    let file = private::read_only_file(path)
         .map_err(|_| anyhow::anyhow!("Nano host file must exist and be owner-only"))?;
 
     let mut bytes = Vec::new();
