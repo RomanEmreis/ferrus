@@ -51,8 +51,9 @@ fn decode(wire: &str, stride: usize) -> Result<Vec<ProviderEvent>, ProviderError
 
 #[test]
 fn split_frames_calls_usage_and_reasoning_are_preserved() {
+    let lf = TOOLS.replace("\r\n", "\n");
     for stride in [1, 3, 8192] {
-        for wire in [TOOLS.to_owned(), TOOLS.replace('\n', "\r\n")] {
+        for wire in [lf.clone(), lf.replace('\n', "\r\n")] {
             let events = decode(&wire, stride).unwrap();
             let ProviderEvent::Completed { response, usage } = events.last().unwrap() else {
                 panic!("Missing completion")
@@ -505,37 +506,40 @@ async fn authenticated_and_anonymous_sessions_record_settings_and_usage_without_
 
 #[tokio::test]
 async fn retries_and_truncated_streams_share_budget_without_duplicate_effects() {
-    let partial = TOOLS.replace("data: [DONE]\n\n", "");
-    let (url, server) = server(vec![
-        Reply::failure(429, "rate_limit"),
-        Reply::stream(&partial),
-        Reply::stream(TOOLS),
-        Reply::stream(FINAL),
-    ])
-    .await;
-    let directory = TempDir::new().unwrap();
-    let mut engine = engine(OpenAi::new(config(&url)).unwrap(), &directory);
-    let end = engine
-        .run(
-            SessionCommand::Start {
-                input: "Use lookup".into(),
-            },
-            &Cancellation::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(end.reason, EndReason::ModelFinished);
-    assert_eq!(engine.tools.calls, 2);
-    assert_eq!(end.budget.retries, 2);
-    assert_eq!(end.budget.model_turns, 4);
-    assert!(end.budget.estimated_input_tokens > 0 && end.budget.estimated_output_tokens > 0);
-    assert!(end.budget.elapsed_ms >= 1500);
-    assert!(
-        !serde_json::to_string(&engine.host.records)
-            .unwrap()
-            .contains("secret-server-detail")
-    );
-    assert_eq!(server.await.unwrap().len(), 4);
+    let lf = TOOLS.replace("\r\n", "\n");
+    for wire in [lf.clone(), lf.replace('\n', "\r\n")] {
+        let partial = &wire[..wire.find("data: [DONE]").unwrap()];
+        let (url, server) = server(vec![
+            Reply::failure(429, "rate_limit"),
+            Reply::stream(partial),
+            Reply::stream(&wire),
+            Reply::stream(FINAL),
+        ])
+        .await;
+        let directory = TempDir::new().unwrap();
+        let mut engine = engine(OpenAi::new(config(&url)).unwrap(), &directory);
+        let end = engine
+            .run(
+                SessionCommand::Start {
+                    input: "Use lookup".into(),
+                },
+                &Cancellation::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(end.reason, EndReason::ModelFinished);
+        assert_eq!(engine.tools.calls, 2);
+        assert_eq!(end.budget.retries, 2);
+        assert_eq!(end.budget.model_turns, 4);
+        assert!(end.budget.estimated_input_tokens > 0 && end.budget.estimated_output_tokens > 0);
+        assert!(end.budget.elapsed_ms >= 1500);
+        assert!(
+            !serde_json::to_string(&engine.host.records)
+                .unwrap()
+                .contains("secret-server-detail")
+        );
+        assert_eq!(server.await.unwrap().len(), 4);
+    }
 }
 
 #[tokio::test]
