@@ -1172,9 +1172,9 @@ dependencies = [
 
 [[package]]
 name = "neva"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01dc6efd7d547724860ba419a19d5e6ade81204f7f997cf4a721cb91c4e20417"
+checksum = "0e187be89fe33a59f52bcd8a94f9a395d3ec8e7f9281d02a892e63034b0225b9"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1197,9 +1197,9 @@ dependencies = [
 
 [[package]]
 name = "neva_macros"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f8104e43d9f71bd3e1af203cbaec42d7d8cf9da40b8fb0ff01bfaeb8cf112fb"
+checksum = "a9f23561b473fb9151331ed1d40fc9480cf2dd4070c1fc428fa95d00a20c06bb"
 dependencies = [
  "proc-macro2",
  "quote",
