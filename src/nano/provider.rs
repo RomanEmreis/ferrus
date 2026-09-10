@@ -119,6 +119,7 @@ pub(crate) struct ProviderSettings {
 }
 
 pub(crate) trait Provider {
+    /// When present, the output cap also bounds the engine's per-attempt reservation.
     fn settings(&self) -> Option<ProviderSettings> {
         None
     }

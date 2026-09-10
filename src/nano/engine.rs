@@ -151,8 +151,14 @@ impl<P: Provider, T: Tools, H: Host, J: Journal> Engine<P, T, H, J> {
                 return EndReason::Limit(LimitKind::Tokens);
             }
 
-            let output_reservation =
-                (remaining - input_estimate).min(self.limits.response_bytes as u64);
+            let output_reservation = (remaining - input_estimate)
+                .min(self.limits.response_bytes as u64)
+                .min(
+                    self.provider
+                        .settings()
+                        .map_or(u64::MAX, |settings| settings.max_output_tokens),
+                );
+
             self.budget.model_turns += 1;
             self.budget.reserved_input_tokens = input_estimate;
             self.budget.reserved_output_tokens = output_reservation;

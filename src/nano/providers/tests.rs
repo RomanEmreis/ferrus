@@ -466,6 +466,22 @@ impl Host for TestHost {
 }
 
 fn engine(provider: OpenAi, directory: &TempDir) -> Engine<OpenAi, Lookup, TestHost, FileJournal> {
+    engine_with_limits(
+        provider,
+        directory,
+        Limits {
+            tokens: 1_000_000,
+            model_turns: 6,
+            ..Default::default()
+        },
+    )
+}
+
+fn engine_with_limits(
+    provider: OpenAi,
+    directory: &TempDir,
+    limits: Limits,
+) -> Engine<OpenAi, Lookup, TestHost, FileJournal> {
     Engine::new(
         SessionIdentity {
             session_id: "smoke-1".into(),
@@ -473,11 +489,7 @@ fn engine(provider: OpenAi, directory: &TempDir) -> Engine<OpenAi, Lookup, TestH
             task_id: None,
             run_id: None,
         },
-        Limits {
-            tokens: 1_000_000,
-            model_turns: 6,
-            ..Default::default()
-        },
+        limits,
         provider,
         Lookup::default(),
         TestHost::default(),
@@ -573,6 +585,54 @@ async fn retries_and_truncated_streams_share_budget_without_duplicate_effects() 
                 .contains("secret-server-detail")
         );
         assert_eq!(server.await.unwrap().len(), 4);
+    }
+}
+
+#[tokio::test]
+async fn transient_failures_charge_only_the_effective_output_cap() {
+    let partial = &FINAL[..FINAL.find("data: [DONE]").unwrap()];
+    let (url, server) = server(vec![
+        Reply::failure(429, "rate_limit"),
+        Reply::failure(503, "unavailable"),
+        Reply::stream(partial),
+        Reply::stream(FINAL),
+    ])
+    .await;
+    let directory = TempDir::new().unwrap();
+    let cfg = config(&url);
+    let output_cap = cfg.max_output_tokens;
+    let mut engine = engine_with_limits(OpenAi::new(cfg).unwrap(), &directory, Limits::default());
+    let end = engine
+        .run(
+            SessionCommand::Start {
+                input: "x".repeat(8192),
+            },
+            &Cancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(end.reason, EndReason::ModelFinished);
+    assert_eq!(end.budget.retries, 3);
+    assert_eq!(end.budget.model_turns, 4);
+    assert_eq!(end.budget.estimated_output_tokens, 3 * output_cap);
+    for record in &engine.host.records {
+        match &record.event {
+            SessionEvent::ModelStarted { .. } => {
+                assert_eq!(record.budget.reserved_output_tokens, output_cap);
+            }
+            SessionEvent::ModelFailed { usage, .. } => {
+                assert_eq!(usage.output_tokens, output_cap);
+                assert!(!usage.reported);
+            }
+            _ => (),
+        }
+    }
+    let replay = crate::nano::replay::Replay::from_records(&engine.host.records).unwrap();
+    assert_eq!(replay.budget, end.budget);
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 4);
+    for (_, body) in requests {
+        assert_eq!(body["max_tokens"], output_cap);
     }
 }
 
