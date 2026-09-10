@@ -45,6 +45,16 @@ jobs:
       - name: Test build without update notifications
         run: cargo test --locked --no-default-features
 
+      - name: Check native inference provider without update notifications
+        run: cargo clippy --locked --no-default-features --features nano-openai -- -D warnings
+
+      - name: Test native inference provider
+        run: cargo test --locked --features nano-openai
+
+      - name: Test native inference provider without update notifications
+        run: |
+          cargo test --locked --no-default-features --features nano-openai nano::
+
   smoke:
     strategy:
       fail-fast: false

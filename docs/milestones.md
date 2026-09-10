@@ -25,7 +25,7 @@ Last reviewed against the repository: 2026-09-07.
 | Spec closure and project memory | Local baseline implemented | Outcome archival, curated memory indexing, revision-pinned queries, and evidence-backed repository links exist. Raw runtime bodies are excluded from default ingestion. |
 | Repository graph and indexed context | Local baseline implemented | Optional SQLite sidecar, incremental extraction, bounded CLI/MCP retrieval, task overlays, and frozen review views. Rust/Cargo and generic file structure are supported. |
 | Distributed context data plane | Prototype implemented | Opt-in contracts and local prototype adapters for authorized jobs, encrypted storage, publication, queries, and maintenance. No deployed remote service is implied. |
-| Ferrus nano-agent | Foundation implemented; runtime planned | #73 adds native binding and claim/status/heartbeat; #74 adds the bounded engine and durable journal. Live provider, HQ launch, interactive UI, and standalone delivery remain later slices. |
+| Ferrus nano-agent | Foundation implemented; runtime planned | #73 adds native binding and claim/status/heartbeat; #74 adds the bounded engine/journal; #75 adds opt-in LM Studio Chat Completions. Live model validation, HQ launch, interactive UI, and standalone delivery remain pending. |
 
 ## Milestone 1: Windows Support
 
@@ -167,7 +167,8 @@ Implemented foundation:
 - host-owned project/agent/task/run/workspace/baseline binding from launch data and registered runtime state;
 - native typed claim, status, and heartbeat, with exact run validation at transaction boundaries;
 - sequential provider/tool/host boundaries, persisted budgets, cancellation, a private single-writer journal, and pure recorded replay;
-- regression coverage for bindings, lease ownership, MCP parity, engine limits, effect ordering, and journal recovery.
+- an opt-in Chat Completions adapter targeting LM Studio, with private credential-file references, bounded streaming, and shared retry accounting;
+- regression coverage for bindings, lease ownership, MCP parity, engine limits, effect ordering, journal recovery, and offline provider protocols. The live provider smoke test remains opt-in.
 
 Delivery is tracked in [Ferrus nano-agents](https://github.com/ferrus-dev/ferrus/milestone/6).
 The [architecture and complete PR index](ferrus-nano-architecture.md#planned-prs-and-github-issues)
@@ -175,7 +176,7 @@ contains one issue per planned PR, dependencies, and acceptance criteria:
 
 | Stage | Issues | Remaining scope |
 | --- | --- | --- |
-| N1: headless Executor | #75-#80 | First live streaming provider, coding tools, command sessions, native context, lifecycle operations, and HQ launch/events |
+| N1: headless Executor | #75-#80 | Live model validation, coding tools, command sessions, native context, lifecycle operations, and HQ launch/events |
 | N2: context efficiency | #81-#82 | Working-set invalidation, budgets, and compaction |
 | N3: reliability and extensions | #83-#85 | External MCP via neva, resume/reconciliation, comparative evaluation, and headless release gates |
 | N4/N5: interactive and standalone | #86-#88 | HQ interaction, standalone host/binary, and shared UI |

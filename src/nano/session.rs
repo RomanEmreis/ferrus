@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::provider::{ModelResponse, Usage};
+use super::provider::{ModelResponse, ProviderErrorKind, ProviderSettings, Usage};
 use super::tools::{ToolCall, ToolOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +122,7 @@ pub(crate) enum LimitKind {
     NoProgress,
     Elapsed,
     ContextBytes,
+    ContextTokens,
     ResponseBytes,
     ToolOutputBytes,
 }
@@ -139,13 +140,15 @@ pub(crate) enum EndReason {
     EffectUnknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum SessionEvent {
     Started {
         identity: SessionIdentity,
         limits: Limits,
         input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<Box<ProviderSettings>>,
     },
     ModelStarted {
         turn: u64,
@@ -157,6 +160,8 @@ pub(crate) enum SessionEvent {
     ModelFailed {
         retryable: bool,
         usage: Usage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<ProviderErrorKind>,
     },
     ToolIntent {
         call_id: String,
@@ -171,7 +176,7 @@ pub(crate) enum SessionEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Record {
     pub version: u32,

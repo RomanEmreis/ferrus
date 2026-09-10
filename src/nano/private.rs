@@ -35,9 +35,22 @@ pub(crate) fn file(path: &Path, create: bool) -> Result<File> {
         check(path, false)?;
     }
 
-    let file = imp::file(path, create)?;
+    let file = imp::file(path, create, true)?;
     check(path, false)?;
 
+    Ok(file)
+}
+
+/// Open a host input without write access, then validate the opened object before reading.
+pub(crate) fn read_only_file(path: &Path) -> Result<File> {
+    ensure!(
+        fs::symlink_metadata(path)?.is_file(),
+        "Unexpected host input file type"
+    );
+    let file = imp::file(path, false, false)?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "Unexpected host input file type");
+    imp::check_input(&file, &metadata)?;
     Ok(file)
 }
 
@@ -52,6 +65,10 @@ mod imp {
     };
 
     pub(super) fn check(_path: &Path, metadata: &fs::Metadata) -> Result<()> {
+        check_owner(metadata)
+    }
+
+    fn check_owner(metadata: &fs::Metadata) -> Result<()> {
         // SAFETY: geteuid has no preconditions and returns the process identity.
         ensure!(
             metadata.uid() == unsafe { libc::geteuid() }
@@ -66,10 +83,14 @@ mod imp {
         DirBuilder::new().mode(0o700).create(path)
     }
 
-    pub(super) fn file(path: &Path, create: bool) -> std::io::Result<File> {
+    pub(super) fn check_input(_file: &File, metadata: &fs::Metadata) -> Result<()> {
+        check_owner(metadata)
+    }
+
+    pub(super) fn file(path: &Path, create: bool, writable: bool) -> std::io::Result<File> {
         OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(writable)
             .create_new(create)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -89,7 +110,11 @@ mod imp {
 mod imp {
     use super::*;
     use std::{
-        os::windows::{ffi::OsStrExt, io::FromRawHandle},
+        os::windows::{
+            ffi::OsStrExt,
+            fs::MetadataExt,
+            io::{AsRawHandle, FromRawHandle},
+        },
         ptr::{null, null_mut},
     };
 
@@ -98,14 +123,16 @@ mod imp {
         Security::{
             Authorization::{
                 ConvertSecurityDescriptorToStringSecurityDescriptorW,
-                ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+                SE_FILE_OBJECT,
             },
-            DACL_SECURITY_INFORMATION, GetFileSecurityW, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+            DACL_SECURITY_INFORMATION, GetFileSecurityW, OWNER_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         },
         Storage::FileSystem::{
             CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
         },
     };
 
@@ -125,7 +152,11 @@ mod imp {
 
     fn descriptor() -> std::io::Result<Descriptor> {
         // Protected DACL: full access only for the object's owner, no inherited grants.
-        let text: Vec<u16> = "D:P(A;;FA;;;OW)\0".encode_utf16().collect();
+        descriptor_from_text("D:P(A;;FA;;;OW)")
+    }
+
+    fn descriptor_from_text(sddl: &str) -> std::io::Result<Descriptor> {
+        let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut pointer = null_mut();
 
         if unsafe {
@@ -144,13 +175,20 @@ mod imp {
     }
 
     fn text(descriptor: PSECURITY_DESCRIPTOR) -> std::io::Result<Vec<u16>> {
+        security_text(descriptor, DACL_SECURITY_INFORMATION)
+    }
+
+    fn security_text(
+        descriptor: PSECURITY_DESCRIPTOR,
+        information: u32,
+    ) -> std::io::Result<Vec<u16>> {
         let mut pointer = null_mut();
         let mut length = 0;
         if unsafe {
             ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 descriptor,
                 1,
-                DACL_SECURITY_INFORMATION,
+                information,
                 &mut pointer,
                 &mut length,
             )
@@ -219,7 +257,63 @@ mod imp {
         Ok(())
     }
 
-    pub(super) fn file(path: &Path, create: bool) -> std::io::Result<File> {
+    pub(super) fn check_input(file: &File, metadata: &fs::Metadata) -> Result<()> {
+        ensure!(
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+            "Host input cannot be a reparse point"
+        );
+        let descriptor = input_descriptor(file)?;
+        check_input_dacl(descriptor.0)
+    }
+
+    fn input_descriptor(file: &File) -> Result<Descriptor> {
+        let mut pointer = null_mut();
+        // Inspect the opened handle so a path replacement cannot substitute another DACL.
+        let result = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut pointer,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::from_raw_os_error(result as i32).into());
+        }
+        Ok(Descriptor(pointer))
+    }
+
+    fn input_owner(descriptor: PSECURITY_DESCRIPTOR) -> Result<String> {
+        let owner = String::from_utf16(&security_text(descriptor, OWNER_SECURITY_INFORMATION)?)?;
+        let owner = owner
+            .trim_end_matches('\0')
+            .strip_prefix("O:")
+            .filter(|owner| !owner.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Host input owner is missing"))?;
+        Ok(owner.to_owned())
+    }
+
+    fn check_input_dacl(descriptor: PSECURITY_DESCRIPTOR) -> Result<()> {
+        let owner = input_owner(descriptor)?;
+        let actual = text(descriptor)?;
+        // Compare canonical DACLs, accepting a single explicit grant to either Owner
+        // Rights or the owning account. Extra or inherited grants still fail closed.
+        for trustee in ["OW", owner.as_str()] {
+            for rights in ["FA", "FR", "GR"] {
+                let expected = descriptor_from_text(&format!("D:P(A;;{rights};;;{trustee})"))?;
+                if actual == text(expected.0)? {
+                    return Ok(());
+                }
+            }
+        }
+        anyhow::bail!("Host input must have a protected owner-only DACL")
+    }
+
+    pub(super) fn file(path: &Path, create: bool, writable: bool) -> std::io::Result<File> {
         let descriptor = descriptor()?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -230,7 +324,7 @@ mod imp {
         let handle = unsafe {
             CreateFileW(
                 wide(path).as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
+                GENERIC_READ | if writable { GENERIC_WRITE } else { 0 },
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 if create { &attributes } else { null() },
                 if create { CREATE_NEW } else { OPEN_EXISTING },
@@ -264,5 +358,63 @@ mod imp {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::io::{Read, Write};
+        use windows_sys::Win32::Security::{PROTECTED_DACL_SECURITY_INFORMATION, SetFileSecurityW};
+
+        const OWNER: &str = "S-1-5-21-100-200-300-1001";
+
+        #[test]
+        fn input_dacl_accepts_owner_account_and_owner_rights_only() {
+            for trustee in ["OW", OWNER] {
+                for rights in ["FA", "FR", "GR"] {
+                    let descriptor =
+                        descriptor_from_text(&format!("O:{OWNER}D:P(A;;{rights};;;{trustee})"))
+                            .unwrap();
+                    check_input_dacl(descriptor.0).unwrap();
+                }
+            }
+            for dacl in [
+                "D:P(A;;FR;;;WD)".to_owned(),
+                "D:P(A;;FR;;;S-1-5-21-100-200-300-1002)".to_owned(),
+                format!("D:P(A;;FR;;;{OWNER})(A;;FR;;;WD)"),
+                format!("D:(A;;FR;;;{OWNER})"),
+                format!("D:P(A;ID;FR;;;{OWNER})"),
+            ] {
+                let descriptor = descriptor_from_text(&format!("O:{OWNER}{dacl}")).unwrap();
+                assert!(check_input_dacl(descriptor.0).is_err(), "{dacl}");
+            }
+        }
+
+        #[test]
+        fn provisioned_owner_read_grant_opens_without_write_access() {
+            let directory = tempfile::TempDir::new().unwrap();
+            let path = directory.path().join("credential");
+            let mut file = super::super::file(&path, true).unwrap();
+            file.write_all(b"fixture-token").unwrap();
+            let owner = input_owner(input_descriptor(&file).unwrap().0).unwrap();
+            drop(file);
+            let descriptor = descriptor_from_text(&format!("D:P(A;;FR;;;{owner})")).unwrap();
+            // Equivalent to removing inherited grants and granting the owner Read via icacls.
+            assert_ne!(
+                unsafe {
+                    SetFileSecurityW(
+                        wide(&path).as_ptr(),
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        descriptor.0,
+                    )
+                },
+                0
+            );
+            let mut input = super::super::read_only_file(&path).unwrap();
+            let mut bytes = Vec::new();
+            input.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"fixture-token");
+            assert!(input.write_all(b"overwrite").is_err());
+        }
     }
 }

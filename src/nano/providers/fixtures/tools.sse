@@ -1,0 +1,14 @@
+: recorded Chat Completions protocol fixture
+
+data: {"id":"turn-1","model":"fixture-model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"opaque reasoning"},"finish_reason":null}]}
+
+data: {"id":"turn-1","model":"fixture-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-a","type":"function","function":{"name":"look","arguments":"{\"value\":"}},{"index":1,"id":"call-b","type":"function","function":{"name":"lookup","arguments":"{\"value\":"}}]},"finish_reason":null}]}
+
+data: {"id":"turn-1","model":"fixture-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"2}"}},{"index":0,"function":{"name":"up","arguments":"1}"}}]},"finish_reason":null}]}
+
+data: {"id":"turn-1","model":"fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"turn-1","model":"fixture-model","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
+
+data: [DONE]
+

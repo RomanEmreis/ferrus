@@ -73,9 +73,60 @@ pub(crate) enum ProviderEvent {
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderError {
     pub retryable: bool,
+    pub kind: ProviderErrorKind,
+    pub retry_after_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderErrorKind {
+    Transport,
+    Timeout,
+    RateLimited,
+    Authentication,
+    ContextOverflow,
+    TruncatedStream,
+    Protocol,
+    Unsupported,
+    ResponseLimit,
+}
+
+impl ProviderError {
+    pub(crate) fn new(kind: ProviderErrorKind, retryable: bool) -> Self {
+        Self {
+            kind,
+            retryable,
+            retry_after_ms: 0,
+        }
+    }
+}
+
+/// Only validated, non-secret effective settings may enter the journal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderSettings {
+    pub api: String,
+    pub base_url: String,
+    pub model: String,
+    pub context_tokens: u64,
+    pub max_output_tokens: u64,
+    pub temperature: f64,
+    pub request_timeout_ms: u64,
+    pub wire_bytes: usize,
+    pub event_bytes: usize,
+    pub max_tool_calls: usize,
+    pub include_usage: bool,
 }
 
 pub(crate) trait Provider {
+    /// When present, the output cap also bounds the engine's per-attempt reservation.
+    fn settings(&self) -> Option<ProviderSettings> {
+        None
+    }
+
+    /// Close any retained stream, including cancellation between buffered events.
+    fn cancel(&mut self) {}
+
     /// Both start and next_event must be safe to drop on cancellation/deadline.
     async fn start(&mut self, request: ModelRequest) -> Result<(), ProviderError>;
 
