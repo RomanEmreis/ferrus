@@ -27,6 +27,7 @@ pub(crate) struct Limits {
     pub output_bytes: usize,
     pub elapsed_ms: u64,
 }
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -54,6 +55,7 @@ pub(crate) enum Code {
     OutputLimit,
     Interrupted,
 }
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Failure {
     pub code: Code,
@@ -62,6 +64,7 @@ pub(crate) struct Failure {
     pub current_digest: Option<String>,
     pub message: &'static str,
 }
+
 impl Failure {
     fn new(code: Code, path: &str) -> Self {
         Self {
@@ -118,6 +121,7 @@ pub(crate) struct Workspace {
     generation: u64,
     limits: Limits,
 }
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Source {
     pub kind: &'static str,
@@ -126,6 +130,7 @@ pub(crate) struct Source {
     pub path: String,
     pub digest: String,
 }
+
 #[derive(Debug)]
 struct Content {
     text: String,
@@ -143,6 +148,7 @@ fn path(value: &str) -> Result<String> {
     if value.len() > 256 || value.contains('\\') {
         return Err(Failure::new(Code::InvalidPath, value));
     }
+
     let parsed = RepoPath::new(value).map_err(|_| Failure::new(Code::InvalidPath, value))?;
     for component in parsed.as_str().split('/') {
         let lower = component.to_uppercase().to_ascii_lowercase();
@@ -159,6 +165,7 @@ fn path(value: &str) -> Result<String> {
         {
             return Err(Failure::new(Code::ProtectedPath, value));
         }
+
         let stem = lower.split('.').next().unwrap_or_default();
         if component.ends_with(['.', ' '])
             || component
@@ -174,6 +181,7 @@ fn path(value: &str) -> Result<String> {
             return Err(Failure::new(Code::InvalidPath, value));
         }
     }
+
     Ok(parsed.as_str().to_owned())
 }
 
@@ -191,6 +199,7 @@ impl Workspace {
                 && (1..=30_000).contains(&limits.elapsed_ms),
             "Invalid workspace limits"
         );
+
         let canonical = root.canonicalize()?;
         let root = fs::Root::new(&canonical)?;
         Ok(Self {
@@ -200,6 +209,7 @@ impl Workspace {
             generation: 0,
         })
     }
+
     fn source(&self, path: &str, digest: &str) -> Source {
         Source {
             kind: "workspace",
@@ -209,13 +219,16 @@ impl Workspace {
             digest: digest.into(),
         }
     }
+
     fn content(&self, path: &str) -> Result<Content> {
         let file = self.root.open(path).map_err(|e| Failure::io(path, e))?;
         self.read_content(file, path)
     }
+
     fn read_content(&self, file: std::fs::File, path: &str) -> Result<Content> {
         self.read_content_limited(file, path, self.limits.file_bytes, &mut 0)
     }
+
     fn read_content_limited(
         &self,
         file: std::fs::File,
@@ -228,6 +241,7 @@ impl Workspace {
         if meta.len() > limit as u64 {
             return Err(Failure::new(Code::FileTooLarge, path));
         }
+
         let mut bytes = Vec::new();
         let read = file.take(limit as u64 + 1).read_to_end(&mut bytes);
         *inspected += bytes.len();
@@ -235,9 +249,11 @@ impl Workspace {
         if bytes.len() > limit {
             return Err(Failure::new(Code::FileTooLarge, path));
         }
+
         if bytes.contains(&0) {
             return Err(Failure::new(Code::Binary, path));
         }
+
         let hash = digest(&bytes);
         let text = String::from_utf8(bytes).map_err(|_| Failure::new(Code::Binary, path))?;
         Ok(Content {
@@ -246,15 +262,18 @@ impl Workspace {
             mode: meta.permissions(),
         })
     }
+
     fn stopped(&self, start: Instant, cancellation: &Cancellation) -> bool {
         cancellation.is_cancelled()
             || start.elapsed() >= Duration::from_millis(self.limits.elapsed_ms)
     }
+
     pub(crate) fn read_file(&self, request: ReadRequest) -> Result<ReadResult> {
         let path = path(&request.path)?;
         if request.start_line == 0 || request.max_lines == 0 || request.max_bytes == 0 {
             return Err(Failure::new(Code::InvalidPath, &path));
         }
+
         let content = self.content(&path)?;
         let lines = request.max_lines.min(2000);
         // Charge actual JSON escaping while leaving room for source identity and the wrapper.
@@ -263,6 +282,7 @@ impl Workspace {
         let mut text = String::new();
         let mut returned_lines = 0;
         let mut truncated = false;
+
         for line in content
             .text
             .split_inclusive('\n')
@@ -272,18 +292,22 @@ impl Workspace {
                 truncated = true;
                 break;
             }
+
             let encoded = serde_json::to_string(line)
                 .expect("serializable text")
                 .len()
                 - 2;
+
             if encoded_bytes + encoded > self.limits.output_bytes - 1024 {
                 truncated = true;
                 break;
             }
+
             encoded_bytes += encoded;
             text.push_str(line);
             returned_lines += 1;
         }
+
         Ok(ReadResult {
             source: self.source(&path, &content.digest),
             start_line: request.start_line,
@@ -307,6 +331,7 @@ impl Workspace {
                 path(value)?
             });
         }
+
         if pending.is_empty()
             || pending.len() > 16
             || request.query.is_empty()
@@ -315,6 +340,7 @@ impl Workspace {
         {
             return Err(Failure::new(Code::InvalidPath, ""));
         }
+
         let mut result = SearchResult {
             matches: Vec::new(),
             issues: Vec::new(),
@@ -324,9 +350,11 @@ impl Workspace {
             truncated: false,
             suppressed_issues: 0,
         };
+
         let mut seen = BTreeSet::new();
         let mut output_bytes = 512;
         let mut output_full = false;
+
         while let Some(path) = pending.pop_first() {
             if self.stopped(start, cancellation) {
                 result.truncated = true;
@@ -337,37 +365,45 @@ impl Workspace {
                 );
                 break;
             }
+
             if !seen.insert(path.clone()) {
                 continue;
             }
+
             if result.visited_entries == self.limits.entries {
                 result.truncated = true;
                 break;
             }
+
             result.visited_entries += 1;
             let file = if path.is_empty() {
                 self.root.directory()
             } else {
                 self.root.open(&path)
             };
+
             let item = (|| {
                 let file = file.map_err(|e| Failure::io(&path, e))?;
                 if file.metadata().map_err(|e| Failure::io(&path, e))?.is_dir() {
                     let capacity = self.limits.entries.saturating_sub(result.listed_entries);
                     let (children, truncated) =
                         fs::children(&file, capacity).map_err(|e| Failure::io(&path, e))?;
+
                     result.truncated |= truncated;
                     result.listed_entries += children.len();
+
                     for name in children {
                         let child = if path.is_empty() {
                             name
                         } else {
                             format!("{path}/{name}")
                         };
+
                         if let Ok(child) = self::path(&child) {
                             pending.insert(child);
                         }
                     }
+
                     return Ok(());
                 }
                 let remaining = self.limits.scan_bytes.saturating_sub(result.scanned_bytes);
@@ -375,21 +411,26 @@ impl Workspace {
                     result.truncated = true;
                     return Err(Failure::new(Code::FileTooLarge, &path));
                 }
+
                 let cap = self.limits.file_bytes.min(remaining - 1);
                 let content =
                     self.read_content_limited(file, &path, cap, &mut result.scanned_bytes)?;
+
                 for (index, line) in content.text.split_inclusive('\n').enumerate() {
                     let Some(column) = line.find(&request.query) else {
                         continue;
                     };
+
                     if result.matches.len() >= request.max_results.min(128) {
                         result.truncated = true;
                         break;
                     }
+
                     let mut snippet_start = column.saturating_sub(120);
                     while !line.is_char_boundary(snippet_start) {
                         snippet_start -= 1;
                     }
+
                     let snippet = prefix(&line[snippet_start..], 512);
                     let hit = SearchMatch {
                         source: self.source(&path, &content.digest),
@@ -399,30 +440,38 @@ impl Workspace {
                         text: snippet.to_owned(),
                         truncated: snippet.len() < line.len(),
                     };
+
                     let size = serde_json::to_vec(&hit).expect("serializable match").len() + 1;
                     if output_bytes + size > self.limits.output_bytes - 512 {
                         result.truncated = true;
                         output_full = true;
                         break;
                     }
+
                     output_bytes += size;
                     result.matches.push(hit);
                 }
+
                 Ok(())
             })();
+
             if let Err(failure) = item {
                 result.truncated = true;
                 result.issue(failure, &mut output_bytes, self.limits.output_bytes);
             }
+
             if result.matches.len() >= request.max_results.min(128) || output_full {
                 result.truncated |= !pending.is_empty();
                 break;
             }
+
             tokio::task::yield_now().await;
         }
+
         Ok(result)
     }
 }
+
 fn prefix(text: &str, bytes: usize) -> &str {
     let mut end = text.len().min(bytes);
     while !text.is_char_boundary(end) {
@@ -430,21 +479,27 @@ fn prefix(text: &str, bytes: usize) -> &str {
     }
     &text[..end]
 }
+
 fn one() -> usize {
     1
 }
+
 fn lines() -> usize {
     200
 }
+
 fn bytes() -> usize {
     16 * 1024
 }
+
 fn results() -> usize {
     50
 }
+
 fn roots() -> Vec<String> {
     vec![".".into()]
 }
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReadRequest {
@@ -456,6 +511,7 @@ pub(crate) struct ReadRequest {
     #[serde(default = "bytes")]
     pub max_bytes: usize,
 }
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ReadResult {
     pub source: Source,
@@ -465,6 +521,7 @@ pub(crate) struct ReadResult {
     pub text: String,
     pub truncated: bool,
 }
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SearchRequest {
@@ -474,6 +531,7 @@ pub(crate) struct SearchRequest {
     #[serde(default = "results")]
     pub max_results: usize,
 }
+
 #[derive(Debug, Serialize)]
 pub(crate) struct SearchMatch {
     pub source: Source,
@@ -483,6 +541,7 @@ pub(crate) struct SearchMatch {
     pub text: String,
     pub truncated: bool,
 }
+
 #[derive(Debug, Serialize)]
 pub(crate) struct SearchResult {
     pub matches: Vec<SearchMatch>,
@@ -500,6 +559,7 @@ impl SearchResult {
             .expect("serializable issue")
             .len()
             + 1;
+
         if self.issues.len() < 4 && *used + size <= limit - 512 {
             *used += size;
             self.issues.push(failure);
@@ -515,6 +575,7 @@ impl Tools for Workspace {
         let positive = json!({"type":"integer","minimum":1});
         let hunk = json!({"type":"object","properties":{"start_line":positive,"old_text":string,"new_text":string},
             "required":["start_line","old_text","new_text"],"additionalProperties":false});
+
         let edit = |operation: &str, extra: Value, required: &[&str]| {
             let mut properties = json!({"operation":{"const":operation},"path":string});
             properties
@@ -525,6 +586,7 @@ impl Tools for Workspace {
             fields.extend_from_slice(required);
             json!({"type":"object","properties":properties,"required":fields,"additionalProperties":false})
         };
+
         vec![
             ToolDescriptor { name:"read_file".into(), description:"Read whole UTF-8 lines from the current workspace with a full-file SHA-256 digest. Truncation is explicit; oversized lines may return no text.".into(),
                 input_schema:json!({"type":"object","properties":{"path":string,"start_line":positive,"max_lines":positive,"max_bytes":positive},"required":["path"],"additionalProperties":false}) },
@@ -537,17 +599,21 @@ impl Tools for Workspace {
                     edit("delete",json!({"expected_digest":string}),&["expected_digest"])]}}},"required":["edits"],"additionalProperties":false}) },
         ]
     }
+
     fn validate(&self, name: &str, arguments: &Value) -> std::result::Result<(), ToolError> {
         decode(name, arguments).map(|_| ())
     }
+
     async fn execute(&mut self, call: &ValidatedCall, cancellation: &Cancellation) -> ToolOutcome {
         let request = match decode(&call.name, &call.arguments) {
             Ok(v) => v,
             Err(e) => return ToolOutcome::Failed(e),
         };
+
         if cancellation.is_cancelled() {
             return ToolOutcome::Failed(ToolError::Interrupted);
         }
+
         let result = match request {
             Request::Read(request) => self
                 .read_file(request)
@@ -573,12 +639,14 @@ impl Tools for Workspace {
                 Ok(serde_json::to_value(result).unwrap())
             }
         };
+
         let outcome = match result {
             Ok(value) => ToolOutcome::Success(value),
             Err(failure) => {
                 ToolOutcome::Failed(ToolError::Workspace(serde_json::to_value(failure).unwrap()))
             }
         };
+
         if encode(&outcome, self.limits.output_bytes).is_err() {
             ToolOutcome::Failed(ToolError::OutputLimit)
         } else {
@@ -586,21 +654,25 @@ impl Tools for Workspace {
         }
     }
 }
+
 enum Request {
     Read(ReadRequest),
     Search(SearchRequest),
     Patch(PatchRequest),
 }
+
 fn decode(name: &str, value: &Value) -> std::result::Result<Request, ToolError> {
     if encode(value, 256 * 1024).is_err() {
         return Err(ToolError::InvalidArguments);
     }
+
     let parsed = match name {
         "read_file" => serde_json::from_value(value.clone()).map(Request::Read),
         "search_text" => serde_json::from_value(value.clone()).map(Request::Search),
         "apply_patch" => serde_json::from_value(value.clone()).map(Request::Patch),
         _ => return Err(ToolError::UnknownTool),
     };
+
     let request = parsed.map_err(|_| ToolError::InvalidArguments)?;
     let valid = match &request {
         Request::Read(r) => r.start_line > 0 && r.max_lines > 0 && r.max_bytes > 0,
@@ -624,6 +696,7 @@ fn decode(name: &str, value: &Value) -> std::result::Result<Request, ToolError> 
                 })
         }
     };
+
     if valid {
         Ok(request)
     } else {

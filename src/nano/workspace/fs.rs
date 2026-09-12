@@ -14,16 +14,19 @@ mod platform;
 mod platform;
 
 pub(super) struct Root(File);
+
 pub(super) struct Parent {
     directory: File,
     name: String,
 }
+
 pub(super) struct Staged {
     directory: File,
     name: String,
     file: File,
     published: bool,
 }
+
 pub(super) struct CommitError {
     pub changed: bool,
     pub error: io::Error,
@@ -32,19 +35,24 @@ pub(super) struct CommitError {
 pub(super) fn unsafe_file() -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, "unsafe file")
 }
+
 pub(super) fn regular(file: &File) -> io::Result<()> {
     platform::regular(file)
 }
+
 pub(super) fn children(file: &File, limit: usize) -> io::Result<(Vec<String>, bool)> {
     platform::children(file, limit)
 }
+
 impl Root {
     pub(super) fn new(path: &Path) -> io::Result<Self> {
         platform::root(path).map(Self)
     }
+
     pub(super) fn directory(&self) -> io::Result<File> {
         platform::child(&self.0, ".", true, false)
     }
+
     pub(super) fn parent(&self, path: &str) -> io::Result<Parent> {
         let mut parts = path.split('/').peekable();
         let mut directory = self.directory()?;
@@ -57,23 +65,29 @@ impl Root {
             }
             directory = platform::child(&directory, name, true, false)?;
         }
+
         Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"))
     }
+
     pub(super) fn open(&self, path: &str) -> io::Result<File> {
         self.parent(path)?.open()
     }
 }
+
 impl Parent {
     pub(super) fn open(&self) -> io::Result<File> {
         platform::child(&self.directory, &self.name, false, false)
     }
+
     pub(super) fn stage(&self, bytes: &[u8], mode: Option<&Permissions>) -> io::Result<Staged> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
         let name = format!(
             ".nano-tmp-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
+
         let directory = self.directory.try_clone()?;
         let file = platform::child(&directory, &name, false, true)?;
         let mut staged = Staged {
@@ -82,17 +96,22 @@ impl Parent {
             file,
             published: false,
         };
+
         #[cfg(windows)]
         if mode.is_some() {
             platform::copy_security(&self.open()?, &staged.file)?;
         }
+
         staged.file.write_all(bytes)?;
+
         if let Some(mode) = mode {
             staged.file.set_permissions(mode.clone())?;
         }
+
         staged.file.sync_all()?;
         Ok(staged)
     }
+
     pub(super) fn publish(&self, mut staged: Staged, create: bool) -> Result<(), CommitError> {
         platform::publish(
             &self.directory,
@@ -105,23 +124,28 @@ impl Parent {
             changed: false,
             error,
         })?;
+
         staged.published = true;
+
         platform::finish_publish(&self.directory, &staged.name, create).map_err(|error| {
             CommitError {
                 changed: true,
                 error,
             }
         })?;
+
         platform::sync(&self.directory).map_err(|error| CommitError {
             changed: true,
             error,
         })
     }
+
     pub(super) fn delete(&self) -> Result<(), CommitError> {
         platform::delete(&self.directory, &self.name).map_err(|error| CommitError {
             changed: false,
             error,
         })?;
+
         platform::sync(&self.directory).map_err(|error| CommitError {
             changed: true,
             error,
@@ -159,9 +183,46 @@ mod tests {
         let parent = root.parent("file").unwrap();
         let staged = parent.stage(b"agent", None).unwrap();
         fs::write(directory.path().join("file"), "human").unwrap();
-        assert!(parent.publish(staged, true).is_err());
+        let error = parent.publish(staged, true).expect_err("target exists");
+        assert!(!error.changed);
+        assert_eq!(error.error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(directory.path().join("file")).unwrap(), b"human");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn publications_use_the_held_parent_for_create_replace_and_delete() {
+        let directory = tempfile::TempDir::new().unwrap();
+        fs::create_dir(directory.path().join("nested")).unwrap();
+        let root = Root::new(&directory.path().canonicalize().unwrap()).unwrap();
+
+        // Exercise short and variable-length UTF-16 rename buffers on Windows.
+        for name in ["a", "longer-\u{e9}-\u{1f980}.txt"] {
+            fs::write(directory.path().join(name), b"unrelated").unwrap();
+            let parent = root.parent(&format!("nested/{name}")).unwrap();
+            let target = directory.path().join("nested").join(name);
+            for (bytes, create) in [(b"created".as_slice(), true), (b"replaced", false)] {
+                let staged = parent.stage(bytes, None).unwrap();
+                parent.publish(staged, create).unwrap_or_else(|error| {
+                    panic!(
+                        "publication failed (changed={}): {}",
+                        error.changed, error.error
+                    )
+                });
+                assert_eq!(fs::read(&target).unwrap(), bytes);
+                assert_eq!(fs::read(directory.path().join(name)).unwrap(), b"unrelated");
+                assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 1);
+            }
+            parent.delete().unwrap_or_else(|error| {
+                panic!(
+                    "deletion failed (changed={}): {}",
+                    error.changed, error.error
+                )
+            });
+            assert!(!target.exists());
+            assert_eq!(fs::read(directory.path().join(name)).unwrap(), b"unrelated");
+            assert_eq!(fs::read_dir(target.parent().unwrap()).unwrap().count(), 0);
+        }
     }
 
     #[test]
@@ -201,7 +262,9 @@ mod tests {
         let parent = root.parent("private.txt").unwrap();
         let mode = parent.open().unwrap().metadata().unwrap().permissions();
         let staged = parent.stage(b"new\n", Some(&mode)).unwrap();
-        assert!(parent.publish(staged, false).is_ok());
+        parent
+            .publish(staged, false)
+            .unwrap_or_else(|error| panic!("private publication failed: {}", error.error));
         // Validate the protected DACL from the opened handle, not just readonly.
         crate::nano::private::read_only_file(&path).unwrap();
         assert_eq!(fs::read(path).unwrap(), b"new\n");

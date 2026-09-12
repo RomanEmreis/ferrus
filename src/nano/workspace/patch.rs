@@ -9,6 +9,7 @@ pub(crate) struct Hunk {
     pub old_text: String,
     pub new_text: String,
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Edit {
@@ -26,6 +27,7 @@ pub(crate) enum Edit {
         expected_digest: String,
     },
 }
+
 impl Edit {
     fn path(&self) -> &str {
         match self {
@@ -35,11 +37,13 @@ impl Edit {
         }
     }
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PatchRequest {
     pub edits: Vec<Edit>,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -47,6 +51,7 @@ pub(crate) enum State {
     Applied,
     DurabilityUnconfirmed,
 }
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Change {
     pub path: String,
@@ -55,6 +60,7 @@ pub(crate) struct Change {
     pub after_digest: Option<String>,
     pub state: State,
 }
+
 #[derive(Debug, Serialize)]
 pub(crate) struct PatchResult {
     pub source_kind: &'static str,
@@ -64,6 +70,7 @@ pub(crate) struct PatchResult {
     pub changes: Vec<Change>,
     pub failure: Option<Failure>,
 }
+
 struct Plan {
     path: String,
     before: Option<String>,
@@ -81,8 +88,10 @@ impl Workspace {
             Ok(plans) => plans,
             Err(failure) => return self.patch_result(Vec::new(), Some(failure)),
         };
+
         self.commit_plans(plans, start, cancellation).await
     }
+
     fn prepare(
         &self,
         request: PatchRequest,
@@ -95,17 +104,20 @@ impl Workspace {
         {
             return Err(Failure::new(Code::InvalidPatch, ""));
         }
+
         let mut names = BTreeSet::new();
         let mut plans = Vec::new();
         for edit in request.edits {
             if self.stopped(start, cancellation) {
                 return Err(Failure::new(Code::Interrupted, edit.path()));
             }
+
             let path = path(edit.path())?;
             // Also reject case aliases on platforms where spelling is not identity.
             if !names.insert(path.to_lowercase()) {
                 return Err(Failure::new(Code::InvalidPatch, &path));
             }
+
             let parent = self.root.parent(&path).map_err(|e| Failure::io(&path, e))?;
             let (before, after) = match edit {
                 Edit::Create { content, .. } => {
@@ -134,23 +146,29 @@ impl Workspace {
                     (Some(current.digest), None)
                 }
             };
+
             plans.push(Plan {
                 path,
                 before,
                 after,
             });
         }
+
         Ok(plans)
     }
+
     fn check_text(&self, path: &str, text: &str) -> Result<()> {
         if text.len() > self.limits.file_bytes {
             return Err(Failure::new(Code::FileTooLarge, path));
         }
+
         if text.contains('\0') {
             return Err(Failure::new(Code::Binary, path));
         }
+
         Ok(())
     }
+
     fn check_base(
         &self,
         parent: &fs::Parent,
@@ -165,18 +183,22 @@ impl Workspace {
         }) {
             return Err(Failure::new(Code::InvalidPatch, path));
         }
+
         let current = match parent.open() {
             Ok(file) => Some(self.read_content(file, path)?),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(Failure::io(path, error)),
         };
+
         if current.as_ref().map(|c| c.digest.as_str()) != expected {
             let mut failure = Failure::new(Code::Conflict, path);
             failure.current_digest = current.map(|c| c.digest);
             return Err(failure);
         }
+
         Ok(current)
     }
+
     fn patch_result(&self, changes: Vec<Change>, failure: Option<Failure>) -> PatchResult {
         PatchResult {
             source_kind: "workspace",
@@ -187,6 +209,7 @@ impl Workspace {
             failure,
         }
     }
+
     async fn commit_plans(
         &mut self,
         plans: Vec<Plan>,
@@ -203,21 +226,25 @@ impl Workspace {
                 state: State::NotApplied,
             })
             .collect();
+
         let mut result = self.patch_result(changes, None);
         // Reserve space for the error and wrapper before any effect is possible.
         if encode(&result, self.limits.output_bytes.saturating_sub(2048)).is_err() {
             return self.patch_result(Vec::new(), Some(Failure::new(Code::OutputLimit, "")));
         }
+
         for (index, plan) in plans.into_iter().enumerate() {
             if self.stopped(start, cancellation) {
                 result.failure = Some(Failure::new(Code::Interrupted, &plan.path));
                 break;
             }
+
             let applied = (|| -> Result<_> {
                 let parent = self
                     .root
                     .parent(&plan.path)
                     .map_err(|e| Failure::io(&plan.path, e))?;
+
                 let current = self.check_base(&parent, &plan.path, plan.before.as_deref())?;
                 let staged = plan
                     .after
@@ -228,6 +255,7 @@ impl Workspace {
                             .map_err(|e| Failure::io(&plan.path, e))
                     })
                     .transpose()?;
+
                 // Catch changes during staging. No fuzzy merge, rebasing, or rollback of other files.
                 self.check_base(&parent, &plan.path, plan.before.as_deref())?;
                 Ok(match staged {
@@ -235,6 +263,7 @@ impl Workspace {
                     None => parent.delete(),
                 })
             })();
+
             match applied {
                 Ok(Ok(())) => {
                     result.changes[index].state = State::Applied;
@@ -257,8 +286,10 @@ impl Workspace {
                     break;
                 }
             }
+
             tokio::task::yield_now().await;
         }
+
         result.generation = self.generation;
         result.complete = result.failure.is_none();
         result
@@ -269,8 +300,10 @@ fn apply_hunks(path: &str, before: &str, hunks: &[Hunk], limit: usize) -> Result
     if hunks.is_empty() || hunks.len() > 128 {
         return Err(Failure::new(Code::InvalidPatch, path));
     }
+
     let mut offsets = vec![0];
     offsets.extend(before.match_indices('\n').map(|(index, _)| index + 1));
+
     let mut output = String::new();
     let mut consumed = 0;
     let mut previous_start = None;
@@ -281,10 +314,12 @@ fn apply_hunks(path: &str, before: &str, hunks: &[Hunk], limit: usize) -> Result
             .and_then(|index| offsets.get(index))
             .copied()
             .ok_or_else(|| Failure::new(Code::InvalidPatch, path))?;
+
         let end = start
             .checked_add(hunk.old_text.len())
             .filter(|end| *end <= before.len())
             .ok_or_else(|| Failure::new(Code::InvalidPatch, path))?;
+
         if start < consumed
             || previous_start.is_some_and(|previous| start <= previous)
             || !before[start..].starts_with(&hunk.old_text)
@@ -293,6 +328,7 @@ fn apply_hunks(path: &str, before: &str, hunks: &[Hunk], limit: usize) -> Result
         {
             return Err(Failure::new(Code::InvalidPatch, path));
         }
+
         if output
             .len()
             .saturating_add(start - consumed)
@@ -301,14 +337,18 @@ fn apply_hunks(path: &str, before: &str, hunks: &[Hunk], limit: usize) -> Result
         {
             return Err(Failure::new(Code::FileTooLarge, path));
         }
+
         output.push_str(&before[consumed..start]);
         output.push_str(&hunk.new_text);
+
         consumed = end;
         previous_start = Some(start);
     }
+
     if output.len().saturating_add(before.len() - consumed) > limit {
         return Err(Failure::new(Code::FileTooLarge, path));
     }
+
     output.push_str(&before[consumed..]);
     Ok(output)
 }

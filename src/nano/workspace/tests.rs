@@ -10,11 +10,13 @@ fn setup() -> (TempDir, Workspace) {
     let workspace = Workspace::new(&dir.path().canonicalize().unwrap(), Limits::default()).unwrap();
     (dir, workspace)
 }
+
 fn read(workspace: &Workspace, path: &str) -> ReadResult {
     workspace
         .read_file(serde_json::from_value(json!({"path":path})).unwrap())
         .unwrap()
 }
+
 fn update(path: &str, before: &str, start_line: usize, old: &str, new: &str) -> Edit {
     Edit::Update {
         path: path.into(),
@@ -26,11 +28,13 @@ fn update(path: &str, before: &str, start_line: usize, old: &str, new: &str) -> 
         }],
     }
 }
+
 async fn apply(workspace: &mut Workspace, edits: Vec<Edit>) -> PatchResult {
     workspace
         .apply_patch(PatchRequest { edits }, &Cancellation::default())
         .await
 }
+
 use super::patch::PatchResult;
 
 #[test]

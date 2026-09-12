@@ -12,6 +12,7 @@ use std::{
 fn name(value: &str) -> io::Result<CString> {
     CString::new(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))
 }
+
 pub(super) fn root(path: &Path) -> io::Result<File> {
     let root = CString::new("/").unwrap();
     // SAFETY: root is NUL-terminated; returned descriptor is owned below.
@@ -21,9 +22,11 @@ pub(super) fn root(path: &Path) -> io::Result<File> {
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
         )
     };
+
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+
     // SAFETY: successful open returned an owned descriptor.
     let mut directory = unsafe { File::from_raw_fd(fd) };
     for component in path.components() {
@@ -34,8 +37,10 @@ pub(super) fn root(path: &Path) -> io::Result<File> {
             return Err(unsafe_file());
         }
     }
+
     Ok(directory)
 }
+
 fn open(parent: &File, name: &CStr, directory: bool, create: bool) -> io::Result<File> {
     let flags = libc::O_NOFOLLOW
         | libc::O_CLOEXEC
@@ -46,6 +51,7 @@ fn open(parent: &File, name: &CStr, directory: bool, create: bool) -> io::Result
             libc::O_RDONLY
         }
         | if directory { libc::O_DIRECTORY } else { 0 };
+
     // SAFETY: parent and component remain live; O_EXCL never replaces an existing entry.
     let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o600) };
     if fd < 0 {
@@ -58,17 +64,21 @@ fn open(parent: &File, name: &CStr, directory: bool, create: bool) -> io::Result
             },
         );
     }
+
     // SAFETY: successful openat returned an owned descriptor.
     let file = unsafe { File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
     if !metadata.is_dir() {
         regular(&file)?;
     }
+
     Ok(file)
 }
+
 pub(super) fn child(parent: &File, value: &str, directory: bool, create: bool) -> io::Result<File> {
     open(parent, &name(value)?, directory, create)
 }
+
 pub(super) fn regular(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.nlink() != 1 {
@@ -76,6 +86,7 @@ pub(super) fn regular(file: &File) -> io::Result<()> {
     }
     Ok(())
 }
+
 pub(super) fn publish(
     parent: &File,
     target: &str,
@@ -104,15 +115,19 @@ pub(super) fn publish(
             )
         }
     };
+
     if status != 0 {
         return Err(io::Error::last_os_error());
     }
+
     Ok(())
 }
+
 pub(super) fn finish_publish(parent: &File, temporary: &str, create: bool) -> io::Result<()> {
     if create {
         delete(parent, temporary)?;
     }
+
     Ok(())
 }
 
@@ -124,11 +139,14 @@ pub(super) fn delete(parent: &File, value: &str) -> io::Result<()> {
     }
     Ok(())
 }
+
 pub(super) fn sync(directory: &File) -> io::Result<()> {
     directory.sync_all()
 }
+
 pub(super) fn children(directory: &File, limit: usize) -> io::Result<(Vec<String>, bool)> {
     struct Stream(*mut libc::DIR);
+
     impl Drop for Stream {
         fn drop(&mut self) {
             // SAFETY: Stream owns the fdopendir result.
@@ -137,6 +155,7 @@ pub(super) fn children(directory: &File, limit: usize) -> io::Result<(Vec<String
             }
         }
     }
+
     let fd = child(directory, ".", true, false)?.into_raw_fd();
     // SAFETY: fd ownership transfers only on success.
     let stream = unsafe { libc::fdopendir(fd) };
@@ -146,6 +165,7 @@ pub(super) fn children(directory: &File, limit: usize) -> io::Result<(Vec<String
         drop(unsafe { File::from_raw_fd(fd) });
         return Err(error);
     }
+
     let stream = Stream(stream);
     let mut names = Vec::new();
     let mut unsupported_name = false;
@@ -161,14 +181,17 @@ pub(super) fn children(directory: &File, limit: usize) -> io::Result<(Vec<String
                 Err(io::Error::from_raw_os_error(error))
             };
         }
+
         // SAFETY: readdir returned a dirent containing a NUL-terminated name.
         let value = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
         if matches!(value.to_bytes(), b"." | b"..") {
             continue;
         }
+
         if names.len() == limit {
             return Ok((names, true));
         }
+
         // Non-UTF-8 names are explicitly counted but cannot become model paths.
         names.push(match value.to_str() {
             Ok(name) => name.to_owned(),
