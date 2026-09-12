@@ -18,6 +18,14 @@ pub(super) fn identity(file: &File) -> io::Result<(u64, u128)> {
     Ok((metadata.dev(), u128::from(metadata.ino())))
 }
 
+pub(super) fn patch_name_key(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    // Absent targets have no inode. Conservatively reject canonical/case aliases
+    // within a batch, including on volumes that permit both spellings.
+    name.nfd().flat_map(char::to_lowercase).nfd().collect()
+}
+
 pub(super) fn root(path: &Path) -> io::Result<File> {
     let root = CString::new("/").unwrap();
     // SAFETY: root is NUL-terminated; returned descriptor is owned below.

@@ -94,6 +94,14 @@ impl Parent {
         platform::child(&self.directory, &self.name, false, false)
     }
 
+    pub(super) fn patch_key(&self) -> io::Result<impl Ord + use<>> {
+        #[cfg(unix)]
+        let name = platform::patch_name_key(&self.name);
+        #[cfg(windows)]
+        let name = platform::search_key(&self.name);
+        Ok((identity(&self.directory)?, name))
+    }
+
     pub(super) fn stage(&self, bytes: &[u8], mode: Option<&Permissions>) -> io::Result<Staged> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

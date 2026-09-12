@@ -69,6 +69,13 @@ All paths, bases, and hunks are checked before any publication. A stale base ret
 is written when preflight fails. Base digests are checked again before each publication,
 including after staging. Existing permission modes and Windows owner/group/DACL are retained; new files use owner-only permissions on Unix and inherited permissions on Windows. Other file contents and Git staging/history are untouched.
 
+Batch target keys combine the opened parent directory's filesystem identity with the
+filename key. Windows uses NT uppercase mapping. Unix conservatively rejects names
+that collide after canonical Unicode decomposition and lowercase conversion, including
+absent NFC/NFD targets on macOS. This can reject a batch of distinct names on a
+case- or normalization-sensitive Unix volume; submit those edits separately. Names
+in different actual directories remain independent. Keys never change the names written.
+
 Each file is staged in its destination directory and published individually; creation
 never replaces an existing entry. A result lists `before_digest`, `intended_digest`,
 `after_digest`, and one of `not_applied`, `applied`, or `durability_unconfirmed` per file.

@@ -276,6 +276,71 @@ async fn patches_follow_nt_case_identity_before_any_publication() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_patch_preflight_rejects_canonically_equivalent_new_targets() {
+    for (first, second) in [
+        ("caf\u{e9}", "cafe\u{301}"),
+        ("CAF\u{c9}", "cafe\u{301}"),
+        ("a\u{301}\u{327}", "a\u{327}\u{301}"),
+    ] {
+        let (dir, mut workspace) = setup();
+        let result = apply(
+            &mut workspace,
+            ["unrelated", first, second]
+                .into_iter()
+                .map(|path| Edit::Create {
+                    path: path.into(),
+                    content: "new\n".into(),
+                })
+                .collect(),
+        )
+        .await;
+        assert!(!result.complete && result.changes.is_empty(), "{result:?}");
+        assert_eq!(result.failure.unwrap().code, Code::InvalidPatch);
+        assert_eq!(disk::read_dir(dir.path()).unwrap().count(), 0);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_patch_target_keys_use_the_opened_parent_identity() {
+    let (dir, mut workspace) = setup();
+    let first = "caf\u{e9}";
+    let second = "cafe\u{301}";
+    disk::create_dir(dir.path().join(first)).unwrap();
+    let aliases = dir.path().join(second).exists();
+    if !aliases {
+        disk::create_dir(dir.path().join(second)).unwrap();
+    }
+    let result = apply(
+        &mut workspace,
+        [first, second]
+            .into_iter()
+            .map(|parent| Edit::Create {
+                path: format!("{parent}/new"),
+                content: parent.into(),
+            })
+            .collect(),
+    )
+    .await;
+    if aliases {
+        assert!(!result.complete && result.changes.is_empty(), "{result:?}");
+        assert_eq!(result.failure.unwrap().code, Code::InvalidPatch);
+        assert!(!dir.path().join(first).join("new").exists());
+    } else {
+        assert!(result.complete, "{result:?}");
+        assert_eq!(
+            disk::read_to_string(dir.path().join(first).join("new")).unwrap(),
+            first
+        );
+        assert_eq!(
+            disk::read_to_string(dir.path().join(second).join("new")).unwrap(),
+            second
+        );
+    }
+}
+
 #[tokio::test]
 async fn literal_search_is_sorted_bounded_and_reports_skips() {
     let (dir, mut workspace) = setup();

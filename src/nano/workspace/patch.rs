@@ -113,17 +113,12 @@ impl Workspace {
             }
 
             let path = path(edit.path())?;
-            // NT case mapping includes aliases that Rust's Unicode lowercase misses.
-            #[cfg(windows)]
-            let key = fs::search_key(&path);
-            // Retain the conservative case-collision check for planned Unix targets.
-            #[cfg(unix)]
-            let key = path.to_lowercase();
+            let parent = self.root.parent(&path).map_err(|e| Failure::io(&path, e))?;
+            let key = parent.patch_key().map_err(|e| Failure::io(&path, e))?;
             if !names.insert(key) {
                 return Err(Failure::new(Code::InvalidPatch, &path));
             }
 
-            let parent = self.root.parent(&path).map_err(|e| Failure::io(&path, e))?;
             let (before, after) = match edit {
                 Edit::Create { content, .. } => {
                     self.check_base(&parent, &path, None)?;
