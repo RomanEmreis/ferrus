@@ -263,8 +263,9 @@ mod tests {
         let parent = root.parent("private.txt").unwrap();
         let mode = parent.open().unwrap().metadata().unwrap().permissions();
         let staged = parent.stage(b"new\n", Some(&mode)).unwrap();
-        crate::nano::private::read_only_file(&directory.path().join(&staged.name))
-            .expect("staged owner-only DACL");
+        // Staging holds DELETE access for publication. Inspect its existing handle;
+        // reopening through the private reader would deny that access via sharing.
+        crate::nano::private::check_input_handle(&staged.file).expect("staged owner-only DACL");
         parent
             .publish(staged, false)
             .unwrap_or_else(|error| panic!("private publication failed: {}", error.error));

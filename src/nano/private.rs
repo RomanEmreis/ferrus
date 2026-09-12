@@ -56,6 +56,11 @@ pub(crate) fn read_only_file(path: &Path) -> Result<File> {
 
 pub(crate) use imp::{rename, sync_directory};
 
+#[cfg(all(test, windows))]
+pub(crate) fn check_input_handle(file: &File) -> Result<()> {
+    imp::check_input(file, &file.metadata()?)
+}
+
 #[cfg(unix)]
 mod imp {
     use super::*;
