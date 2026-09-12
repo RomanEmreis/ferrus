@@ -12,6 +12,7 @@ pub(crate) mod providers;
 pub(crate) mod replay;
 pub(crate) mod session;
 pub(crate) mod tools;
+pub(crate) mod workspace;
 
 #[cfg(test)]
 mod core_tests;
