@@ -113,8 +113,13 @@ impl Workspace {
             }
 
             let path = path(edit.path())?;
-            // Also reject case aliases on platforms where spelling is not identity.
-            if !names.insert(path.to_lowercase()) {
+            // NT case mapping includes aliases that Rust's Unicode lowercase misses.
+            #[cfg(windows)]
+            let key = fs::search_key(&path);
+            // Retain the conservative case-collision check for planned Unix targets.
+            #[cfg(unix)]
+            let key = path.to_lowercase();
+            if !names.insert(key) {
                 return Err(Failure::new(Code::InvalidPatch, &path));
             }
 

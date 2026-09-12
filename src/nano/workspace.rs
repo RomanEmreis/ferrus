@@ -353,6 +353,7 @@ impl Workspace {
         };
 
         let mut seen = BTreeSet::new();
+        let mut objects = BTreeSet::new();
         let mut output_bytes = 512;
         let mut output_full = false;
 
@@ -371,20 +372,30 @@ impl Workspace {
                 continue;
             }
 
+            let file = if path.is_empty() {
+                self.root.directory()
+            } else {
+                self.root.open(&path)
+            }
+            .and_then(|file| fs::identity(&file).map(|identity| (file, identity)));
+
+            // Unix volumes can ignore case or normalize Unicode names. Use the
+            // opened object's identity before charging visits, listing or reads.
+            if let Ok((_, identity)) = &file
+                && !objects.insert(*identity)
+            {
+                continue;
+            }
+
             if result.visited_entries == self.limits.entries {
                 result.truncated = true;
                 break;
             }
 
             result.visited_entries += 1;
-            let file = if path.is_empty() {
-                self.root.directory()
-            } else {
-                self.root.open(&path)
-            };
 
             let item = (|| {
-                let file = file.map_err(|e| Failure::io(&path, e))?;
+                let (file, _) = file.map_err(|e| Failure::io(&path, e))?;
                 if file.metadata().map_err(|e| Failure::io(&path, e))?.is_dir() {
                     let capacity = self.limits.entries.saturating_sub(result.listed_entries);
                     let (children, truncated) =
@@ -400,10 +411,17 @@ impl Workspace {
                             format!("{path}/{name}")
                         };
 
-                        if let Ok(child) = self::path(&child) {
-                            let key = fs::search_key(&child);
-                            if !seen.contains(&key) {
-                                pending.entry(key).or_insert(child);
+                        match self::path(&child) {
+                            Ok(child) => {
+                                let key = fs::search_key(&child);
+                                if !seen.contains(&key) {
+                                    pending.entry(key).or_insert(child);
+                                }
+                            }
+                            Err(failure) if failure.code == Code::ProtectedPath => (),
+                            Err(failure) => {
+                                result.truncated = true;
+                                result.issue(failure, &mut output_bytes, self.limits.output_bytes);
                             }
                         }
                     }

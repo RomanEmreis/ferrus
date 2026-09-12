@@ -41,6 +41,26 @@ pub(super) fn search_key(path: &str) -> Vec<u16> {
         .collect()
 }
 
+pub(super) fn identity(file: &File) -> io::Result<(u64, u128)> {
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: the opened handle and output structure remain live for this call.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        info.VolumeSerialNumber,
+        u128::from_le_bytes(info.FileId.Identifier),
+    ))
+}
+
 pub(super) fn root(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)

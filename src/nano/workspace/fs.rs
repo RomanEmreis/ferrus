@@ -55,6 +55,10 @@ pub(super) fn search_key(path: &str) -> impl Ord + use<> {
     }
 }
 
+pub(super) fn identity(file: &File) -> io::Result<(u64, u128)> {
+    platform::identity(file)
+}
+
 impl Root {
     pub(super) fn new(path: &Path) -> io::Result<Self> {
         platform::root(path).map(Self)
@@ -254,12 +258,15 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let root = Root::new(&directory.path().canonicalize().unwrap()).unwrap();
         fs::write(directory.path().join("file"), "body").unwrap();
+        let file_identity = identity(&root.open("file").unwrap()).unwrap();
+        assert_ne!(file_identity, identity(&root.directory().unwrap()).unwrap());
         for _ in 0..2 {
             assert_eq!(
                 children(&root.directory().unwrap(), 10).unwrap(),
                 (vec!["file".to_owned()], false)
             );
             let mut file = root.open("file").unwrap();
+            assert_eq!(identity(&file).unwrap(), file_identity);
             let mut text = String::new();
             file.read_to_string(&mut text).unwrap();
             assert_eq!(text, "body");

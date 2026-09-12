@@ -13,6 +13,11 @@ fn name(value: &str) -> io::Result<CString> {
     CString::new(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))
 }
 
+pub(super) fn identity(file: &File) -> io::Result<(u64, u128)> {
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), u128::from(metadata.ino())))
+}
+
 pub(super) fn root(path: &Path) -> io::Result<File> {
     let root = CString::new("/").unwrap();
     // SAFETY: root is NUL-terminated; returned descriptor is owned below.
