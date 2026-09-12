@@ -258,15 +258,18 @@ mod tests {
             .unwrap()
             .write_all(b"old\n")
             .unwrap();
+        crate::nano::private::read_only_file(&path).expect("original owner-only DACL");
         let root = Root::new(&directory.path().canonicalize().unwrap()).unwrap();
         let parent = root.parent("private.txt").unwrap();
         let mode = parent.open().unwrap().metadata().unwrap().permissions();
         let staged = parent.stage(b"new\n", Some(&mode)).unwrap();
+        crate::nano::private::read_only_file(&directory.path().join(&staged.name))
+            .expect("staged owner-only DACL");
         parent
             .publish(staged, false)
             .unwrap_or_else(|error| panic!("private publication failed: {}", error.error));
         // Validate the protected DACL from the opened handle, not just readonly.
-        crate::nano::private::read_only_file(&path).unwrap();
+        crate::nano::private::read_only_file(&path).expect("published owner-only DACL");
         assert_eq!(fs::read(path).unwrap(), b"new\n");
     }
 
