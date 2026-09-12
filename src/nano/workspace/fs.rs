@@ -44,6 +44,17 @@ pub(super) fn children(file: &File, limit: usize) -> io::Result<(Vec<String>, bo
     platform::children(file, limit)
 }
 
+pub(super) fn search_key(path: &str) -> impl Ord + use<> {
+    #[cfg(unix)]
+    {
+        path.to_owned()
+    }
+    #[cfg(windows)]
+    {
+        platform::search_key(path)
+    }
+}
+
 impl Root {
     pub(super) fn new(path: &Path) -> io::Result<Self> {
         platform::root(path).map(Self)
@@ -175,6 +186,19 @@ impl Drop for Staged {
 mod tests {
     use super::*;
     use std::{fs, io::Read};
+
+    #[test]
+    fn search_keys_follow_platform_case_rules() {
+        #[cfg(unix)]
+        assert!(search_key("src/file") != search_key("SRC/FILE"));
+        #[cfg(windows)]
+        {
+            assert!(search_key("src/file") == search_key("SRC/FILE"));
+            assert!(search_key("caf\u{e9}/file") == search_key("CAF\u{c9}/FILE"));
+            // NT upcasing preserves UTF-16 length; Unicode expansion is not a path alias.
+            assert!(search_key("stra\u{df}e") != search_key("STRASSE"));
+        }
+    }
 
     #[test]
     fn create_publication_never_clobbers_an_existing_entry() {

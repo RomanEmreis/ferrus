@@ -30,6 +30,17 @@ use windows_sys::{
     },
 };
 
+pub(super) fn search_key(path: &str) -> Vec<u16> {
+    use windows_sys::Wdk::System::SystemServices::RtlUpcaseUnicodeChar;
+
+    path.encode_utf16()
+        .map(|unit| {
+            // SAFETY: this pure NT mapping accepts any UTF-16 code unit.
+            unsafe { RtlUpcaseUnicodeChar(unit) }
+        })
+        .collect()
+}
+
 pub(super) fn root(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)

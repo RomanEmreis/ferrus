@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Read,
     path::Path,
     time::{Duration, Instant},
@@ -323,13 +323,14 @@ impl Workspace {
         cancellation: &Cancellation,
     ) -> Result<SearchResult> {
         let start = Instant::now();
-        let mut pending = BTreeSet::new();
+        let mut pending = BTreeMap::new();
         for value in &request.paths {
-            pending.insert(if value == "." {
+            let path = if value == "." {
                 String::new()
             } else {
                 path(value)?
-            });
+            };
+            pending.entry(fs::search_key(&path)).or_insert(path);
         }
 
         if pending.is_empty()
@@ -355,7 +356,7 @@ impl Workspace {
         let mut output_bytes = 512;
         let mut output_full = false;
 
-        while let Some(path) = pending.pop_first() {
+        while let Some((key, path)) = pending.pop_first() {
             if self.stopped(start, cancellation) {
                 result.truncated = true;
                 result.issue(
@@ -366,7 +367,7 @@ impl Workspace {
                 break;
             }
 
-            if !seen.insert(path.clone()) {
+            if !seen.insert(key) {
                 continue;
             }
 
@@ -400,7 +401,10 @@ impl Workspace {
                         };
 
                         if let Ok(child) = self::path(&child) {
-                            pending.insert(child);
+                            let key = fs::search_key(&child);
+                            if !seen.contains(&key) {
+                                pending.entry(key).or_insert(child);
+                            }
                         }
                     }
 

@@ -67,6 +67,56 @@ fn range_reads_preserve_bytes_identity_and_explicit_limits() {
 }
 
 #[tokio::test]
+async fn overlapping_search_paths_do_not_repeat_results_or_charge_budgets() {
+    let (dir, mut workspace) = setup();
+    disk::create_dir(dir.path().join("src")).unwrap();
+    let content = "needle once\n";
+    disk::write(dir.path().join("src/File.rs"), content).unwrap();
+    workspace.limits.entries = 3; // root, directory, file
+
+    #[cfg(windows)]
+    let paths = [".", "SRC", "src", "SRC/FILE.RS", "src/File.rs"];
+    #[cfg(unix)]
+    let paths = [".", "src", "src/File.rs"];
+    let result = workspace
+        .search_text(
+            serde_json::from_value(json!({"paths":paths,"query":"needle"})).unwrap(),
+            &Cancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.truncated);
+    assert!(result.issues.is_empty());
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.scanned_bytes, content.len());
+    assert_eq!(result.visited_entries, 3);
+    assert_eq!(result.listed_entries, 2);
+    assert_eq!(result.matches[0].source.digest, digest(content.as_bytes()));
+    #[cfg(windows)]
+    assert_eq!(result.matches[0].source.path, "SRC/FILE.RS");
+    #[cfg(unix)]
+    assert_eq!(result.matches[0].source.path, "src/File.rs");
+
+    #[cfg(windows)]
+    let paths = ["src/File.rs", "SRC/FILE.RS"];
+    #[cfg(unix)]
+    let paths = ["src/File.rs", "src/File.rs"];
+    let result = workspace
+        .search_text(
+            serde_json::from_value(json!({"paths":paths,"query":"needle"})).unwrap(),
+            &Cancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.truncated);
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.matches[0].source.path, "src/File.rs");
+    assert_eq!(result.scanned_bytes, content.len());
+    assert_eq!(result.visited_entries, 1);
+    assert_eq!(result.listed_entries, 0);
+}
+
+#[tokio::test]
 async fn literal_search_is_sorted_bounded_and_reports_skips() {
     let (dir, mut workspace) = setup();
     disk::create_dir(dir.path().join("src")).unwrap();

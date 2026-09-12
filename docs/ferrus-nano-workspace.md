@@ -17,7 +17,8 @@ hosts can supply an explicitly authorized root through the same constructor.
   set. Each matching line yields one result with a 1-based line and UTF-8 byte column,
   a bounded snippet around the first match, and its source digest. Unsupported files,
   interrupted traversal, and resource caps make incompleteness explicit. This is not
-  a regex or glob API. Overlapping paths are deduplicated.
+  a regex or glob API. Overlapping paths are deduplicated using case-sensitive keys
+  on Unix and NT uppercase keys on Windows. Results retain the first admitted spelling.
 
 Every source record has `kind = "workspace"`, an opaque root identity, a local edit
 `generation`, a relative path, and the digest of the bytes observed. These are current
