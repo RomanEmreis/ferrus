@@ -219,30 +219,60 @@ async fn search_reports_unsupported_names_but_hides_protected_metadata() {
 
 #[cfg(windows)]
 #[tokio::test]
-async fn patches_reject_nt_case_aliases_before_any_publication() {
-    let (dir, mut workspace) = setup();
-    disk::write(dir.path().join("source"), "old\n").unwrap();
-    for edits in [
-        vec![
-            update("source", "old\n", 1, "old\n", "new\n"),
-            update("\u{17f}ource", "old\n", 1, "old\n", "other\n"),
-        ],
-        vec![
-            Edit::Create {
-                path: "second".into(),
-                content: "first".into(),
-            },
-            Edit::Create {
-                path: "\u{17f}econd".into(),
-                content: "second".into(),
-            },
-        ],
+async fn patches_follow_nt_case_identity_before_any_publication() {
+    for (first, second, required_alias) in [
+        ("source", "SOURCE", true),
+        ("caf\u{e9}", "CAF\u{c9}", true),
+        ("source", "\u{17f}ource", false),
     ] {
-        let result = apply(&mut workspace, edits).await;
-        assert!(!result.complete && result.changes.is_empty(), "{result:?}");
-        assert_eq!(result.failure.unwrap().code, Code::InvalidPatch);
-        assert_eq!(disk::read(dir.path().join("source")).unwrap(), b"old\n");
-        assert!(!dir.path().join("second").exists());
+        // Unicode lowercase/uppercase rules do not determine NT path equivalence.
+        let aliases = fs::search_key(first) == fs::search_key(second);
+        if required_alias {
+            assert!(aliases, "expected case alias: {first} / {second}");
+        }
+        for create in [false, true] {
+            let (dir, mut workspace) = setup();
+            let edits = if create {
+                vec![
+                    Edit::Create {
+                        path: first.into(),
+                        content: "new\n".into(),
+                    },
+                    Edit::Create {
+                        path: second.into(),
+                        content: "other\n".into(),
+                    },
+                ]
+            } else {
+                disk::write(dir.path().join(first), "old\n").unwrap();
+                if !aliases {
+                    disk::write(dir.path().join(second), "old\n").unwrap();
+                }
+                vec![
+                    update(first, "old\n", 1, "old\n", "new\n"),
+                    update(second, "old\n", 1, "old\n", "other\n"),
+                ]
+            };
+            let result = apply(&mut workspace, edits).await;
+            if aliases {
+                assert!(!result.complete && result.changes.is_empty(), "{result:?}");
+                assert_eq!(result.failure.unwrap().code, Code::InvalidPatch);
+                if create {
+                    assert!(!dir.path().join(first).exists());
+                    assert!(!dir.path().join(second).exists());
+                } else {
+                    assert_eq!(disk::read(dir.path().join(first)).unwrap(), b"old\n");
+                    assert_eq!(disk::read(dir.path().join(second)).unwrap(), b"old\n");
+                }
+            } else {
+                // Distinct NT names must remain independently writable, even if
+                // Rust's Unicode uppercase would merge them (for example long-s).
+                assert!(result.complete, "{result:?}");
+                assert_eq!(result.changes.len(), 2);
+                assert_eq!(disk::read(dir.path().join(first)).unwrap(), b"new\n");
+                assert_eq!(disk::read(dir.path().join(second)).unwrap(), b"other\n");
+            }
+        }
     }
 }
 
